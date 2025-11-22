@@ -1,4 +1,4 @@
-module mebsuta
+module github.com/iuboy/mebsuta
 
 go 1.25.2
 

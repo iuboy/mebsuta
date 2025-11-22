@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mebsuta/config"
-	"mebsuta/core"
 
+	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/core"
 	"go.uber.org/zap/zapcore"
 )
 
