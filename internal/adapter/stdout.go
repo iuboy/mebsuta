@@ -2,9 +2,9 @@ package adapter
 
 import (
 	"io"
-	"mebsuta/core"
 	"os"
 
+	"github.com/iuboy/mebsuta/core"
 	"go.uber.org/zap/zapcore"
 )
 

@@ -18,12 +18,12 @@ package mebsuta
 
 import (
 	"context"
-	"mebsuta/config"
-	"mebsuta/core"
-	"mebsuta/internal/adapter"
 	"sync"
 	"sync/atomic"
 
+	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/core"
+	"github.com/iuboy/mebsuta/internal/adapter"
 	"go.uber.org/zap"
 )
 

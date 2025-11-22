@@ -1,10 +1,10 @@
 package core
 
 import (
-	"mebsuta/config"
 	"sync/atomic"
 	"time"
 
+	"github.com/iuboy/mebsuta/config"
 	"go.uber.org/zap/zapcore"
 )
 

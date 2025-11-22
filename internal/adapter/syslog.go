@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"mebsuta/config"
-	"mebsuta/core"
 	"net"
 	"os"
 	"regexp"
@@ -19,6 +17,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/core"
 )
 
 var (

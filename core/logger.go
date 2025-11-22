@@ -4,11 +4,11 @@ import (
 	"crypto/sha1"
 	"errors"
 	"fmt"
-	"mebsuta/config"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/iuboy/mebsuta/config"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )

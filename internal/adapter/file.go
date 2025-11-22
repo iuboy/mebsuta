@@ -2,14 +2,14 @@ package adapter
 
 import (
 	"fmt"
-	"mebsuta/config"
-	"mebsuta/core"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/core"
 	"github.com/natefinch/lumberjack"
 )
 
