@@ -1,0 +1,53 @@
+# docker-compose.yml
+# 启动 MySQL 和可选的 Syslog 接收器，用于运行集成测试
+
+version: '3.8'
+
+services:
+  # MySQL 8.4 - 用于模拟数据库日志输出
+  mysql:
+    image: mysql:8.4
+    container_name: mebsuta-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: test
+      MYSQL_DATABASE: logs
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command:
+      - --binlog-format=ROW
+      - --max-binlog-size=100M
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest"]
+      timeout: 20s
+      retries: 10
+      interval: 5s
+
+  # Syslog TCP Server (RFC5424) - 使用 netcat 简易监听
+  syslog:
+    image: alpine:latest
+    container_name: mebsuta-syslog
+    restart: unless-stopped
+    command: >
+     sh -c "
+      echo '🚀 Mebsuta Syslog 服务已启动，监听 TCP 5140...' &&
+      apk add --no-cache socat &&
+      mkdir -p /logs &&
+      while true; do
+        socat TCP-LISTEN:5140,reuseaddr,fork SYSTEM:'read line; echo \"[\`date -Is\`] $$line\" >> /logs/syslog.log' &
+      done
+      "
+    ports:
+      - "5140:5140"
+    volumes:
+      - ./logs:/logs
+    healthcheck:
+      test: ["CMD", "sh", "-c", "netstat -an | grep :5140"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  mysql_data:
