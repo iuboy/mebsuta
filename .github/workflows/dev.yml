@@ -1,10 +1,10 @@
-name: Test
+name: Dev
 
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
   pull_request:
-    branches: [main, dev]
+    branches: [dev]
 
 jobs:
   test:
@@ -91,13 +91,3 @@ jobs:
           INFLUXDB_TOKEN: test-token-for-ci
           INFLUXDB_ORG: test-org
           INFLUXDB_BUCKET: logs
-
-      - name: Run all tests with coverage
-        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.out
-          fail_ci_if_error: false
-          verbose: true

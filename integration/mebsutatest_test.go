@@ -14,15 +14,17 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/iuboy/mebsuta"
 	"github.com/iuboy/mebsuta/config"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	_ "github.com/lib/pq"
 
 	"github.com/testcontainers/testcontainers-go"
 	mysqlcontainer "github.com/testcontainers/testcontainers-go/modules/mysql"
@@ -36,52 +38,72 @@ const (
 	TestRequestID   = "req-test-123"
 )
 
-var (
-	syslogMessagesCh = make(chan string, 500)
-	syslogDone       = make(chan struct{})
-)
-
 // ================== 1. Mock Syslog Server ==================
-func startMockSyslog(t *testing.T) (string, func()) {
+type syslogServer struct {
+	listener net.Listener
+	msgCh    chan string
+	done     chan struct{}
+	once     sync.Once
+	stopped  int32 // 原子操作标志
+}
+
+func startMockSyslog(t *testing.T) *syslogServer {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
+	s := &syslogServer{
+		listener: listener,
+		msgCh:    make(chan string, 500),
+		done:     make(chan struct{}),
+	}
+
+	go func() {
+		<-s.done
+		s.listener.Close()
+		s.once.Do(func() {
+			close(s.msgCh)
+		})
+	}()
+
 	go func() {
 		for {
-			select {
-			case <-syslogDone:
-				return
-			default:
-			}
-			conn, err := listener.Accept()
+			conn, err := s.listener.Accept()
 			if err != nil {
 				return
 			}
-			go handleSyslogConn(t, conn)
+			go s.handleConn(t, conn)
 		}
 	}()
 
-	addr := listener.Addr().String()
-	return addr, func() {
-		close(syslogDone)
-		listener.Close()
-		time.Sleep(10 * time.Millisecond)
-	}
+	return s
 }
 
-func handleSyslogConn(t *testing.T, conn net.Conn) {
+func (s *syslogServer) handleConn(t *testing.T, conn net.Conn) {
 	defer conn.Close()
 	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
+		// 检查服务器是否已停止
+		if atomic.LoadInt32(&s.stopped) != 0 {
+			return
+		}
 		select {
-		case syslogMessagesCh <- scanner.Text():
-		default:
-			t.Log("syslog channel full")
+		case <-s.done:
+			return
+		case s.msgCh <- scanner.Text():
 		}
 	}
 }
 
-func getSyslogEntries(timeout time.Duration) []string {
+func (s *syslogServer) Addr() string {
+	return s.listener.Addr().String()
+}
+
+func (s *syslogServer) Stop() {
+	atomic.StoreInt32(&s.stopped, 1)
+	close(s.done)
+}
+
+func (s *syslogServer) GetEntries(timeout time.Duration) []string {
 	var entries []string
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -89,7 +111,10 @@ func getSyslogEntries(timeout time.Duration) []string {
 loop:
 	for {
 		select {
-		case msg := <-syslogMessagesCh:
+		case msg, ok := <-s.msgCh:
+			if !ok {
+				break loop
+			}
 			entries = append(entries, msg)
 		case <-timer.C:
 			break loop
@@ -225,15 +250,11 @@ func startPostgreSQLContainer(t *testing.T) (*sql.DB, string, func()) {
 }
 
 // ================== 4. 设置测试 ==================
-func setupTest(t *testing.T) *sql.DB {
+func setupTest(t *testing.T) (*sql.DB, *syslogServer) {
 	os.Remove(TestLogFile)
 
-	close(syslogDone)
-	syslogMessagesCh = make(chan string, 500)
-	syslogDone = make(chan struct{})
-
-	syslogAddr, shutdownSyslog := startMockSyslog(t)
-	t.Cleanup(shutdownSyslog)
+	syslogSrv := startMockSyslog(t)
+	t.Cleanup(syslogSrv.Stop)
 
 	db, mysqlDSN, cleanupDB := startMySQLContainer(t)
 	t.Cleanup(cleanupDB)
@@ -282,7 +303,7 @@ func setupTest(t *testing.T) *sql.DB {
 				Enabled:  true,
 				Syslog: &config.SyslogConfig{
 					Network:       "tcp",
-					Address:       syslogAddr,
+					Address:       syslogSrv.Addr(),
 					Tag:           "test-tag",
 					Facility:      16,
 					RFC5424:       true,
@@ -321,12 +342,12 @@ func setupTest(t *testing.T) *sql.DB {
 		time.Sleep(200 * time.Millisecond)
 	})
 
-	return db
+	return db, syslogSrv
 }
 
 // ================== 5. 主测试 ==================
 func TestExternalAppLoggingFlow(t *testing.T) {
-	db := setupTest(t)
+	db, syslogSrv := setupTest(t)
 
 	ctx := context.WithValue(context.Background(), mebsuta.RequestContextKey, TestRequestID)
 	logger := mebsuta.WithContext(ctx)
@@ -362,7 +383,7 @@ func TestExternalAppLoggingFlow(t *testing.T) {
 	})
 
 	t.Run("Syslog Output", func(t *testing.T) {
-		messages := getSyslogEntries(800 * time.Millisecond)
+		messages := syslogSrv.GetEntries(800 * time.Millisecond)
 		assert.Greater(t, len(messages), 5)
 		found := false
 		for _, msg := range messages {
@@ -423,16 +444,24 @@ func TestSamplingIntegration(t *testing.T) {
 		},
 	}
 
-	err := mebsuta.Init(cfg)
+	// 使用独立的 logger 实例避免全局状态冲突
+	logger, err := mebsuta.CreateLogger(cfg)
 	require.NoError(t, err)
-	defer mebsuta.Sync()
+	defer logger.Sync()
 
 	// 记录 20 条日志
 	for i := 0; i < 20; i++ {
-		mebsuta.Info(fmt.Sprintf("日志消息 %d", i))
+		logger.Info(fmt.Sprintf("日志消息 %d", i))
 	}
 
-	time.Sleep(300 * time.Millisecond)
+	// 等待文件写入完成
+	time.Sleep(1 * time.Second)
+
+	// 等待文件存在
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(TestLogFile)
+		return err == nil
+	}, 2*time.Second, 100*time.Millisecond, "日志文件应该被创建")
 
 	// 读取文件并计数
 	content, err := os.ReadFile(TestLogFile)
@@ -455,18 +484,16 @@ func TestSamplingIntegration(t *testing.T) {
 
 // ================== 7. PostgreSQL 集成测试 ==================
 func TestPostgreSQLIntegration(t *testing.T) {
+	// 清理之前的 logger
+	mebsuta.Sync()
+	time.Sleep(200 * time.Millisecond)
+
 	db, pgDSN, cleanupDB := startPostgreSQLContainer(t)
 	defer cleanupDB()
 
 	cfg := config.LoggerConfig{
 		ServiceName: TestServiceName,
 		Outputs: []config.OutputConfig{
-			{
-				Type:     config.Stdout,
-				Level:    config.InfoLevel,
-				Encoding: config.JSON,
-				Enabled:  false,
-			},
 			{
 				Type:     config.DB,
 				Level:    config.InfoLevel,
@@ -483,21 +510,24 @@ func TestPostgreSQLIntegration(t *testing.T) {
 		},
 	}
 
-	err := mebsuta.Init(cfg)
+	// 使用独立的 logger 实例避免全局状态冲突
+	logger, err := mebsuta.CreateLogger(cfg)
 	require.NoError(t, err)
-	defer mebsuta.Sync()
+	defer logger.Sync()
 
 	// 记录不同级别的日志
-	mebsuta.Info("PostgreSQL Info 日志", zap.String("type", "pg_test"))
-	mebsuta.Warn("PostgreSQL Warn 日志")
-	mebsuta.Error("PostgreSQL Error 日志", zap.Int("code", 500))
+	logger.Info("PostgreSQL Info 日志", zap.String("type", "pg_test"))
+	logger.Warn("PostgreSQL Warn 日志")
+	logger.Error("PostgreSQL Error 日志", zap.Int("code", 500))
 
-	time.Sleep(800 * time.Millisecond)
+	// 等待批量写入完成（批量间隔是 500ms）
+	time.Sleep(1 * time.Second)
 
 	// 验证数据库写入
 	var count int
 	err = db.QueryRow("SELECT COUNT(*) FROM logs").Scan(&count)
 	require.NoError(t, err)
+	t.Logf("数据库中有 %d 条日志", count)
 	assert.GreaterOrEqual(t, count, 3)
 
 	// 验证字段
@@ -605,6 +635,10 @@ func TestConcurrencyIntegration(t *testing.T) {
 
 // ================== 10. 错误处理集成测试 ==================
 func TestErrorHandlingIntegration(t *testing.T) {
+	// 清理之前的 logger
+	mebsuta.Sync()
+	time.Sleep(100 * time.Millisecond)
+
 	t.Run("无效数据库配置", func(t *testing.T) {
 		cfg := config.LoggerConfig{
 			ServiceName: TestServiceName,
@@ -642,8 +676,8 @@ func TestErrorHandlingIntegration(t *testing.T) {
 					Encoding: config.JSON,
 					Enabled:  true,
 					File: &config.FileConfig{
-						Path:       "",
-						MaxSizeMB:  10,
+						Path:      "",
+						MaxSizeMB: 10,
 					},
 				},
 			},
@@ -676,16 +710,14 @@ func TestErrorHandlingIntegration(t *testing.T) {
 
 // ================== 11. Syslog 集成测试 ==================
 func TestSyslogIntegration(t *testing.T) {
+	// 清理之前的 logger
+	mebsuta.Sync()
+	time.Sleep(100 * time.Millisecond)
 	os.Remove(TestLogFile)
 
-	// 重置 syslog 消息通道
-	close(syslogDone)
-	syslogMessagesCh = make(chan string, 500)
-	syslogDone = make(chan struct{})
-
 	// 启动 mock syslog server
-	syslogAddr, shutdownSyslog := startMockSyslog(t)
-	defer shutdownSyslog()
+	syslogSrv := startMockSyslog(t)
+	defer syslogSrv.Stop()
 
 	cfg := config.LoggerConfig{
 		ServiceName: TestServiceName,
@@ -697,7 +729,7 @@ func TestSyslogIntegration(t *testing.T) {
 				Enabled:  true,
 				Syslog: &config.SyslogConfig{
 					Network:       "tcp",
-					Address:       syslogAddr,
+					Address:       syslogSrv.Addr(),
 					Tag:           "mebsuta-test",
 					Facility:      16, // local use
 					RFC5424:       true,
@@ -744,7 +776,7 @@ func TestSyslogIntegration(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// 验证 syslog 消息
-	messages := getSyslogEntries(800 * time.Millisecond)
+	messages := syslogSrv.GetEntries(800 * time.Millisecond)
 
 	t.Logf("收到 %d 条 syslog 消息", len(messages))
 
@@ -776,4 +808,3 @@ func TestSyslogIntegration(t *testing.T) {
 
 	t.Log("Syslog 集成测试通过")
 }
-
