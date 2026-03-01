@@ -19,10 +19,10 @@ import (
 
 	"github.com/iuboy/mebsuta"
 	"github.com/iuboy/mebsuta/config"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
-	_ "github.com/lib/pq"
 
 	"github.com/testcontainers/testcontainers-go"
 	mysqlcontainer "github.com/testcontainers/testcontainers-go/modules/mysql"
@@ -642,8 +642,8 @@ func TestErrorHandlingIntegration(t *testing.T) {
 					Encoding: config.JSON,
 					Enabled:  true,
 					File: &config.FileConfig{
-						Path:       "",
-						MaxSizeMB:  10,
+						Path:      "",
+						MaxSizeMB: 10,
 					},
 				},
 			},
@@ -776,4 +776,3 @@ func TestSyslogIntegration(t *testing.T) {
 
 	t.Log("Syslog 集成测试通过")
 }
-
