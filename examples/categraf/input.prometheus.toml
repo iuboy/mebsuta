@@ -1,0 +1,114 @@
+# Categraf Prometheus 插件配置 - Mebsuta 日志库指标采集
+#
+# 将此文件放置到: /etc/categraf/conf/input.prometheus/mebsuta.toml
+#
+# 官方文档: https://flashcat.cloud/docs/content/flashcat-monitor/categraf/plugin/prometheus/
+
+[[instances]]
+# ============================================
+# 基础配置
+# ============================================
+
+# Mebsuta 应用程序指标端点 URL 列表
+urls = [
+    "http://localhost:2112/metrics",
+    # "http://localhost:2113/metrics",  # 多个实例
+    # "http://app2:2112/metrics",       # 多台服务器
+]
+
+# 可选：为所有指标添加名称前缀
+name_prefix = "mebsuta_"
+
+# 可选：添加自定义标签（适用于所有指标）
+labels = {
+    service = "my-service",
+    env = "production",
+    team = "backend",
+}
+
+# ============================================
+# 高级配置
+# ============================================
+
+# HTTP 请求超时时间
+# timeout = "5s"
+
+# 忽略特定指标（通配符支持）
+# 示例：忽略某些高基数指标
+# ignore_metrics = [
+#     "mebsuta_log_writes_total",
+# ]
+
+# 忽略特定标签键
+# 示例：移除可能导致高基数的标签
+# ignore_label_keys = [
+#     "output",
+# ]
+
+# 允许重复指标（相同名称但不同标签）
+# duplication_allowed = false
+
+# ============================================
+# 认证配置（如果需要）
+# ============================================
+
+# HTTP 基本认证
+# username = "admin"
+# password = "your-password"
+
+# Bearer Token 认证
+# bearer_token_string = "your-token"
+# bearer_token_file = "/path/to/token.txt"
+
+# ============================================
+# TLS/SSL 配置（如果使用 HTTPS）
+# ============================================
+
+# use_tls = true
+# tls_ca = "/path/to/ca.crt"
+# tls_cert = "/path/to/client.crt"
+# tls_key = "/path/to/client.key"
+# insecure_skip_verify = false
+
+# ============================================
+# 自定义 HTTP 头
+# ============================================
+
+# headers = [
+#     "X-Custom-Header: value",
+#     "Authorization: Bearer token",
+# ]
+
+# ============================================
+# Consul 服务发现（可选）
+# ============================================
+
+# [instances.consul]
+#   enabled = true
+#   queries = [
+#     {
+#       name = "mebsuta-services"
+#       service_name = "mebsuta"
+#       tag = "metrics"
+#     }
+#   ]
+
+# ============================================
+# URL 标签配置
+# ============================================
+
+# 从 URL 提取标签
+# url_label = "instance"
+# url_tag_keys = ["service", "env"]
+
+# ============================================
+# Prometheus Relabel 配置（高级）
+# ============================================
+
+# 以下配置与 Prometheus relabel_config 格式兼容
+# source_labels = ["__address__"]
+# separator = ","
+# target_label = "instance"
+# regex = "([^:]+)(:[0-9]+)?"
+# replacement = "${1}"
+# action = "replace"

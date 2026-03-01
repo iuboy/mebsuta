@@ -13,9 +13,18 @@ import (
 var (
 	serviceName = "default_service"
 	requestID   = "unknown_request_id"
-	hostname, _ = os.Hostname()
+	hostname    string
 	pid         = os.Getpid()
 )
+
+func init() {
+	// 安全获取主机名
+	if h, err := os.Hostname(); err == nil {
+		hostname = h
+	} else {
+		hostname = "unknown"
+	}
+}
 
 // StructuredCore 实现 zapcore.Core
 // 将日志同时分发给：
@@ -90,6 +99,19 @@ func (c *StructuredCore) Write(ent zapcore.Entry, fields []zapcore.Field) error 
 			}
 		}
 	}
+
+	// === Zap 最佳实践：Panic/Fatal 级别自动同步 ===
+	// 在程序可能崩溃之前，确保日志被刷新到磁盘
+	if ent.Level > zapcore.ErrorLevel {
+		if syncErr := c.Sync(); syncErr != nil {
+			// 如果同步失败，至少记录到 stderr
+			fmt.Fprintf(os.Stderr, "CRITICAL: 无法同步日志（%s级）: %v\n", ent.Level, syncErr)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("sync_failed: %w", syncErr)
+			}
+		}
+	}
+
 	return firstErr
 }
 func (c *StructuredCore) Sync() error {

@@ -6,27 +6,42 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iuboy/mebsuta/config"
+	meberrors "github.com/iuboy/mebsuta/errors"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-var (
-	encoderCache = make(map[string]zapcore.Encoder)
-)
-
 const (
+	// maxEncoderCacheSize 编码器缓存最大大小
 	maxEncoderCacheSize = 10
 )
 
-type SycerFactory func(config.OutputConfig) (WriteSyncer, error)
+// encoderCacheEntry 编码器缓存条目
+type encoderCacheEntry struct {
+	encoder    zapcore.Encoder
+	lastAccess time.Time
+}
+
+var (
+	// encoderCache 编码器缓存，使用map+mutex实现LRU淘汰
+	encoderCache     = make(map[string]*encoderCacheEntry)
+	encoderCacheLock sync.RWMutex
+)
+
+// SyncerFactory 同步器工厂函数类型
+type SyncerFactory func(config.OutputConfig) (WriteSyncer, error)
 
 // NewLogger 创建新日志器
-func NewLogger(cfg config.LoggerConfig, factory SycerFactory) (*zap.Logger, error) {
+// cfg: 日志配置
+// factory: 同步器工厂函数
+// 返回: zap.Logger实例或错误
+func NewLogger(cfg config.LoggerConfig, factory SyncerFactory) (*zap.Logger, error) {
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("配置验证失败: %w", err)
+		return nil, meberrors.Wrap(err, meberrors.ErrCodeValidateFailed, "配置验证失败")
 	}
 
 	cores, err := buildCores(cfg, factory)
@@ -41,7 +56,7 @@ func NewLogger(cfg config.LoggerConfig, factory SycerFactory) (*zap.Logger, erro
 		var err error
 		coreTee, err = newSampler(coreTee, cfg.Sampling)
 		if err != nil {
-			return nil, fmt.Errorf("采样器初始化失败: %w", err)
+			return nil, meberrors.Wrap(err, meberrors.ErrCodeSamplerInit, "采样器初始化失败")
 		}
 	}
 
@@ -68,7 +83,7 @@ func NewLogger(cfg config.LoggerConfig, factory SycerFactory) (*zap.Logger, erro
 	return logger, nil
 }
 
-func buildCores(cfg config.LoggerConfig, factory SycerFactory) ([]zapcore.Core, error) {
+func buildCores(cfg config.LoggerConfig, factory SyncerFactory) ([]zapcore.Core, error) {
 	var cores []zapcore.Core
 
 	for _, out := range cfg.Outputs {
@@ -79,7 +94,7 @@ func buildCores(cfg config.LoggerConfig, factory SycerFactory) ([]zapcore.Core, 
 		// 创建同步器
 		syncer, err := factory(out)
 		if err != nil {
-			return nil, fmt.Errorf("创建同步器失败: %w", err)
+			return nil, meberrors.Wrap(err, meberrors.ErrCodeCreateSyncer, "创建同步器失败")
 		}
 
 		// 创建编码器
@@ -145,15 +160,62 @@ func getEncoder(encCfg config.EncoderConfig, encoding config.EncodingType) zapco
 		}
 	}
 
-	// 检查缓存
-	if encoder, ok := encoderCache[cacheKey]; ok {
-		return encoder
+	// 使用写锁避免TOCTOU竞态条件
+	encoderCacheLock.Lock()
+	defer encoderCacheLock.Unlock()
+
+	entry, ok := encoderCache[cacheKey]
+	if ok {
+		entry.lastAccess = time.Now()
+		return entry.encoder
 	}
 
-	// 创建新的编码器
-	encoder := createEncoder(defaultCfg, encoding)
-	encoderCache[cacheKey] = encoder
-	return encoder
+	// 创建新编码器
+	newEncoder := createEncoder(defaultCfg, encoding)
+
+	// 再次检查（可能已被其他goroutine添加）
+	if entry, ok := encoderCache[cacheKey]; ok {
+		return entry.encoder
+	}
+
+	// 检查缓存大小，需要时淘汰最老的条目
+	if len(encoderCache) >= maxEncoderCacheSize {
+		evictOldestEntry()
+	}
+
+	encoderCache[cacheKey] = &encoderCacheEntry{
+		encoder:    newEncoder,
+		lastAccess: time.Now(),
+	}
+
+	return newEncoder
+}
+
+// evictOldestEntry 淘汰最老的编码器缓存条目
+func evictOldestEntry() {
+	var oldestKey string
+	var oldestTime time.Time
+
+	for k, v := range encoderCache {
+		if oldestKey == "" || v.lastAccess.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = v.lastAccess
+		}
+	}
+
+	if oldestKey != "" {
+		delete(encoderCache, oldestKey)
+	}
+}
+
+// ClearEncoderCache 清空编码器缓存（用于测试）
+func ClearEncoderCache() {
+	encoderCacheLock.Lock()
+	defer encoderCacheLock.Unlock()
+
+	for k := range encoderCache {
+		delete(encoderCache, k)
+	}
 }
 
 func createEncoder(cfg config.EncoderConfig, encoding config.EncodingType) zapcore.Encoder {

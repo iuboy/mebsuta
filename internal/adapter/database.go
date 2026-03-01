@@ -12,6 +12,8 @@ import (
 	"github.com/influxdata/influxdb-client-go/v2/api"
 	"github.com/iuboy/mebsuta/config"
 	"github.com/iuboy/mebsuta/core"
+	meberrors "github.com/iuboy/mebsuta/errors"
+	"github.com/iuboy/mebsuta/metrics"
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -37,18 +39,27 @@ func newDBAdapter(config config.DatabaseConfig) (core.WriteSyncer, error) {
 
 		gdb, err := gorm.Open(dialector, &gorm.Config{})
 		if err != nil {
-			return nil, err
+			return nil, meberrors.Wrap(err, meberrors.ErrCodeDBConnectFailed, fmt.Sprintf("连接%s数据库失败", config.DriverName))
 		}
 
-		sqlDB, _ := gdb.DB()
+		sqlDB, err := gdb.DB()
+		if err != nil {
+			return nil, meberrors.Wrap(err, meberrors.ErrCodeDBConnect, "获取数据库连接失败")
+		}
+
 		sqlDB.SetMaxIdleConns(config.MaxIdleConns)
 		sqlDB.SetMaxOpenConns(config.MaxOpenConns)
 		sqlDB.SetConnMaxLifetime(config.MaxConnLifetime)
 
+		// 更新连接池指标
+		metrics.GetMetrics().SetActiveConns(float64(config.MaxOpenConns))
+		metrics.GetMetrics().SetIdleConns(float64(config.MaxIdleConns))
+
 		backend = &sqlStore{
-			db:        gdb,
-			table:     config.TableName,
-			batchSize: config.BatchSize,
+			db:         gdb,
+			table:      config.TableName,
+			batchSize:  config.BatchSize,
+			driverName: config.DriverName,
 		}
 
 	case "influxdb":
@@ -60,30 +71,51 @@ func newDBAdapter(config config.DatabaseConfig) (core.WriteSyncer, error) {
 		writeAPI := client.WriteAPI(config.TimeSeries.Org, config.TimeSeries.Bucket)
 
 		errCh := writeAPI.Errors()
-		errors := make(chan error, 100)
+		errorChan := make(chan error, 100)
+
+		// 创建上下文用于goroutine控制
+		errCtx, errCancel := context.WithCancel(context.Background())
 
 		backend = &influxDBBackend{
 			writeAPI:  writeAPI,
 			client:    client,
 			batchSize: config.BatchSize,
 			errCh:     errCh,
-			errors:    errors,
+			errors:    errorChan,
+			url:       config.TimeSeries.URL,
+			org:       config.TimeSeries.Org,
+			bucket:    config.TimeSeries.Bucket,
+			errCancel: errCancel,
+			errCtx:    errCtx,
 		}
 
+		// 监听InfluxDB写入错误（添加上下文控制）
 		go func() {
-			for err := range errCh {
-				fmt.Fprintf(os.Stderr, "influxdb write error: %v\n", err)
-				// 尝试将错误发送到外部可访问的通道
+			defer metrics.GetMetrics().DecGoroutine()
+			defer close(errorChan)
+			metrics.GetMetrics().IncGoroutine()
+
+			for {
 				select {
-				case errors <- err:
-				default:
-					// 如果通道满了，记录日志
-					fmt.Fprintf(os.Stderr, "influxdb error channel full, dropping error: %v\n", err)
+				case err, ok := <-errCh:
+					if !ok {
+						return
+					}
+					metrics.GetMetrics().IncLogError("influxdb_write", "influxdb")
+					fmt.Fprintf(os.Stderr, "influxdb write error: %v\n", err)
+					select {
+					case errorChan <- err:
+					default:
+						metrics.GetMetrics().IncLogError("error_channel_full", "influxdb")
+						fmt.Fprintf(os.Stderr, "influxdb error channel full, dropping error: %v\n", err)
+					}
+				case <-errCtx.Done():
+					return
 				}
 			}
 		}()
 	default:
-		return nil, fmt.Errorf("unsupported driver: %s", config.DriverName)
+		return nil, meberrors.ErrUnsupportedType(fmt.Sprintf("不支持的数据库驱动: %s", config.DriverName))
 	}
 
 	return newAsyncWriter(config, backend), nil
@@ -99,63 +131,71 @@ type LogEntry struct {
 }
 
 type sqlStore struct {
-	db        *gorm.DB
-	table     string
-	batchSize int
+	db         *gorm.DB
+	table      string
+	batchSize  int
+	driverName string
 }
 
+// InsertBatch 批量插入日志到SQL数据库
 func (s *sqlStore) InsertBatch(ctx context.Context, entries []LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	return s.db.WithContext(ctx).Table(s.table).CreateInBatches(entries, s.batchSize).Error
-	// return s.db.WithContext(ctx).Table(s.table).Create(&entries).Error
+
+	start := time.Now()
+	err := s.db.WithContext(ctx).Table(s.table).CreateInBatches(entries, s.batchSize).Error
+	latency := time.Since(start).Seconds()
+
+	// 记录metrics
+	metrics.GetMetrics().ObserveBatchLatency(latency)
+	metrics.GetMetrics().ObserveBatchSize(float64(len(entries)))
+	metrics.GetMetrics().IncBatchWrite()
+
+	if err != nil {
+		metrics.GetMetrics().IncBatchFailure()
+		metrics.GetMetrics().IncLogError("batch_insert", s.driverName)
+		return meberrors.Wrap(err, meberrors.ErrCodeDBWrite, fmt.Sprintf("批量插入%s数据库失败", s.driverName))
+	}
+
+	return nil
 }
 
+// Close 关闭数据库连接
 func (s *sqlStore) Close() error {
 	sqlDB, err := s.db.DB()
 	if err != nil {
-		return err
+		return meberrors.Wrap(err, meberrors.ErrCodeDBConnect, "获取数据库连接失败")
 	}
-	return sqlDB.Close()
+
+	if err := sqlDB.Close(); err != nil {
+		return meberrors.Wrap(err, meberrors.ErrCodeDBConnect, fmt.Sprintf("关闭%s数据库连接失败", s.driverName))
+	}
+
+	return nil
 }
 
 type influxDBBackend struct {
 	client    influxdb2.Client
-	writeAPI  api.WriteAPI // 使用非阻塞 API 进行高效批量写入
+	writeAPI  api.WriteAPI
 	batchSize int
 	errCh     <-chan error
 	errors    chan error
+	url       string
+	org       string
+	bucket    string
+	errCancel context.CancelFunc // 用于停止goroutine
+	errCtx    context.Context    // 用于goroutine控制
 }
 
-// NewinfluxDBBackend 创建新的 InfluxDB 适配器实例
-// func NewinfluxDBBackend(url, token, org, bucket string) *influxDBBackend {
-// 	client := influxdb2.NewClient(url, token)
-
-// 	// 使用异步写入 API（带缓冲），更适合批量操作
-// 	writeAPI := client.WriteAPI(org, bucket)
-
-// 	// 可选配置：设置批处理大小（例如 1000 条自动 flush）
-// 	// writeAPI.SetBatchSize(1000)
-// 	// writeAPI.SetFlushInterval(1000) // ms
-
-// 	backend := &influxDBBackend{
-// 		url:      url,
-// 		token:    token,
-// 		org:      org,
-// 		bucket:   bucket,
-// 		client:   client,
-// 		writeAPI: writeAPI,
-// 	}
-
-// 	return backend
-// }
-
-// InsertBatch 批量插入日志条目
+// InsertBatch 批量插入日志到InfluxDB
 func (b *influxDBBackend) InsertBatch(ctx context.Context, entries []LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
+
+	start := time.Now()
+	successCount := 0
 
 	// 将日志条目转换为 InfluxDB Points 并写入缓冲区
 	for _, entry := range entries {
@@ -171,6 +211,7 @@ func (b *influxDBBackend) InsertBatch(ctx context.Context, entries []LogEntry) e
 
 		var parsedFields map[string]interface{}
 		if err := json.Unmarshal(entry.Fields, &parsedFields); err != nil {
+			metrics.GetMetrics().IncLogError("parse_fields", "influxdb")
 			fmt.Fprintf(os.Stderr, "failed to parse fields for log entry: %v\n", err)
 			continue // 跳过解析失败的字段
 		}
@@ -188,19 +229,44 @@ func (b *influxDBBackend) InsertBatch(ctx context.Context, entries []LogEntry) e
 
 		// 添加到写入缓冲队列
 		b.writeAPI.WritePoint(pt)
+		successCount++
 	}
 
-	// 显式触发 flush，确保所有点发送
-	// 注意：Flush 是同步调用，会阻塞直到完成或出错
-	// b.writeAPI.Flush()
+	// 记录metrics
+	latency := time.Since(start).Seconds()
+	metrics.GetMetrics().ObserveBatchLatency(latency)
+	metrics.GetMetrics().ObserveBatchSize(float64(len(entries)))
+	metrics.GetMetrics().IncBatchWrite()
+
+	if successCount == 0 {
+		return meberrors.ErrDBWrite("所有日志条目解析失败")
+	}
+
 	return nil
 }
 
-// Close 关闭客户端并清理资源
+// Close 关闭InfluxDB客户端并清理资源
 func (b *influxDBBackend) Close() error {
 	if b.client != nil {
+		// 停止错误监听goroutine
+		if b.errCancel != nil {
+			b.errCancel()
+			b.errCancel = nil
+		}
+
 		// 先 flush 剩余数据（如果有）
+		// 注意: InfluxDB v2的Flush()方法不返回错误，错误通过Errors() channel异步返回
 		b.writeAPI.Flush()
+
+		// 检查是否有pending的错误
+		select {
+		case err := <-b.errors:
+			if err != nil {
+				return fmt.Errorf("InfluxDB flush检测到错误: %w", err)
+			}
+		default:
+			// 没有pending错误
+		}
 
 		b.client.Close()
 		b.client = nil
@@ -209,43 +275,58 @@ func (b *influxDBBackend) Close() error {
 	return nil
 }
 
+// HasError 检查是否有写入错误
 func (b *influxDBBackend) HasError() error {
 	select {
 	case err := <-b.errors:
-		return err
+		return meberrors.Wrap(err, meberrors.ErrCodeDBWrite, "InfluxDB写入错误")
 	default:
 		return nil
 	}
 }
 
 type asyncWriter struct {
-	config  config.DatabaseConfig
-	backend LogStore
-	entries chan *core.LogEvent
-	cancel  context.CancelFunc
+	config     config.DatabaseConfig
+	backend    LogStore
+	entries    chan *core.LogEvent
+	cancel     context.CancelFunc
+	outputType string
+	capacity   int
 }
 
+// newAsyncWriter 创建异步写入器
 func newAsyncWriter(config config.DatabaseConfig, backend LogStore) *asyncWriter {
 	ctx, cancel := context.WithCancel(context.Background())
+	capacity := config.BatchSize * 10
 	aw := &asyncWriter{
-		config:  config,
-		backend: backend,
-		entries: make(chan *core.LogEvent, config.BatchSize*10),
-		cancel:  cancel,
+		config:     config,
+		backend:    backend,
+		entries:    make(chan *core.LogEvent, capacity),
+		cancel:     cancel,
+		outputType: config.DriverName,
+		capacity:   capacity,
 	}
 	go aw.run(ctx)
 	return aw
 }
 
+// WriteEvent 写入日志事件
 func (w *asyncWriter) WriteEvent(event *core.LogEvent) error {
 	select {
 	case w.entries <- event:
+		// 更新缓冲区使用率
+		usage := float64(len(w.entries)) / float64(w.capacity)
+		metrics.GetMetrics().SetBufferUsage(usage)
+		return nil
 	default:
+		metrics.GetMetrics().IncBufferFull()
+		metrics.GetMetrics().IncLogDropped("buffer_full", w.outputType)
 		fmt.Fprintln(os.Stderr, "db log dropped: channel full (event)")
+		return fmt.Errorf("buffer full, log dropped")
 	}
-	return nil
 }
 
+// Write 实现io.Writer接口
 func (w *asyncWriter) Write(p []byte) (int, error) {
 	event := &core.LogEvent{
 		Timestamp: time.Now().UTC(),
@@ -253,19 +334,39 @@ func (w *asyncWriter) Write(p []byte) (int, error) {
 		Message:   "raw_byte_log_entry: " + string(sanitizeJSONFragment(p)),
 		Fields:    map[string]any{"raw_bytes": string(p)},
 	}
-	_ = w.WriteEvent(event)
+	if err := w.WriteEvent(event); err != nil {
+		return 0, fmt.Errorf("写入事件失败: %w", err)
+	}
 	return len(p), nil
 }
 
-func (w *asyncWriter) Sync() error { return nil }
+// Sync 同步缓冲区
+// 注意: 这是异步写入器，Sync只能确保当前缓冲区中的数据已发送给后端，
+// 但不能保证数据已持久化到数据库。如果需要强一致性，请使用同步写入器。
+func (w *asyncWriter) Sync() error {
+	// 检查后端是否有pending错误
+	if ib, ok := w.backend.(*influxDBBackend); ok {
+		if err := ib.HasError(); err != nil {
+			return err
+		}
+	}
+	// 对于异步写入器，我们无法直接等待数据持久化
+	// 只能确保数据已发送到缓冲队列
+	return nil
+}
 
+// Close 关闭异步写入器
 func (w *asyncWriter) Close() error {
 	w.cancel()
 	close(w.entries)
 	return w.backend.Close()
 }
 
+// run 运行异步写入循环
 func (w *asyncWriter) run(ctx context.Context) {
+	defer metrics.GetMetrics().DecGoroutine()
+	metrics.GetMetrics().IncGoroutine()
+
 	ticker := time.NewTicker(w.config.BatchInterval)
 	defer ticker.Stop()
 
@@ -281,6 +382,7 @@ func (w *asyncWriter) run(ctx context.Context) {
 			fieldsBytes, err := json.Marshal(event.Fields)
 			if err != nil {
 				zap.L().Warn("marshal fields failed, skip", zap.Error(err))
+				metrics.GetMetrics().IncLogError("marshal_fields", w.outputType)
 				fieldsBytes = []byte("{}")
 			}
 
@@ -294,22 +396,26 @@ func (w *asyncWriter) run(ctx context.Context) {
 			}
 			batch = append(batch, entry)
 
+			// 更新缓冲区使用率
+			usage := float64(len(w.entries)) / float64(w.capacity)
+			metrics.GetMetrics().SetBufferUsage(usage)
+
 			// 达到批次大小立即发送
 			if len(batch) >= w.config.BatchSize {
-				_ = w.backend.InsertBatch(ctx, batch)
+				if err := w.backend.InsertBatch(ctx, batch); err != nil {
+					fmt.Fprintf(os.Stderr, "batch insert failed: %v\n", err)
+				}
 				batch = batch[:0]
 				w.checkBackendErrors()
 			}
 		case <-ticker.C:
 			// 定时 flush
 			if len(batch) > 0 {
-				_ = w.backend.InsertBatch(ctx, batch)
-				batch = batch[:0]
-				if ib, ok := w.backend.(*influxDBBackend); ok {
-					if err := ib.HasError(); err != nil {
-						fmt.Fprintf(os.Stderr, "detected backend error: %v\n", err)
-					}
+				if err := w.backend.InsertBatch(ctx, batch); err != nil {
+					fmt.Fprintf(os.Stderr, "timed flush failed: %v\n", err)
 				}
+				batch = batch[:0]
+				w.checkBackendErrors()
 			}
 		case <-ctx.Done():
 			goto flush
@@ -320,31 +426,36 @@ flush:
 	// 最后 flush 剩余数据
 	if len(batch) > 0 {
 		// 使用带超时的 context
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		flushCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 		defer cancel()
 
 		var err error
 		for i := 0; i < 3; i++ {
-			err = w.backend.InsertBatch(ctx, batch)
+			err = w.backend.InsertBatch(flushCtx, batch)
 			if err == nil {
 				break
 			}
+			metrics.GetMetrics().IncBatchFailure()
 			time.Sleep(w.config.RetryDelay)
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to flush batch to database: %v", err)
+			metrics.GetMetrics().IncLogError("flush_failed", w.outputType)
+			fmt.Fprintf(os.Stderr, "failed to flush batch to database: %v\n", err)
 		}
 	}
 }
 
+// checkBackendErrors 检查后端错误
 func (w *asyncWriter) checkBackendErrors() {
 	if ib, ok := w.backend.(*influxDBBackend); ok {
 		if err := ib.HasError(); err != nil {
+			metrics.GetMetrics().IncLogError("backend_error", w.outputType)
 			fmt.Fprintf(os.Stderr, "detected backend error: %v\n", err)
 		}
 	}
 }
 
+// sanitizeJSONFragment 清理JSON片段，移除不可打印字符
 func sanitizeJSONFragment(data []byte) []byte {
 	var buf bytes.Buffer
 	for _, b := range data {
@@ -356,14 +467,3 @@ func sanitizeJSONFragment(data []byte) []byte {
 	}
 	return buf.Bytes()
 }
-
-// func toString(v interface{}) string {
-// 	if v == nil {
-// 		return ""
-// 	}
-// 	s, ok := v.(string)
-// 	if ok {
-// 		return s
-// 	}
-// 	return fmt.Sprintf("%v", v)
-// }

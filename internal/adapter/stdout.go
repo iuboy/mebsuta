@@ -20,7 +20,9 @@ func newStdoutAdapter() (core.WriteSyncer, error) {
 		zapcore.WriteSyncer
 		io.Closer
 	}{
-		WriteSyncer: zapcore.AddSync(adapter),
+		// 使用Lock代替AddSync，确保日志立即刷新
+		// Lock会在每次Write后自动Sync，保证日志不丢失
+		WriteSyncer: zapcore.Lock(adapter),
 		Closer:      adapter,
 	}, nil
 }
@@ -33,5 +35,7 @@ func (s *stdoutAdapter) Sync() error {
 }
 
 func (s *stdoutAdapter) Close() error {
-	return os.Stdout.Close()
+	// 标准输出不应该被关闭
+	// 返回 nil 表示成功关闭（无操作）
+	return nil
 }

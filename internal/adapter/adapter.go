@@ -1,25 +1,27 @@
 package adapter
 
 import (
-	"errors"
 	"fmt"
 	"io"
 
 	"github.com/iuboy/mebsuta/config"
 	"github.com/iuboy/mebsuta/core"
+	meberrors "github.com/iuboy/mebsuta/errors"
 	"go.uber.org/zap/zapcore"
 )
 
-// WriteSyncer 扩展接口
+// WriteSyncer 扩展接口，结合WriteSyncer和Closer
 type WriteSyncer interface {
 	zapcore.WriteSyncer
 	io.Closer
 }
 
 // CreateSyncer 根据输出配置创建同步器
+// out: 输出配置
+// 返回: WriteSyncer实例或错误
 func CreateSyncer(out config.OutputConfig) (core.WriteSyncer, error) {
 	if !out.Enabled {
-		return nil, fmt.Errorf("输出类型已被禁用: %s", out.Type)
+		return nil, meberrors.ErrOutputDisabled(fmt.Sprintf("输出类型 %s 已被禁用", out.Type))
 	}
 
 	switch out.Type {
@@ -27,20 +29,20 @@ func CreateSyncer(out config.OutputConfig) (core.WriteSyncer, error) {
 		return newStdoutAdapter()
 	case config.File:
 		if out.File == nil {
-			return nil, errors.New("文件配置缺失")
+			return nil, meberrors.ErrMissingConfig("文件配置缺失")
 		}
 		return newFileAdapter(*out.File)
 	case config.DB:
 		if out.Database == nil {
-			return nil, errors.New("数据库配置缺失")
+			return nil, meberrors.ErrMissingConfig("数据库配置缺失")
 		}
 		return newDBAdapter(*out.Database)
 	case config.Syslog:
 		if out.Syslog == nil {
-			return nil, errors.New("Syslog配置缺失")
+			return nil, meberrors.ErrMissingConfig("Syslog配置缺失")
 		}
 		return newSyslogAdapter(*out.Syslog)
 	default:
-		return nil, fmt.Errorf("不支持的输出类型: %s", out.Type)
+		return nil, meberrors.ErrUnsupportedType(fmt.Sprintf("不支持的输出类型: %s", out.Type))
 	}
 }

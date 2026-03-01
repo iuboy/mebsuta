@@ -26,7 +26,7 @@ func newFileAdapter(config config.FileConfig) (core.WriteSyncer, error) {
 		return nil, fmt.Errorf("文件路径不能为空")
 	}
 
-	if err := os.MkdirAll(filepath.Dir(config.Path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(config.Path), 0750); err != nil {
 		return nil, err
 	}
 
@@ -64,9 +64,11 @@ func (f *fileAdapter) Sync() error {
 	return nil
 }
 func (f *fileAdapter) Close() error {
-	if f.closed.Swap(true) {
-		return nil
+	// 使用 CompareAndSwap 确保原子性和正确的关闭顺序
+	if !f.closed.CompareAndSwap(false, true) {
+		return nil // 已关闭
 	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

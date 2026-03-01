@@ -113,17 +113,18 @@ const (
 
 // EncoderConfig 定义日志编码器配置
 type EncoderConfig struct {
-	TimeFormat    string            `json:"timeFormat"`                        // 时间格式
-	TimeZone      string            `json:"timeZone"`                          // 时区
-	MessageKey    string            `json:"messageKey" validate:"required"`    // 消息键
-	LevelKey      string            `json:"levelKey" validate:"required"`      // 级别键
-	TimeKey       string            `json:"timeKey" validate:"required"`       // 时间键
-	CallerKey     string            `json:"callerKey" validate:"required"`     // 调用者键
-	StacktraceKey string            `json:"stacktraceKey" validate:"required"` // 堆栈跟踪键
-	EnableCaller  bool              `json:"enableCaller"`                      // 启用调用者信息
-	ShortCaller   bool              `json:"shortCaller"`                       // 简短调用路径
-	StackLevel    LogLevel          `json:"stackLevel"`                        // 堆栈级别
-	CustomFields  map[string]string `json:"customFields"`                      // 自定义字段
+	TimeFormat       string            `json:"timeFormat"`                        // 时间格式
+	TimeZone         string            `json:"timeZone"`                          // 时区
+	MessageKey       string            `json:"messageKey" validate:"required"`    // 消息键
+	LevelKey         string            `json:"levelKey" validate:"required"`      // 级别键
+	TimeKey          string            `json:"timeKey" validate:"required"`       // 时间键
+	CallerKey        string            `json:"callerKey" validate:"required"`     // 调用者键
+	StacktraceKey    string            `json:"stacktraceKey" validate:"required"` // 堆栈跟踪键
+	EnableCaller     bool              `json:"enableCaller"`                      // 启用调用者信息
+	EnableStacktrace bool              `json:"enableStacktrace"`                  // 启用堆栈跟踪
+	ShortCaller      bool              `json:"shortCaller"`                       // 简短调用路径
+	StackLevel       LogLevel          `json:"stackLevel"`                        // 堆栈级别
+	CustomFields     map[string]string `json:"customFields"`                      // 自定义字段
 }
 
 // SamplingConfig 定义日志采样配置
