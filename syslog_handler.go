@@ -1,0 +1,481 @@
+package mebsuta
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"math/rand"
+	"net"
+	"os"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/gofrs/flock"
+	"github.com/iuboy/mebsuta/config"
+)
+
+// =============================================================================
+// SyslogHandler — syslog 输出 slog.Handler
+// =============================================================================
+
+const (
+	maxSyslogRetries = 5
+	syslogWriteTimeout      = 3 * time.Second
+	syslogDialerTimeout     = 5 * time.Second
+	maxSyslogHostnameLength = 255
+	defaultSyslogBufferSize = 1000
+	maxSyslogBufferSize     = 10000
+	maxSyslogMsgSize        = 4 * 1024
+	maxReconnectDelay       = 5 * time.Minute
+)
+
+var spaceRe = regexp.MustCompile(`\s+`)
+
+// SyslogHandler 将日志记录输出到 syslog 服务器。
+// 实现 slog.Handler 和 io.Closer 接口。
+// 内置缓冲写入、TLS、自动重连。
+type SyslogHandler struct {
+	levelHandler
+	cfg      config.SyslogConfig
+	conn     net.Conn
+	connMu   sync.RWMutex
+	dialer   net.Dialer
+	tlsCfg   *tls.Config
+	hostname string
+	buffer   chan []byte
+	wg       sync.WaitGroup
+	ctx      context.Context
+	cancel   context.CancelFunc
+	closing  atomic.Bool
+	closed   atomic.Bool
+	fileLock *flock.Flock
+	location *time.Location
+}
+
+// NewSyslogHandler 创建输出到 syslog 的 slog.Handler。
+func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
+	if cfg.Address == "" {
+		return nil, fmt.Errorf("mebsuta: syslog address is required")
+	}
+	if cfg.Network == "" {
+		cfg.Network = config.DefaultSyslogNetwork
+	}
+	if cfg.Tag == "" {
+		cfg.Tag = config.DefaultSyslogTag
+	}
+	if cfg.RetryDelay <= 0 {
+		cfg.RetryDelay = config.DefaultRetryDelay
+	}
+	if cfg.BufferSize <= 0 {
+		cfg.BufferSize = defaultSyslogBufferSize
+	} else if cfg.BufferSize > maxSyslogBufferSize {
+		cfg.BufferSize = maxSyslogBufferSize
+	}
+	if cfg.Facility < 0 || cfg.Facility > 23 {
+		return nil, fmt.Errorf("mebsuta: syslog facility must be 0-23, got %d", cfg.Facility)
+	}
+
+	hostname, err := generateHostname(cfg.StaticHost)
+	if err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
+	}
+
+	loc, _ := time.LoadLocation(cfg.TimeZone)
+	if loc == nil {
+		loc = time.UTC
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	h := &SyslogHandler{
+		levelHandler: levelHandler{level: level},
+		cfg:          cfg,
+		dialer:       net.Dialer{Timeout: syslogDialerTimeout},
+		hostname:     hostname,
+		buffer:       make(chan []byte, cfg.BufferSize),
+		ctx:          ctx,
+		cancel:       cancel,
+		location:     loc,
+	}
+
+	if cfg.Secure {
+		h.tlsCfg = &tls.Config{
+			InsecureSkipVerify: cfg.TLSSkipVerify,
+			MinVersion:         tls.VersionTLS12,
+		}
+	}
+
+	lockKey := fmt.Sprintf("%s-%s", cfg.Address, cfg.Tag)
+	h.fileLock = flock.New(fmt.Sprintf("%x.lock", sha256.Sum256([]byte(lockKey))))
+
+	if err := h.connect(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("mebsuta: syslog initial connection failed: %w", err)
+	}
+
+	h.wg.Add(1)
+	go h.processQueue()
+
+	return h, nil
+}
+
+// Handle 处理一条日志记录，格式化为 syslog 消息并发送到缓冲通道。
+func (h *SyslogHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.closing.Load() || h.closed.Load() {
+		return nil
+	}
+
+	entry := RecordToLogEntry(r)
+	msg := h.formatMessage(entry)
+	data := []byte(msg)
+	return h.safeSend(data)
+}
+
+// Close 关闭 syslog 连接并释放资源。
+func (h *SyslogHandler) Close() error {
+	if !h.closing.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	h.cancel()
+	close(h.buffer)
+	h.wg.Wait()
+
+	h.connMu.Lock()
+	if h.conn != nil {
+		_ = h.conn.Close()
+		h.conn = nil
+	}
+	h.connMu.Unlock()
+
+	_ = h.fileLock.Unlock()
+	h.closed.Store(true)
+	return nil
+}
+
+// =============================================================================
+// 连接管理
+// =============================================================================
+
+func (h *SyslogHandler) connect() error {
+	h.connMu.Lock()
+	defer h.connMu.Unlock()
+
+	if h.conn != nil {
+		_ = h.conn.Close()
+		h.conn = nil
+	}
+
+	var conn net.Conn
+	var err error
+	if h.tlsCfg != nil {
+		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network, h.cfg.Address, h.tlsCfg)
+	} else {
+		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
+	}
+	if err != nil {
+		return err
+	}
+
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(3 * time.Minute)
+	}
+
+	h.conn = conn
+	return nil
+}
+
+func (h *SyslogHandler) reconnect() {
+	h.connMu.Lock()
+	defer h.connMu.Unlock()
+
+	if h.conn != nil {
+		_ = h.conn.Close()
+		h.conn = nil
+	}
+
+	h.closed.Store(false)
+
+	if locked, err := h.fileLock.TryLockContext(h.ctx, 100*time.Millisecond); locked && err == nil {
+		defer func() { _ = h.fileLock.Unlock() }()
+	}
+
+	var conn net.Conn
+	var err error
+	if h.tlsCfg != nil {
+		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network, h.cfg.Address, h.tlsCfg)
+	} else {
+		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mebsuta/syslog: reconnect failed: %v\n", err)
+		return
+	}
+	h.conn = conn
+}
+
+func (h *SyslogHandler) isConnected() bool {
+	h.connMu.RLock()
+	defer h.connMu.RUnlock()
+	return h.conn != nil
+}
+
+func (h *SyslogHandler) write(p []byte) error {
+	h.connMu.RLock()
+	defer h.connMu.RUnlock()
+	if h.conn == nil {
+		return net.ErrClosed
+	}
+	_ = h.conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout))
+	_, err := h.conn.Write(p)
+	return err
+}
+
+func (h *SyslogHandler) writeWithRetry(msg []byte) {
+	if !h.isConnected() && !h.closing.Load() {
+		h.reconnect()
+	}
+	for i := range maxSyslogRetries {
+		if h.closing.Load() {
+			return
+		}
+		if err := h.write(msg); err == nil {
+			return
+		}
+		if i == 0 {
+			h.disconnect()
+			h.reconnect()
+		}
+		time.Sleep(h.cfg.RetryDelay)
+	}
+	fmt.Fprintf(os.Stderr, "mebsuta/syslog: write failed after %d attempts\n", maxSyslogRetries)
+}
+
+func (h *SyslogHandler) disconnect() {
+	h.connMu.Lock()
+	defer h.connMu.Unlock()
+	if h.conn != nil {
+		_ = h.conn.Close()
+		h.conn = nil
+	}
+}
+
+func (h *SyslogHandler) processQueue() {
+	defer h.wg.Done()
+
+	reconnector := time.NewTicker(h.cfg.RetryDelay)
+	defer reconnector.Stop()
+
+	retryCount := int32(0)
+
+	for {
+		select {
+		case msg, ok := <-h.buffer:
+			if !ok {
+				return
+			}
+			h.writeWithRetry(msg)
+
+		case <-reconnector.C:
+			if !h.isConnected() {
+				baseDelay := time.Second * time.Duration(math.Pow(2, float64(atomic.LoadInt32(&retryCount))))
+				if baseDelay > maxReconnectDelay {
+					baseDelay = maxReconnectDelay
+				}
+				jitter := time.Duration(rand.Int63n(int64(baseDelay) / 2))
+				delay := baseDelay/2 + jitter
+				select {
+				case <-time.After(delay):
+				case <-h.ctx.Done():
+					return
+				case msg, ok := <-h.buffer:
+					if !ok {
+						return
+					}
+					h.writeWithRetry(msg)
+					continue
+				}
+				h.reconnect()
+				retryCount++
+			} else {
+				retryCount = 0
+			}
+
+		case <-h.ctx.Done():
+			return
+		}
+	}
+}
+
+func (h *SyslogHandler) safeSend(data []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = net.ErrClosed
+		}
+	}()
+	select {
+	case h.buffer <- data:
+		return nil
+	default:
+		return fmt.Errorf("mebsuta/syslog: buffer full")
+	}
+}
+
+// =============================================================================
+// 消息格式化
+// =============================================================================
+
+func (h *SyslogHandler) formatMessage(entry LogEntry) string {
+	timestamp := entry.Time.In(h.location)
+	severity := h.levelToSeverity(entry.Level)
+	priority := h.cfg.Facility*8 + severity
+	procid := os.Getpid()
+	host := h.getCleanHost()
+
+	if h.cfg.JSONInMessage {
+		return h.formatJSONMessage(entry, timestamp, priority, host, procid)
+	}
+	return h.formatStructuredMessage(entry, timestamp, priority, host, procid)
+}
+
+func (h *SyslogHandler) formatJSONMessage(entry LogEntry, ts time.Time, priority int, host string, procid int) string {
+	logData := map[string]any{
+		"time":  ts.Format(time.RFC3339Nano),
+		"level": entry.Level.String(),
+		"msg":   entry.Message,
+	}
+	for _, attr := range entry.Attrs {
+		logData[attr.Key] = attr.Value
+	}
+
+	jsonBytes, err := json.Marshal(logData)
+	if err != nil {
+		jsonBytes = []byte(`{"msg":"log marshaling failed","level":"error"}`)
+	}
+	cleaned := string(jsonBytes)
+	if len(cleaned) > maxSyslogMsgSize {
+		cleaned = cleaned[:maxSyslogMsgSize-4] + "..."
+	}
+
+	if h.cfg.RFC5424 {
+		return fmt.Sprintf(`<%d>1 %s %s %s %d - - %s`,
+			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, cleaned) + "\n"
+	}
+	return fmt.Sprintf(`<%d>%s %s %s[%d]: %s`,
+		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag, procid, cleaned) + "\n"
+}
+
+func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, priority int, host string, procid int) string {
+	msgContent := safeMessageForLog(entry.Message)
+	if len(msgContent) > maxSyslogMsgSize {
+		msgContent = msgContent[:maxSyslogMsgSize-3] + "..."
+	}
+
+	if h.cfg.RFC5424 {
+		// 构建 SD-ELEMENT 从 Attrs
+		var sd strings.Builder
+		sd.WriteByte('[')
+		for i, attr := range entry.Attrs {
+			if i > 0 {
+				sd.WriteByte(' ')
+			}
+			fmt.Fprintf(&sd, "%s=\"%v\"", attr.Key, attr.Value)
+		}
+		sd.WriteByte(']')
+		sdStr := sd.String()
+		if sdStr == "[]" {
+			sdStr = "- -"
+		}
+
+		return fmt.Sprintf(`<%d>1 %s %s %s %d %s %s`,
+			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, sdStr, msgContent) + "\n"
+	}
+
+	return fmt.Sprintf(`<%d>%s %s %s[%d]: %s`,
+		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag, procid, msgContent) + "\n"
+}
+
+// =============================================================================
+// 辅助函数
+// =============================================================================
+
+func (h *SyslogHandler) levelToSeverity(level slog.Level) int {
+	switch {
+	case level >= slog.LevelError:
+		return 3
+	case level >= slog.LevelWarn:
+		return 4
+	case level >= slog.LevelInfo:
+		return 6
+	default:
+		return 7
+	}
+}
+
+func (h *SyslogHandler) getCleanHost() string {
+	host := cleanHostname(h.hostname)
+	if host == "" {
+		return "localhost"
+	}
+	return host
+}
+
+func generateHostname(static string) (string, error) {
+	if static != "" {
+		static = strings.TrimSpace(static)
+		static = cleanHostname(static)
+		if static == "" {
+			return "", fmt.Errorf("invalid static hostname")
+		}
+		if len(static) > maxSyslogHostnameLength {
+			static = static[:maxSyslogHostnameLength]
+		}
+		return static, nil
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		return "unknown", nil
+	}
+	hostname = cleanHostname(hostname)
+	if hostname == "" {
+		return "localhost", nil
+	}
+	if len(hostname) > maxSyslogHostnameLength {
+		hostname = hostname[:maxSyslogHostnameLength]
+	}
+	return hostname, nil
+}
+
+func cleanHostname(hostname string) string {
+	var clean strings.Builder
+	for _, r := range hostname {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.':
+			clean.WriteRune(r)
+		default:
+			clean.WriteRune('-')
+		}
+	}
+	if ip := net.ParseIP(clean.String()); ip != nil {
+		return ip.String()
+	}
+	return clean.String()
+}
+
+func safeMessageForLog(msg string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r >= 0 && r <= 31 {
+			return ' '
+		}
+		return r
+	}, msg)
+	return strings.TrimSpace(spaceRe.ReplaceAllString(cleaned, " "))
+}

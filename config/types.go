@@ -3,16 +3,18 @@ package config
 import "time"
 
 const (
-	DefaultRetryDelay    = 500 * time.Millisecond
-	DefaultBatchSize     = 100
-	DefaultBatchInterval = 5 * time.Second
-	DefaultMaxOpenConns  = 10
-	DefaultMaxIdleConns  = 5
-	DefaultFileMaxSizeMB = 100
-	DefaultMaxBackups    = 5
-	DefaultMaxAgeDays    = 30
-	DefaultTimeFormat    = time.RFC3339Nano
-	TimeSeriesDriver     = "influxdb"
+	DefaultRetryDelay     = 500 * time.Millisecond
+	DefaultBatchSize      = 100
+	DefaultBatchInterval  = 5 * time.Second
+	DefaultMaxOpenConns   = 10
+	DefaultMaxIdleConns   = 5
+	DefaultFileMaxSizeMB  = 100
+	DefaultMaxBackups     = 5
+	DefaultMaxAgeDays     = 30
+	DefaultTimeFormat     = time.RFC3339Nano
+	DefaultSyslogNetwork  = "tcp"
+	DefaultSyslogTag      = "mebsuta"
+	TimeSeriesDriver      = "influxdb"
 )
 
 // LogLevel 定义支持的日志级别
@@ -28,39 +30,17 @@ const (
 	PanicLevel  LogLevel = "panic"
 )
 
-// OutputType 定义支持的输出类型
-type OutputType string
-
-const (
-	Stdout OutputType = "console"
-	File   OutputType = "file"
-	DB     OutputType = "database"
-	Syslog OutputType = "syslog"
-)
-
-// OutputConfig 定义日志输出配置
-type OutputConfig struct {
-	Type     OutputType      `json:"type" validate:"required"`               // 输出类型
-	Level    LogLevel        `json:"level" validate:"required"`              // 日志级别
-	Encoding EncodingType    `json:"encoding" validate:"oneof=json console"` // 编码格式
-	Enabled  bool            `json:"enabled"`                                // 是否启用
-	File     *FileConfig     `json:"file" validate:"omitempty"`              // 文件配置
-	Database *DatabaseConfig `json:"database" validate:"omitempty"`          // 数据库配置
-	Syslog   *SyslogConfig   `json:"syslog" validate:"omitempty"`            // Syslog配置
-
-	// Metadata 用于测试等场景的元信息（不参与验证）
-	Metadata map[string]string `json:"metadata,omitempty"` // 元信息
-}
-
 // FileConfig 定义文件日志配置
 type FileConfig struct {
-	Path            string `json:"path" validate:"required"` // 文件路径
-	MaxSizeMB       int    `json:"maxSizeMB"`                // 最大文件大小(MB)
-	MaxBackups      int    `json:"maxBackups"`               // 最大备份数
-	MaxAgeDays      int    `json:"maxAgeDays"`               // 最大保存天数
-	Compress        bool   `json:"compress"`                 // 是否压缩
-	RotateOnStartup bool   `json:"rotateOnStartup"`          // 启动时轮转
-	LocalTime       bool   `json:"localTime"`                // 是否使用本地时间
+	Path            string        `json:"path" validate:"required"` // 文件路径
+	MaxSizeMB       int           `json:"maxSizeMB"`                // 最大文件大小(MB)
+	MaxBackups      int           `json:"maxBackups"`               // 最大备份数
+	MaxAgeDays      int           `json:"maxAgeDays"`               // 最大保存天数
+	Compress        bool          `json:"compress"`                 // 是否压缩
+	RotateOnStartup bool          `json:"rotateOnStartup"`          // 启动时轮转
+	LocalTime       bool          `json:"localTime"`                // 是否使用本地时间
+	Format          string        `json:"format"`                   // 输出编码格式："json" 或 "console"
+	RotateInterval  time.Duration `json:"rotateInterval"`           // 固定间隔轮转（如每小时/每天）
 }
 
 // DatabaseConfig 定义数据库日志配置
@@ -103,28 +83,16 @@ type SyslogConfig struct {
 	JSONInMessage bool          `json:"jsonInMessage"`                    // JSON数据嵌入消息中
 }
 
-// EncodingType 定义编码类型
-type EncodingType string
-
-const (
-	JSON    EncodingType = "json"
-	Console EncodingType = "console"
-)
-
 // EncoderConfig 定义日志编码器配置
 type EncoderConfig struct {
-	TimeFormat       string            `json:"timeFormat"`                        // 时间格式
-	TimeZone         string            `json:"timeZone"`                          // 时区
-	MessageKey       string            `json:"messageKey" validate:"required"`    // 消息键
-	LevelKey         string            `json:"levelKey" validate:"required"`      // 级别键
-	TimeKey          string            `json:"timeKey" validate:"required"`       // 时间键
-	CallerKey        string            `json:"callerKey" validate:"required"`     // 调用者键
-	StacktraceKey    string            `json:"stacktraceKey" validate:"required"` // 堆栈跟踪键
-	EnableCaller     bool              `json:"enableCaller"`                      // 启用调用者信息
-	EnableStacktrace bool              `json:"enableStacktrace"`                  // 启用堆栈跟踪
-	ShortCaller      bool              `json:"shortCaller"`                       // 简短调用路径
-	StackLevel       LogLevel          `json:"stackLevel"`                        // 堆栈级别
-	CustomFields     map[string]string `json:"customFields"`                      // 自定义字段
+	TimeFormat    string `json:"timeFormat"`                     // 时间格式
+	TimeZone      string `json:"timeZone"`                       // 时区
+	MessageKey    string `json:"messageKey" validate:"required"` // 消息键
+	LevelKey      string `json:"levelKey" validate:"required"`   // 级别键
+	TimeKey       string `json:"timeKey" validate:"required"`    // 时间键
+	CallerKey     string `json:"callerKey" validate:"required"`  // 调用者键
+	StacktraceKey string `json:"stacktraceKey" validate:"required"` // 堆栈跟踪键
+	EnableCaller  bool   `json:"enableCaller"`                   // 启用调用者信息
 }
 
 // SamplingConfig 定义日志采样配置
@@ -133,13 +101,4 @@ type SamplingConfig struct {
 	Initial    int           `json:"initial" validate:"min=1"`
 	Thereafter int           `json:"thereafter" validate:"min=1"`
 	Window     time.Duration `json:"window" validate:"min=1000000"`
-}
-
-// LoggerConfig 定义核心日志配置
-type LoggerConfig struct {
-	ServiceName string         `json:"serviceName" validate:"required"` // 服务名称
-	DebugMode   bool           `json:"debugMode"`                       // 调试模式
-	Outputs     []OutputConfig `json:"outputs" validate:"dive"`         // 输出配置
-	Encoder     EncoderConfig  `json:"encoder" validate:"required"`     // 编码器配置
-	Sampling    SamplingConfig `json:"sampling"`                        // 采样配置
 }
