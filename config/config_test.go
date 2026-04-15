@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zapcore"
 )
 
 // TestLogLevel_Valid 测试日志级别验证
@@ -34,50 +33,6 @@ func TestLogLevel_Valid(t *testing.T) {
 	}
 }
 
-// TestLogLevel_ZapLevel 测试日志级别转换
-func TestLogLevel_ZapLevel(t *testing.T) {
-	tests := []struct {
-		name  string
-		level LogLevel
-		want  zapcore.Level
-	}{
-		{"DebugLevel", DebugLevel, zapcore.DebugLevel},
-		{"InfoLevel", InfoLevel, zapcore.InfoLevel},
-		{"WarnLevel", WarnLevel, zapcore.WarnLevel},
-		{"ErrorLevel", ErrorLevel, zapcore.ErrorLevel},
-		{"FatalLevel", FatalLevel, zapcore.FatalLevel},
-		{"PanicLevel", PanicLevel, zapcore.PanicLevel},
-		{"InvalidLevel", LogLevel("invalid"), zapcore.InfoLevel}, // 默认返回 Info
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.level.ZapLevel())
-		})
-	}
-}
-
-// TestOutputType_Valid 测试输出类型验证
-func TestOutputType_Valid(t *testing.T) {
-	tests := []struct {
-		name  string
-		otype OutputType
-		want  bool
-	}{
-		{"Stdout", Stdout, true},
-		{"File", File, true},
-		{"DB", DB, true},
-		{"Syslog", Syslog, true},
-		{"InvalidType", OutputType("invalid"), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.otype.Valid())
-		})
-	}
-}
-
 // TestEncoderConfig_ApplyDefaults 测试编码器配置默认值
 func TestEncoderConfig_ApplyDefaults(t *testing.T) {
 	ec := &EncoderConfig{}
@@ -90,42 +45,6 @@ func TestEncoderConfig_ApplyDefaults(t *testing.T) {
 	assert.Equal(t, "time", applied.TimeKey)
 	assert.Equal(t, "caller", applied.CallerKey)
 	assert.Equal(t, "stacktrace", applied.StacktraceKey)
-}
-
-// TestOutputConfig_Validate 测试输出配置验证
-func TestOutputConfig_Validate(t *testing.T) {
-	t.Run("有效输出配置", func(t *testing.T) {
-		oc := OutputConfig{
-			Type:     Stdout,
-			Level:    InfoLevel,
-			Encoding: JSON,
-			Enabled:  true,
-		}
-		err := oc.Validate()
-		assert.NoError(t, err)
-	})
-
-	t.Run("无效输出类型", func(t *testing.T) {
-		oc := OutputConfig{
-			Type:     OutputType("invalid"),
-			Level:    InfoLevel,
-			Encoding: JSON,
-			Enabled:  true,
-		}
-		err := oc.Validate()
-		assert.Error(t, err)
-	})
-
-	t.Run("无效日志级别", func(t *testing.T) {
-		oc := OutputConfig{
-			Type:     Stdout,
-			Level:    LogLevel("invalid"),
-			Encoding: JSON,
-			Enabled:  true,
-		}
-		err := oc.Validate()
-		assert.Error(t, err)
-	})
 }
 
 // TestFileConfig_Validate 测试文件配置验证
@@ -233,7 +152,7 @@ func TestDatabaseConfig_Validate(t *testing.T) {
 		}
 		err := dc.Validate()
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "表名格式无效")
+		assert.Contains(t, err.Error(), "invalid table name")
 	})
 
 	t.Run("无效表名-以数字开头", func(t *testing.T) {
@@ -244,7 +163,7 @@ func TestDatabaseConfig_Validate(t *testing.T) {
 		}
 		err := dc.Validate()
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "表名格式无效")
+		assert.Contains(t, err.Error(), "invalid table name")
 	})
 
 	t.Run("有效表名-下划线开头", func(t *testing.T) {
@@ -426,68 +345,6 @@ func TestSamplingConfig_Validate(t *testing.T) {
 	})
 }
 
-// TestLoggerConfig_Validate 测试日志配置验证
-func TestLoggerConfig_Validate(t *testing.T) {
-	t.Run("完整有效配置", func(t *testing.T) {
-		lc := LoggerConfig{
-			ServiceName: "test-service",
-			Outputs: []OutputConfig{
-				{
-					Type:     Stdout,
-					Level:    InfoLevel,
-					Encoding: JSON,
-					Enabled:  true,
-				},
-			},
-			Encoder: EncoderConfig{
-				MessageKey: "msg",
-				LevelKey:   "level",
-				TimeKey:    "time",
-			},
-		}
-		err := lc.Validate()
-		assert.NoError(t, err)
-	})
-
-	t.Run("无效输出配置", func(t *testing.T) {
-		lc := LoggerConfig{
-			ServiceName: "test-service",
-			Outputs: []OutputConfig{
-				{
-					Type:     OutputType("invalid"),
-					Level:    InfoLevel,
-					Encoding: JSON,
-					Enabled:  true,
-				},
-			},
-		}
-		err := lc.Validate()
-		assert.Error(t, err)
-	})
-
-	t.Run("无效采样配置", func(t *testing.T) {
-		lc := LoggerConfig{
-			ServiceName: "test-service",
-			Outputs: []OutputConfig{
-				{
-					Type:     Stdout,
-					Level:    InfoLevel,
-					Encoding: JSON,
-					Enabled:  true,
-				},
-			},
-			Sampling: SamplingConfig{
-				Enabled:    true,
-				Initial:    -1,
-				Thereafter: 5,
-				Window:     time.Second,
-			},
-		}
-		err := lc.Validate()
-		assert.Error(t, err)
-	})
-}
-
 // TestEncoderConfig_EdgeCases 测试编码器配置边界情况
 func TestEncoderConfig_EdgeCases(t *testing.T) {
 	t.Run("空键名", func(t *testing.T) {
@@ -497,7 +354,6 @@ func TestEncoderConfig_EdgeCases(t *testing.T) {
 			TimeKey:    "",
 		}
 		applied := ec.ApplyDefaults()
-		// 默认值应该被应用
 		assert.Equal(t, "msg", applied.MessageKey)
 		assert.Equal(t, "level", applied.LevelKey)
 		assert.Equal(t, "time", applied.TimeKey)
@@ -516,36 +372,7 @@ func TestEncoderConfig_EdgeCases(t *testing.T) {
 			TimeZone: "Invalid/Timezone",
 		}
 		applied := ec.ApplyDefaults()
-		// 应用默认时区
 		assert.Equal(t, "UTC", applied.TimeZone)
-	})
-}
-
-// TestOutputConfig_EdgeCases 测试输出配置边界情况
-func TestOutputConfig_EdgeCases(t *testing.T) {
-	t.Run("禁用的输出", func(t *testing.T) {
-		oc := OutputConfig{
-			Type:    Stdout,
-			Level:   InfoLevel,
-			Enabled: false,
-		}
-		err := oc.Validate()
-		// 禁用的输出应该跳过验证
-		assert.NoError(t, err)
-	})
-
-	t.Run("所有日志级别", func(t *testing.T) {
-		levels := []LogLevel{DebugLevel, InfoLevel, WarnLevel, ErrorLevel, FatalLevel, PanicLevel}
-		for _, level := range levels {
-			oc := OutputConfig{
-				Type:     Stdout,
-				Level:    level,
-				Encoding: JSON,
-				Enabled:  true,
-			}
-			err := oc.Validate()
-			assert.NoError(t, err, "级别 %s 应该有效", level)
-		}
 	})
 }
 
@@ -687,111 +514,6 @@ func TestSamplingConfig_EdgeCases(t *testing.T) {
 	})
 }
 
-// TestComplexConfiguration 测试复杂配置场景
-func TestComplexConfiguration(t *testing.T) {
-	t.Run("多输出配置", func(t *testing.T) {
-		lc := LoggerConfig{
-			ServiceName: "test-service",
-			Outputs: []OutputConfig{
-				{
-					Type:     Stdout,
-					Level:    DebugLevel,
-					Encoding: JSON,
-					Enabled:  true,
-				},
-				{
-					Type:     File,
-					Level:    InfoLevel,
-					Encoding: Console,
-					Enabled:  true,
-					File: &FileConfig{
-						Path:       "/var/log/test.log",
-						MaxSizeMB:  100,
-						MaxBackups: 10,
-						MaxAgeDays: 30,
-					},
-				},
-				{
-					Type:     DB,
-					Level:    ErrorLevel,
-					Encoding: JSON,
-					Enabled:  true,
-					Database: &DatabaseConfig{
-						DriverName:     "mysql",
-						DataSourceName: "root:password@tcp(localhost:3306)/logs",
-						TableName:      "logs",
-						BatchSize:      100,
-						BatchInterval:  5 * time.Second,
-						MaxOpenConns:   10,
-						MaxIdleConns:   5,
-					},
-				},
-				{
-					Type:     Syslog,
-					Level:    WarnLevel,
-					Encoding: JSON,
-					Enabled:  true,
-					Syslog: &SyslogConfig{
-						Network:  "tcp",
-						Address:  "localhost:514",
-						Tag:      "test-app",
-						Facility: 16,
-						RFC5424:  true,
-					},
-				},
-			},
-			Sampling: SamplingConfig{
-				Enabled:    true,
-				Initial:    100,
-				Thereafter: 10,
-				Window:     time.Minute,
-			},
-			Encoder: EncoderConfig{
-				MessageKey:    "msg",
-				LevelKey:      "level",
-				TimeKey:       "time",
-				TimeFormat:    time.RFC3339Nano,
-				TimeZone:      "Asia/Shanghai",
-				CallerKey:     "caller",
-				StacktraceKey: "stacktrace",
-				EnableCaller:  true,
-				CustomFields: map[string]string{
-					"env":     "production",
-					"version": "1.0.0",
-				},
-			},
-		}
-		err := lc.Validate()
-		assert.NoError(t, err)
-	})
-
-	t.Run("混合启用和禁用的输出", func(t *testing.T) {
-		lc := LoggerConfig{
-			ServiceName: "test-service",
-			Outputs: []OutputConfig{
-				{
-					Type:     Stdout,
-					Level:    InfoLevel,
-					Encoding: JSON,
-					Enabled:  true,
-				},
-				{
-					Type:    File,
-					Level:   DebugLevel,
-					Enabled: false, // 禁用
-				},
-				{
-					Type:    DB,
-					Level:   ErrorLevel,
-					Enabled: false, // 禁用
-				},
-			},
-		}
-		err := lc.Validate()
-		assert.NoError(t, err)
-	})
-}
-
 // TestConfigurationDefaults 测试配置默认值
 func TestConfigurationDefaults(t *testing.T) {
 	t.Run("编码器默认值", func(t *testing.T) {
@@ -806,7 +528,6 @@ func TestConfigurationDefaults(t *testing.T) {
 		assert.Equal(t, "caller", applied.CallerKey)
 		assert.Equal(t, "stacktrace", applied.StacktraceKey)
 		assert.False(t, applied.EnableCaller)
-		assert.False(t, applied.EnableStacktrace)
 	})
 
 	t.Run("文件默认值", func(t *testing.T) {
@@ -835,61 +556,5 @@ func TestConfigurationDefaults(t *testing.T) {
 		assert.Equal(t, DefaultBatchInterval, dc.BatchInterval)
 		assert.Equal(t, DefaultMaxOpenConns, dc.MaxOpenConns)
 		assert.Equal(t, DefaultMaxIdleConns, dc.MaxIdleConns)
-	})
-}
-
-// TestSpecialConfigurations 测试特殊配置场景
-func TestSpecialConfigurations(t *testing.T) {
-	t.Run("包含自定义字段的编码器", func(t *testing.T) {
-		ec := EncoderConfig{
-			CustomFields: map[string]string{
-				"service":  "my-service",
-				"instance": "prod-1",
-				"region":   "us-west-2",
-			},
-		}
-		applied := ec.ApplyDefaults()
-		assert.Len(t, applied.CustomFields, 3)
-	})
-
-	t.Run("超长服务名", func(t *testing.T) {
-		longName := strings.Repeat("a", 1000)
-		lc := LoggerConfig{
-			ServiceName: longName,
-			Outputs: []OutputConfig{
-				{
-					Type:     Stdout,
-					Level:    InfoLevel,
-					Encoding: JSON,
-					Enabled:  true,
-				},
-			},
-		}
-		err := lc.Validate()
-		assert.NoError(t, err)
-	})
-
-	t.Run("包含特殊字符的服务名", func(t *testing.T) {
-		specialNames := []string{
-			"test_service",
-			"test-service",
-			"test.service",
-			"测试服务",
-		}
-		for _, name := range specialNames {
-			lc := LoggerConfig{
-				ServiceName: name,
-				Outputs: []OutputConfig{
-					{
-						Type:     Stdout,
-						Level:    InfoLevel,
-						Encoding: JSON,
-						Enabled:  true,
-					},
-				},
-			}
-			err := lc.Validate()
-			assert.NoError(t, err, "服务名 '%s' 应该有效", name)
-		}
 	})
 }

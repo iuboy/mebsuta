@@ -5,52 +5,86 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布]
+## [0.2.0] - 2026-04-XX
+
+### 破坏性变更
+
+- 全面从 `go.uber.org/zap` 迁移到 `log/slog` Handler 插件架构
+- `mebsuta.New()` 返回 `*slog.Logger`，不再返回自定义 Logger 类型
+- `mebsuta.Init(cfg)` / `mebsuta.InitWithDetails(cfg)` / `mebsuta.CreateLogger(cfg)` / `mebsuta.NewFromConfig(cfg)` 移除
+- `mebsuta.GetLogger()` / `mebsuta.SetLogger()` / `mebsuta.IsInitialized()` 全局状态函数移除
+- `logger.Zl()` / `logger.Sugar()` / `logger.Sync()` / `logger.With()` / `logger.WithContext()` 移除
+- `mebsuta.SetContextExtractor(fn)` 移除，改为 `WithContextExtractor` 装饰器
+- `mebsuta.OnError` / `mebsuta.OnInitError` / `mebsuta.Try` / `mebsuta.RetryWithBackoff` / `mebsuta.SetGlobalContext` 移除
+- `core/` / `internal/adapter/` / `errors/` / `examples/` / `integration/` 包移除
+- `config.LoggerConfig` / `config.InitConfig` / `config.Builder` 移除
+- `mebsuta.EncodingType` 从 config 包移到根包，`config.FileConfig.Format` 改为 `string` 类型
+- `config.SamplingConfig` / `config.SyslogConfig` / `config.DatabaseConfig` / `config.FileConfig` 保留在 `config` 包
+- `mebsuta.AsyncConfig.DropOnFull` 字段移除（始终丢弃）
 
 ### 新增
-- Builder模式支持流式API构建日志配置
-- 示例测试文件，展示各种使用场景
-- 基准测试覆盖核心组件
+
+- `mebsuta.New(opts ...HandlerOption) (*slog.Logger, error)` — 基于 functional options 创建 logger
+- `mebsuta.WithHandler(h slog.Handler) HandlerOption` — 添加输出 handler
+- `mebsuta.CloseAll(handler slog.Handler) error` — 递归关闭所有 io.Closer（支持装饰器链解包）
+- `mebsuta.NewStdoutHandler(level slog.Level, format EncodingType) *StdoutHandler` — stdout 输出
+- `mebsuta.NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, error)` — 文件输出，内置轮转
+- `mebsuta.NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error)` — syslog 输出
+- `mebsuta.NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error)` — 数据库批量写入
+- `mebsuta.WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler` — 时间窗口采样装饰器
+- `mebsuta.WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler` — 异步写入装饰器
+- `mebsuta.WithMetrics(inner slog.Handler, m HandlerMetrics, name string) slog.Handler` — 指标收集装饰器
+- `mebsuta.WithContextExtractor(inner slog.Handler, extract ContextExtractor) slog.Handler` — 上下文字段提取装饰器
+- `mebsuta.HandlerMetrics` 接口 — 指标收集抽象
+- `mebsuta.AsyncConfig` — 异步写入配置（BufferSize）
+- `mebsuta.AsyncDropped(h slog.Handler) int64` — 查询异步丢弃数量
+- `mebsuta.LogEntry` / `mebsuta.RecordToLogEntry(r slog.Record) LogEntry` — 通用日志条目
+- 文件轮转：时间 + 大小双策略，gzip 压缩，原子 rename，崩溃恢复
+- `safeMultiHandler` 包装 `slog.NewMultiHandler`，per-handler panic recovery
+- `levelHandler` 嵌入提供通用 Enabled 级别过滤
+- `config.DefaultSyslogNetwork` / `config.DefaultSyslogTag` 常量
 
 ### 改进
-- 修复SQL注入风险，添加表名格式验证
-- 修复多处静默失败问题
-- 统一注释语言为中文
-- 优化错误处理和类型断言安全
 
-### 修复
-- 修复getFallbackLogger可能的nil panic
-- 修复asyncWriter Sync空实现
-- 修复时区验证逻辑错误
+- `safeMultiHandler.WithAttrs` / `WithGroup` 正确传播到所有子 handler
+- `safeMultiHandler.Close()` 递归关闭所有子 handler
+- `CloseAll` 通过 `handlerUnwrapper` 接口递归解包装饰器链
+- `*metrics.Metrics` 实现 `HandlerMetrics` 接口（ObserveHandle/IncError/IncDropped）
+- FileHandler.doRotate 在 os.Create 失败后设置 closed 状态，避免静默日志丢失
+- safeMultiHandler 单 handler 时串行调用，避免不必要的 goroutine 开销
+- config 包作为配置类型的唯一位置，移除根包中的重复定义
+- `errors.Join` 替代自定义 `joinErrors`
+- 移除未使用的 contextKey 常量和 DropOnFull 死代码
+
+### 移除
+
+- `go.uber.org/zap` / `go.uber.org/zapcore` 依赖
+- `github.com/natefinch/lumberjack` 依赖
+- `core/` / `internal/adapter/` / `errors/` / `examples/` / `integration/` 包
+- `config.LoggerConfig` / `config.InitConfig` / `config.Builder`
+- 包级日志透传函数（Debug/Info/Warn/Error/DebugContext/InfoContext/WarnContext/ErrorContext）
+- `AsyncConfig.DropOnFull` 字段和 `DropOnFull()` 函数
+- `contextKey` 类型和 RequestContextKey/UserContextKey/TraceIDContextKey/CustomIDContextKey 常量
 
 ## [0.1.0] - 2024-12-XX
 
 ### 新增
-- 支持多种输出目标：控制台、文件、SQL数据库、InfluxDB、Syslog
+
+- 支持多种输出目标：控制台、文件、SQL 数据库、InfluxDB、Syslog
 - 高性能异步批量写入
-- 内置Prometheus指标监控
+- 内置 Prometheus 指标监控
 - 动态日志采样功能
 - 结构化日志支持
 - 上下文感知日志
-- 日志采样避免日志爆炸
-
-### 功能特性
-- JSON和Console两种编码格式
-- 完整的错误处理和错误链追踪
-- 支持日志轮转和压缩
+- JSON 和 Console 两种编码格式
+- 日志轮转和压缩
 - 连接池管理
-- 自动重试机制
 - 配置验证和默认值
 
-### 配置选项
-- 可配置的日志级别和采样策略
-- 灵活的编码器配置
-- 多种输出可同时启用
-- 支持自定义时间格式和时区
-
 ### 文档
-- 完整的中文README
-- API文档和示例代码
+
+- 完整的中文 README
+- API 文档和示例代码
 - 版本规范说明
 
 ---
@@ -59,7 +93,7 @@
 
 - **新增**: 新功能
 - **改进**: 现有功能的改进
-- **修复**: Bug修复
+- **修复**: Bug 修复
 - **变更**: 重大变更或破坏性变更
 - **弃用**: 即将移除的功能
 - **移除**: 已移除的功能

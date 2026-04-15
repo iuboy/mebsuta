@@ -52,32 +52,6 @@ func (fc *FileConfig) Sanitize() string {
 		" }"
 }
 
-// Sanitize 返回输出配置的脱敏字符串表示
-func (oc *OutputConfig) Sanitize() string {
-	if oc == nil {
-		return ""
-	}
-
-	parts := []string{}
-	parts = append(parts, "Type="+string(oc.Type))
-	parts = append(parts, "Level="+string(oc.Level))
-	parts = append(parts, "Enabled="+fmt.Sprintf("%v", oc.Enabled))
-
-	if oc.Database != nil {
-		parts = append(parts, "Database="+oc.Database.Sanitize())
-	}
-
-	if oc.File != nil {
-		parts = append(parts, "File="+oc.File.Sanitize())
-	}
-
-	if oc.Syslog != nil {
-		parts = append(parts, "Syslog="+oc.Syslog.Sanitize())
-	}
-
-	return "{ " + strings.Join(parts, ", ") + " }"
-}
-
 // Sanitize 返回 Syslog 配置的脱敏字符串表示
 func (sc *SyslogConfig) Sanitize() string {
 	if sc == nil {
@@ -91,6 +65,13 @@ func (sc *SyslogConfig) Sanitize() string {
 		" }"
 }
 
+// 预编译正则表达式，避免每次调用 maskPasswordInDSN 时重复编译。
+var (
+	reMySQLDSN   = regexp.MustCompile(`^([^:]+):([^@]+)@`)
+	reURIDSN     = regexp.MustCompile(`://([^:]+):([^@]+)@`)
+	rePasswordKV = regexp.MustCompile(`password=[^&]+`)
+)
+
 // maskPasswordInDSN 隐藏数据源连接字符串中的密码
 // 支持 MySQL、PostgreSQL、SQL Server 等常见格式
 func maskPasswordInDSN(dsn string) string {
@@ -99,21 +80,18 @@ func maskPasswordInDSN(dsn string) string {
 	// 格式 3: sqlserver://user:password@host:port?database=db
 
 	// MySQL 格式: user:password@tcp(host:port)/db
-	re1 := regexp.MustCompile(`^([^:]+):([^@]+)@`)
-	if re1.MatchString(dsn) {
-		return re1.ReplaceAllString(dsn, "$1:****@")
+	if reMySQLDSN.MatchString(dsn) {
+		return reMySQLDSN.ReplaceAllString(dsn, "$1:****@")
 	}
 
 	// PostgreSQL 格式: postgres://user:password@host:port/db
-	re2 := regexp.MustCompile(`://([^:]+):([^@]+)@`)
-	if re2.MatchString(dsn) {
-		return re2.ReplaceAllString(dsn, "://$1:****@")
+	if reURIDSN.MatchString(dsn) {
+		return reURIDSN.ReplaceAllString(dsn, "://$1:****@")
 	}
 
 	// URL 参数格式中的密码: password=xxx
-	re3 := regexp.MustCompile(`password=[^&]+`)
-	if re3.MatchString(dsn) {
-		return re3.ReplaceAllString(dsn, "password=****")
+	if rePasswordKV.MatchString(dsn) {
+		return rePasswordKV.ReplaceAllString(dsn, "password=****")
 	}
 
 	// 检查是否是 URL 格式
@@ -147,7 +125,7 @@ func maskToken(token string) string {
 }
 
 // SanitizeForLog 对任意配置进行脱敏（通用方法）
-func SanitizeForLog(cfg interface{}) string {
+func SanitizeForLog(cfg any) string {
 	if cfg == nil {
 		return "(nil)"
 	}
@@ -159,23 +137,13 @@ func SanitizeForLog(cfg interface{}) string {
 		return c.Sanitize()
 	case *SyslogConfig:
 		return c.Sanitize()
-	case *OutputConfig:
-		return c.Sanitize()
-	case LoggerConfig:
-		parts := []string{}
-		parts = append(parts, "ServiceName="+c.ServiceName)
-		parts = append(parts, "DebugMode="+fmt.Sprint(c.DebugMode))
-		for i, output := range c.Outputs {
-			parts = append(parts, "Output["+fmt.Sprint(i)+"]="+output.Sanitize())
-		}
-		return "{ " + strings.Join(parts, ", ") + " }"
 	default:
 		// 对于未知类型，返回类型名称
 		return "Config(" + getTypeName(cfg) + ")"
 	}
 }
 
-func getTypeName(v interface{}) string {
+func getTypeName(v any) string {
 	if t := reflect.TypeOf(v); t.Kind() == reflect.Ptr {
 		return t.Elem().Name()
 	} else {
