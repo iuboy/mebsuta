@@ -4,6 +4,7 @@ package metrics
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -221,6 +222,28 @@ func (m *Metrics) GetGoroutineCount() int64 {
 	return m.activeGoroutines.Load()
 }
 
+// =============================================================================
+// HandlerMetrics 接口实现（桥接到 Prometheus 指标）
+// =============================================================================
+
+// ObserveHandle 记录一次 Handle 调用的延迟。
+// 实现 mebsuta.HandlerMetrics 接口。
+func (m *Metrics) ObserveHandle(duration time.Duration) {
+	m.writeLatency.Observe(duration.Seconds())
+}
+
+// IncError 增加错误计数。
+// 实现 mebsuta.HandlerMetrics 接口。
+func (m *Metrics) IncError(handlerName string) {
+	m.logErrors.WithLabelValues("handle", handlerName).Inc()
+}
+
+// IncDropped 增加丢弃计数。
+// 实现 mebsuta.HandlerMetrics 接口。
+func (m *Metrics) IncDropped(handlerName string) {
+	m.logDropped.WithLabelValues("overflow", handlerName).Inc()
+}
+
 // Describe 实现 prometheus.Collector 接口
 func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.logWrites.Describe(ch)
@@ -270,18 +293,16 @@ func RegisterToRegistry(registry prometheus.Registerer) error {
 // 用法示例：
 //
 //	import (
+//	    "log/slog"
 //	    "github.com/prometheus/client_golang/prometheus"
 //	    "github.com/prometheus/client_golang/prometheus/promhttp"
-//	    "github.com/iuboy/mebsuta"
+//	    mebmetrics "github.com/iuboy/mebsuta/metrics"
 //	)
 //
 //	func main() {
-//	    // 初始化日志
-//	    mebsuta.Init(cfg)
-//
 //	    // 创建自定义注册表
 //	    registry := prometheus.NewRegistry()
-//	    registry.MustRegister(mebsuta.GetMetricsAsCollector())
+//	    registry.MustRegister(mebmetrics.GetMetricsAsCollector())
 //
 //	    // 暴露指标端点
 //	    http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
