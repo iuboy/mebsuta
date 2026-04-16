@@ -103,12 +103,18 @@ func RecordToLogEntry(r slog.Record) LogEntry {
 }
 
 // =============================================================================
-// 内部辅助
+// ErrorHandler — Handler 内部错误报告
 // =============================================================================
 
-// writeError 将 Handler 内部错误写入 stderr。
-// slog.Logger 静默吞掉 Handle 返回的 error，
-// 各 Handler 应在 Handle 失败时调用此函数确保错误可见。
-func writeError(component string, err error) {
+// ErrorHandler 处理 Handler 内部错误（如文件轮转失败、数据库写入失败等）。
+// slog.Logger 静默吞掉 Handle 返回的 error，Handler 需要通过此机制报告内部错误。
+// 默认写入 os.Stderr。用户可通过 WithErrorHandler 自定义。
+type ErrorHandler func(component string, err error)
+
+// DefaultErrorHandler 是默认的内部错误处理函数，写入 os.Stderr。
+// 此变量在 Handler 构造时被值拷贝到实例中，运行时修改不会影响已创建的 Handler。
+var DefaultErrorHandler ErrorHandler = defaultErrorHandler
+
+func defaultErrorHandler(component string, err error) {
 	fmt.Fprintf(os.Stderr, "mebsuta/%s: %v\n", component, err)
 }

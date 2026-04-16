@@ -42,21 +42,22 @@ var spaceRe = regexp.MustCompile(`\s+`)
 // 实现 slog.Handler 和 io.Closer 接口。
 // 内置缓冲写入、TLS、自动重连。
 type SyslogHandler struct {
-	levelHandler
-	cfg      config.SyslogConfig
-	conn     net.Conn
-	connMu   sync.RWMutex
-	dialer   net.Dialer
-	tlsCfg   *tls.Config
-	hostname string
-	buffer   chan []byte
-	wg       sync.WaitGroup
-	ctx      context.Context
-	cancel   context.CancelFunc
-	closing  atomic.Bool
-	closed   atomic.Bool
-	fileLock *flock.Flock
-	location *time.Location
+	LevelHandler
+	cfg          config.SyslogConfig
+	conn         net.Conn
+	connMu       sync.RWMutex
+	dialer       net.Dialer
+	tlsCfg       *tls.Config
+	hostname     string
+	buffer       chan []byte
+	wg           sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	closing      atomic.Bool
+	closed       atomic.Bool
+	fileLock     *flock.Flock
+	location     *time.Location
+	errorHandler ErrorHandler
 }
 
 // NewSyslogHandler 创建输出到 syslog 的 slog.Handler。
@@ -95,7 +96,7 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h := &SyslogHandler{
-		levelHandler: levelHandler{level: level},
+		LevelHandler: LevelHandler{Level: level},
 		cfg:          cfg,
 		dialer:       net.Dialer{Timeout: syslogDialerTimeout},
 		hostname:     hostname,
@@ -103,6 +104,7 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 		ctx:          ctx,
 		cancel:       cancel,
 		location:     loc,
+		errorHandler: DefaultErrorHandler,
 	}
 
 	if cfg.Secure {
@@ -160,6 +162,27 @@ func (h *SyslogHandler) Close() error {
 	return nil
 }
 
+// WithAttrs 返回带有预置属性的新 SyslogHandler。
+func (h *SyslogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &syslogAttrsHandler{
+		SyslogHandler: h,
+		attrs:         attrs,
+	}
+}
+
+// WithGroup 返回带有分组前缀的新 SyslogHandler。
+func (h *SyslogHandler) WithGroup(name string) slog.Handler {
+	return &syslogGroupHandler{
+		SyslogHandler: h,
+		group:         name,
+	}
+}
+
+// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
+func (h *SyslogHandler) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler = fn
+}
+
 // =============================================================================
 // 连接管理
 // =============================================================================
@@ -196,13 +219,14 @@ func (h *SyslogHandler) connect() error {
 func (h *SyslogHandler) reconnect() {
 	h.connMu.Lock()
 	defer h.connMu.Unlock()
+	if h.closing.Load() {
+		return
+	}
 
 	if h.conn != nil {
 		_ = h.conn.Close()
 		h.conn = nil
 	}
-
-	h.closed.Store(false)
 
 	if locked, err := h.fileLock.TryLockContext(h.ctx, 100*time.Millisecond); locked && err == nil {
 		defer func() { _ = h.fileLock.Unlock() }()
@@ -216,7 +240,7 @@ func (h *SyslogHandler) reconnect() {
 		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "mebsuta/syslog: reconnect failed: %v\n", err)
+		reportError(h.errorHandler, "syslog", fmt.Errorf("reconnect failed: %w", err))
 		return
 	}
 	h.conn = conn
@@ -256,7 +280,7 @@ func (h *SyslogHandler) writeWithRetry(msg []byte) {
 		}
 		time.Sleep(h.cfg.RetryDelay)
 	}
-	fmt.Fprintf(os.Stderr, "mebsuta/syslog: write failed after %d attempts\n", maxSyslogRetries)
+	reportError(h.errorHandler, "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
 }
 
 func (h *SyslogHandler) disconnect() {
@@ -287,9 +311,7 @@ func (h *SyslogHandler) processQueue() {
 		case <-reconnector.C:
 			if !h.isConnected() {
 				baseDelay := time.Second * time.Duration(math.Pow(2, float64(atomic.LoadInt32(&retryCount))))
-				if baseDelay > maxReconnectDelay {
-					baseDelay = maxReconnectDelay
-				}
+				baseDelay = min(baseDelay, maxReconnectDelay)
 				jitter := time.Duration(rand.Int63n(int64(baseDelay) / 2))
 				delay := baseDelay/2 + jitter
 				select {
@@ -392,10 +414,10 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 		sd.WriteByte(']')
 		sdStr := sd.String()
 		if sdStr == "[]" {
-			sdStr = "- -"
+			sdStr = "-"
 		}
 
-		return fmt.Sprintf(`<%d>1 %s %s %s %d %s %s`,
+		return fmt.Sprintf(`<%d>1 %s %s %s %d - %s %s`,
 			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, sdStr, msgContent) + "\n"
 	}
 
@@ -478,4 +500,71 @@ func safeMessageForLog(msg string) string {
 		return r
 	}, msg)
 	return strings.TrimSpace(spaceRe.ReplaceAllString(cleaned, " "))
+}
+
+// =============================================================================
+// 子 Handler 类型（WithAttrs/WithGroup 返回）
+// =============================================================================
+
+type syslogAttrsHandler struct {
+	*SyslogHandler
+	attrs []slog.Attr
+}
+
+func (h *syslogAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, attr := range h.attrs {
+		r.AddAttrs(attr)
+	}
+	return h.SyslogHandler.Handle(ctx, r)
+}
+
+func (h *syslogAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	merged = append(merged, h.attrs...)
+	merged = append(merged, attrs...)
+	return &syslogAttrsHandler{
+		SyslogHandler: h.SyslogHandler,
+		attrs:         merged,
+	}
+}
+
+func (h *syslogAttrsHandler) WithGroup(name string) slog.Handler {
+	return &syslogGroupHandler{
+		SyslogHandler: h.SyslogHandler,
+		group:         name,
+		attrs:         h.attrs,
+	}
+}
+
+type syslogGroupHandler struct {
+	*SyslogHandler
+	group string
+	attrs []slog.Attr
+}
+
+func (h *syslogGroupHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, attr := range h.attrs {
+		r.AddAttrs(attr)
+	}
+	return h.SyslogHandler.Handle(ctx, r)
+}
+
+func (h *syslogGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
+	copy(merged, h.attrs)
+	for _, a := range attrs {
+		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+	}
+	return &syslogAttrsHandler{
+		SyslogHandler: h.SyslogHandler,
+		attrs:         merged,
+	}
+}
+
+func (h *syslogGroupHandler) WithGroup(name string) slog.Handler {
+	return &syslogGroupHandler{
+		SyslogHandler: h.SyslogHandler,
+		group:         h.group + "." + name,
+		attrs:         h.attrs,
+	}
 }

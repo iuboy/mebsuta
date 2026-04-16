@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -10,15 +9,6 @@ import (
 
 // validTableNameRe 预编译表名验证正则，避免每次 Validate 调用重新编译。
 var validTableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-
-func (l LogLevel) Valid() bool {
-	for _, level := range []LogLevel{DebugLevel, InfoLevel, WarnLevel, ErrorLevel, DPanicLevel, FatalLevel, PanicLevel} {
-		if l == level {
-			return true
-		}
-	}
-	return false
-}
 
 // Validate 验证文件配置
 func (fc *FileConfig) Validate() error {
@@ -69,29 +59,8 @@ func (dc *DatabaseConfig) Validate() error {
 		if !validTableNameRe.MatchString(dc.TableName) {
 			return fmt.Errorf("invalid table name: %s, only letters, digits and underscores allowed, must start with letter or underscore", dc.TableName)
 		}
-	case TimeSeriesDriver:
-		if dc.TimeSeries == nil {
-			return fmt.Errorf("driver %s requires time-series config", TimeSeriesDriver)
-		}
-		if err := dc.TimeSeries.Validate(); err != nil {
-			return fmt.Errorf("time-series config validation failed: %w", err)
-		}
 	default:
 		return fmt.Errorf("unsupported database driver: %s", dc.DriverName)
-	}
-	return nil
-}
-
-// Validate 验证时序配置
-func (ts *TimeSeriesConfig) Validate() error {
-	if ts.URL == "" {
-		return fmt.Errorf("time-series database requires URL")
-	}
-	if ts.Bucket == "" {
-		return fmt.Errorf("time-series database requires bucket")
-	}
-	if ts.Token == "" {
-		return fmt.Errorf("time-series database requires token")
 	}
 	return nil
 }
@@ -119,37 +88,6 @@ func (sc *SyslogConfig) Validate() error {
 		}
 	}
 	return nil
-}
-
-// ApplyDefaults 设置编码器默认值
-func (ec *EncoderConfig) ApplyDefaults() *EncoderConfig {
-	if ec.TimeFormat == "" {
-		ec.TimeFormat = DefaultTimeFormat
-	}
-	if ec.TimeZone == "" {
-		ec.TimeZone = "UTC"
-	} else {
-		if _, err := time.LoadLocation(ec.TimeZone); err != nil {
-			fmt.Fprintf(os.Stderr, "mebsuta: warning: invalid timezone %q, falling back to UTC: %v\n", ec.TimeZone, err)
-			ec.TimeZone = "UTC"
-		}
-	}
-	if ec.MessageKey == "" {
-		ec.MessageKey = "msg"
-	}
-	if ec.LevelKey == "" {
-		ec.LevelKey = "level"
-	}
-	if ec.TimeKey == "" {
-		ec.TimeKey = "time"
-	}
-	if ec.CallerKey == "" {
-		ec.CallerKey = "caller"
-	}
-	if ec.StacktraceKey == "" {
-		ec.StacktraceKey = "stacktrace"
-	}
-	return ec
 }
 
 // Validate 验证采样配置

@@ -5,7 +5,36 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.2.0] - 2026-04-XX
+## [0.3.0] - 2026-04-16
+
+### 新增
+
+- `mebsuta.ErrorHandler` 类型 — Handler 内部错误处理函数，可自定义输出目标
+- `mebsuta.WithErrorHandler(fn ErrorHandler) HandlerOption` — 注入自定义错误处理
+- `mebsuta.DefaultErrorHandler` — 默认错误处理（写入 os.Stderr）
+- `errorHandlerSetter` 内部接口 — 自动传播 ErrorHandler 到所有子 handler
+- `database/` 子包隔离 — DatabaseHandler 独立子包，消除循环引用
+- `database.SetErrorHandler(fn)` — 供用户手动设置 database handler 的错误处理
+
+### 修复
+
+- 修复 `reportError` 未统一使用导致 `WithErrorHandler(nil)` 时 panic（5 处）
+- 修复 `compressFile` 未 nil 检查 errorHandler 导致异步压缩 panic
+- 修复 `syslog_handler.go` RFC5424 格式缺失 MSGID 字段
+- 修复 `syslog_handler.go` 指数退避 retryCount 无上限导致 int64 溢出 panic
+- 修复 `database_handler.go` flush 重试 context 共享导致重试机制失效
+- 修复 `metrics/metrics.go` Register 使用 MustRegister 导致无法捕获重复注册
+- 修复 `WithAttrs().WithGroup()` 链式调用时已累积属性被静默丢弃（Syslog/Async/Database）
+
+### 改进
+
+- `safeMultiHandler` panic recovery 在 nil errorHandler 时回退到 DefaultErrorHandler
+- `propagateErrorHandler` 递归解包装饰器链，自动注入到所有支持的 handler
+- `config/sanitizer.go` 移除死代码 `reflect` 依赖
+- `config/types.go` 移除无用的 `validate:"..."` struct tags
+- 测试文件 for 循环现代化为 Go 1.26 range 语法
+
+## [0.2.0] - 2026-04-15
 
 ### 破坏性变更
 
@@ -62,7 +91,6 @@
 - `github.com/natefinch/lumberjack` 依赖
 - `core/` / `internal/adapter/` / `errors/` / `examples/` / `integration/` 包
 - `config.LoggerConfig` / `config.InitConfig` / `config.Builder`
-- 包级日志透传函数（Debug/Info/Warn/Error/DebugContext/InfoContext/WarnContext/ErrorContext）
 - `AsyncConfig.DropOnFull` 字段和 `DropOnFull()` 函数
 - `contextKey` 类型和 RequestContextKey/UserContextKey/TraceIDContextKey/CustomIDContextKey 常量
 

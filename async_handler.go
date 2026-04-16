@@ -2,6 +2,7 @@ package mebsuta
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -44,13 +45,14 @@ type asyncRecord struct {
 // 注意：不要将 AsyncHandler 套在 SyslogHandler 或 DatabaseHandler 上，
 // 因为它们内部已有异步机制（Decision #15）。
 type AsyncHandler struct {
-	inner  slog.Handler
-	ch     chan asyncRecord
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed atomic.Bool
-	dropped atomic.Int64
+	inner        slog.Handler
+	ch           chan asyncRecord
+	wg           sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	closed       atomic.Bool
+	dropped      atomic.Int64
+	errorHandler ErrorHandler
 }
 
 // WithAsync 返回一个异步写入装饰器，包裹给定的 handler。
@@ -66,10 +68,11 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h := &AsyncHandler{
-		inner:  inner,
-		ch:     make(chan asyncRecord, bufferSize),
-		ctx:    ctx,
-		cancel: cancel,
+		inner:        inner,
+		ch:           make(chan asyncRecord, bufferSize),
+		ctx:          ctx,
+		cancel:       cancel,
+		errorHandler: DefaultErrorHandler,
 	}
 	h.wg.Add(1)
 	go h.run()
@@ -105,6 +108,7 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.dropped.Add(1)
+		reportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
 		return nil
 	}
 }
@@ -136,6 +140,11 @@ func (h *AsyncHandler) Close() error {
 	return nil
 }
 
+// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
+func (h *AsyncHandler) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler = fn
+}
+
 // unwrapHandler 返回内层 handler，供 CloseAll 递归关闭。
 func (h *AsyncHandler) unwrapHandler() slog.Handler {
 	return h.inner
@@ -153,7 +162,7 @@ func (h *AsyncHandler) run() {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
 		if err := ar.inner.Handle(context.Background(), r); err != nil {
-			writeError("async", err)
+			reportError(h.errorHandler, "async", err)
 		}
 	}
 }
@@ -188,17 +197,23 @@ func (h *asyncAttrsHandler) WithGroup(name string) slog.Handler {
 	return &asyncGroupHandler{
 		AsyncHandler: h.AsyncHandler,
 		group:        name,
+		attrs:        h.attrs,
 	}
 }
 
 type asyncGroupHandler struct {
 	*AsyncHandler
 	group string
+	attrs []slog.Attr
 }
 
 func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return nil
+	}
+
+	for _, attr := range h.attrs {
+		r.AddAttrs(attr)
 	}
 
 	// 同步复制 Attr，使用 WithGroup 后的内层 handler
@@ -219,14 +234,20 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.dropped.Add(1)
+		reportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
 		return nil
 	}
 }
 
 func (h *asyncGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
+	copy(merged, h.attrs)
+	for _, a := range attrs {
+		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+	}
 	return &asyncAttrsHandler{
 		AsyncHandler: h.AsyncHandler,
-		attrs:        attrs,
+		attrs:        merged,
 	}
 }
 
@@ -234,6 +255,7 @@ func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
 	return &asyncGroupHandler{
 		AsyncHandler: h.AsyncHandler,
 		group:        h.group + "." + name,
+		attrs:        h.attrs,
 	}
 }
 

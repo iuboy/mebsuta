@@ -313,7 +313,7 @@ func TestSafeMultiHandler_PanicRecovery(t *testing.T) {
 	good := &countHandler{}
 	bad := &panicHandler{msg: "test panic"}
 
-	h := safeMultiHandler(slog.NewMultiHandler(good, bad), []slog.Handler{good, bad})
+	h := safeMultiHandler(slog.NewMultiHandler(good, bad), []slog.Handler{good, bad}, nil)
 	logger := slog.New(h)
 
 	// 应该不 panic，bad handler 的 panic 被 recover
@@ -339,7 +339,7 @@ func TestSafeMultiHandler_AllEnabled(t *testing.T) {
 	h1 := &countHandler{}
 	h2 := &countHandler{}
 
-	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2})
+	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2}, nil)
 	logger := slog.New(multi)
 
 	logger.Info("test")
@@ -358,7 +358,7 @@ func TestSafeMultiHandler_LevelFilter(t *testing.T) {
 	infoH := newStdoutHandlerWithWriter(&buf1, slog.LevelInfo, JSON)
 	warnH := newStdoutHandlerWithWriter(&buf2, slog.LevelWarn, JSON)
 
-	multi := safeMultiHandler(slog.NewMultiHandler(infoH, warnH), []slog.Handler{infoH, warnH})
+	multi := safeMultiHandler(slog.NewMultiHandler(infoH, warnH), []slog.Handler{infoH, warnH}, nil)
 	logger := slog.New(multi)
 
 	logger.Info("info log")

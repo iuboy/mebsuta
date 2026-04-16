@@ -1,51 +1,12 @@
 package config
 
 import (
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// TestLogLevel_Valid 测试日志级别验证
-func TestLogLevel_Valid(t *testing.T) {
-	tests := []struct {
-		name  string
-		level LogLevel
-		want  bool
-	}{
-		{"DebugLevel", DebugLevel, true},
-		{"InfoLevel", InfoLevel, true},
-		{"WarnLevel", WarnLevel, true},
-		{"ErrorLevel", ErrorLevel, true},
-		{"FatalLevel", FatalLevel, true},
-		{"PanicLevel", PanicLevel, true},
-		{"DPanicLevel", DPanicLevel, true},
-		{"InvalidLevel", LogLevel("invalid"), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, tt.level.Valid())
-		})
-	}
-}
-
-// TestEncoderConfig_ApplyDefaults 测试编码器配置默认值
-func TestEncoderConfig_ApplyDefaults(t *testing.T) {
-	ec := &EncoderConfig{}
-	applied := ec.ApplyDefaults()
-
-	assert.Equal(t, DefaultTimeFormat, applied.TimeFormat)
-	assert.Equal(t, "UTC", applied.TimeZone)
-	assert.Equal(t, "msg", applied.MessageKey)
-	assert.Equal(t, "level", applied.LevelKey)
-	assert.Equal(t, "time", applied.TimeKey)
-	assert.Equal(t, "caller", applied.CallerKey)
-	assert.Equal(t, "stacktrace", applied.StacktraceKey)
-}
 
 // TestFileConfig_Validate 测试文件配置验证
 func TestFileConfig_Validate(t *testing.T) {
@@ -187,40 +148,6 @@ func TestDatabaseConfig_Validate(t *testing.T) {
 	})
 }
 
-// TestTimeSeriesConfig_Validate 测试时序数据库配置验证
-func TestTimeSeriesConfig_Validate(t *testing.T) {
-	t.Run("有效InfluxDB配置", func(t *testing.T) {
-		ts := &TimeSeriesConfig{
-			URL:    "http://localhost:8086",
-			Org:    "test-org",
-			Bucket: "test-bucket",
-			Token:  "test-token",
-		}
-		err := ts.Validate()
-		assert.NoError(t, err)
-	})
-
-	t.Run("缺少URL", func(t *testing.T) {
-		ts := &TimeSeriesConfig{
-			Org:    "test-org",
-			Bucket: "test-bucket",
-			Token:  "test-token",
-		}
-		err := ts.Validate()
-		assert.Error(t, err)
-	})
-
-	t.Run("缺少Bucket", func(t *testing.T) {
-		ts := &TimeSeriesConfig{
-			URL:   "http://localhost:8086",
-			Org:   "test-org",
-			Token: "test-token",
-		}
-		err := ts.Validate()
-		assert.Error(t, err)
-	})
-}
-
 // TestSyslogConfig_Validate 测试Syslog配置验证
 func TestSyslogConfig_Validate(t *testing.T) {
 	t.Run("有效Syslog配置", func(t *testing.T) {
@@ -345,37 +272,6 @@ func TestSamplingConfig_Validate(t *testing.T) {
 	})
 }
 
-// TestEncoderConfig_EdgeCases 测试编码器配置边界情况
-func TestEncoderConfig_EdgeCases(t *testing.T) {
-	t.Run("空键名", func(t *testing.T) {
-		ec := &EncoderConfig{
-			MessageKey: "",
-			LevelKey:   "",
-			TimeKey:    "",
-		}
-		applied := ec.ApplyDefaults()
-		assert.Equal(t, "msg", applied.MessageKey)
-		assert.Equal(t, "level", applied.LevelKey)
-		assert.Equal(t, "time", applied.TimeKey)
-	})
-
-	t.Run("自定义时间格式", func(t *testing.T) {
-		ec := &EncoderConfig{
-			TimeFormat: "2006-01-02 15:04:05",
-		}
-		applied := ec.ApplyDefaults()
-		assert.Equal(t, "2006-01-02 15:04:05", applied.TimeFormat)
-	})
-
-	t.Run("无效时区", func(t *testing.T) {
-		ec := &EncoderConfig{
-			TimeZone: "Invalid/Timezone",
-		}
-		applied := ec.ApplyDefaults()
-		assert.Equal(t, "UTC", applied.TimeZone)
-	})
-}
-
 // TestDatabaseConfig_EdgeCases 测试数据库配置边界情况
 func TestDatabaseConfig_EdgeCases(t *testing.T) {
 	t.Run("最小批量大小", func(t *testing.T) {
@@ -409,32 +305,6 @@ func TestDatabaseConfig_EdgeCases(t *testing.T) {
 			BatchInterval:  0,
 		}
 		err := dc.Validate()
-		assert.NoError(t, err)
-	})
-}
-
-// TestTimeSeriesConfig_EdgeCases 测试时序数据库配置边界情况
-func TestTimeSeriesConfig_EdgeCases(t *testing.T) {
-	t.Run("带HTTPS的URL", func(t *testing.T) {
-		ts := &TimeSeriesConfig{
-			URL:    "https://localhost:8086",
-			Org:    "test-org",
-			Bucket: "test-bucket",
-			Token:  "test-token",
-		}
-		err := ts.Validate()
-		assert.NoError(t, err)
-	})
-
-	t.Run("长Token", func(t *testing.T) {
-		longToken := strings.Repeat("a", 1000)
-		ts := &TimeSeriesConfig{
-			URL:    "http://localhost:8086",
-			Org:    "test-org",
-			Bucket: "test-bucket",
-			Token:  longToken,
-		}
-		err := ts.Validate()
 		assert.NoError(t, err)
 	})
 }
@@ -516,20 +386,6 @@ func TestSamplingConfig_EdgeCases(t *testing.T) {
 
 // TestConfigurationDefaults 测试配置默认值
 func TestConfigurationDefaults(t *testing.T) {
-	t.Run("编码器默认值", func(t *testing.T) {
-		ec := EncoderConfig{}
-		applied := ec.ApplyDefaults()
-
-		assert.Equal(t, DefaultTimeFormat, applied.TimeFormat)
-		assert.Equal(t, "UTC", applied.TimeZone)
-		assert.Equal(t, "msg", applied.MessageKey)
-		assert.Equal(t, "level", applied.LevelKey)
-		assert.Equal(t, "time", applied.TimeKey)
-		assert.Equal(t, "caller", applied.CallerKey)
-		assert.Equal(t, "stacktrace", applied.StacktraceKey)
-		assert.False(t, applied.EnableCaller)
-	})
-
 	t.Run("文件默认值", func(t *testing.T) {
 		fc := FileConfig{Path: "/var/log/test.log"}
 		err := fc.Validate()
@@ -539,8 +395,6 @@ func TestConfigurationDefaults(t *testing.T) {
 		assert.Equal(t, DefaultMaxBackups, fc.MaxBackups)
 		assert.Equal(t, DefaultMaxAgeDays, fc.MaxAgeDays)
 		assert.False(t, fc.Compress)
-		assert.False(t, fc.RotateOnStartup)
-		assert.False(t, fc.LocalTime)
 	})
 
 	t.Run("数据库默认值", func(t *testing.T) {

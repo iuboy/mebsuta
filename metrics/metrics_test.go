@@ -350,7 +350,7 @@ func TestMetricsWithStructuredCore(t *testing.T) {
 	_ = mebmetrics.Register()
 
 	// 记录日志
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		mebmetrics.GetMetrics().IncLogWrite("info", "structured_core")
 	}
 
@@ -395,7 +395,7 @@ func TestEventWriteSyncerMetrics(t *testing.T) {
 	_ = mebmetrics.Register()
 
 	// 模拟事件写入
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		mebmetrics.GetMetrics().IncLogWrite("info", "event_writer")
 	}
 
@@ -425,11 +425,11 @@ func TestConcurrentMetrics(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// 并发记录metrics
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for j := range 100 {
 				mebmetrics.GetMetrics().IncLogWrite("info", "stdout")
 				mebmetrics.GetMetrics().IncBatchWrite()
 				mebmetrics.GetMetrics().ObserveBatchSize(float64(j))

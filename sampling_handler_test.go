@@ -323,7 +323,7 @@ func TestNewSyslogHandler_InvalidNetwork(t *testing.T) {
 
 func TestSyslogHandler_Enabled(t *testing.T) {
 	h := &SyslogHandler{
-		levelHandler: levelHandler{level: slog.LevelWarn},
+		LevelHandler: LevelHandler{Level: slog.LevelWarn},
 	}
 	if h.Enabled(context.Background(), slog.LevelDebug) {
 		t.Error("Debug should not be enabled at Warn level")
@@ -331,47 +331,6 @@ func TestSyslogHandler_Enabled(t *testing.T) {
 	if !h.Enabled(context.Background(), slog.LevelError) {
 		t.Error("Error should be enabled at Warn level")
 	}
-}
-
-// =============================================================================
-// DatabaseHandler 配置验证测试（不需要真实连接）
-// =============================================================================
-
-func TestNewDatabaseHandler_UnsupportedDriver(t *testing.T) {
-	_, err := NewDatabaseHandler(config.DatabaseConfig{
-		DriverName: "sqlite",
-	}, slog.LevelInfo)
-	if err == nil {
-		t.Fatal("expected error for unsupported driver")
-	}
-}
-
-func TestNewDatabaseHandler_EmptyDSN(t *testing.T) {
-	_, err := NewDatabaseHandler(config.DatabaseConfig{
-		DriverName: "mysql",
-	}, slog.LevelInfo)
-	if err == nil {
-		t.Fatal("expected error for empty DSN")
-	}
-}
-
-func TestDatabaseHandler_Enabled(t *testing.T) {
-	h := &DatabaseHandler{
-		levelHandler: levelHandler{level: slog.LevelError},
-	}
-	if h.Enabled(context.Background(), slog.LevelInfo) {
-		t.Error("Info should not be enabled at Error level")
-	}
-	if !h.Enabled(context.Background(), slog.LevelError) {
-		t.Error("Error should be enabled at Error level")
-	}
-}
-
-func TestDatabaseHandler_WithAttrs(t *testing.T) {
-	// 测试 WithAttrs 返回类型兼容 slog.Handler
-	var _ slog.Handler = (*DatabaseHandler)(nil)
-	var _ slog.Handler = (*dbAttrsHandler)(nil)
-	var _ slog.Handler = (*dbGroupHandler)(nil)
 }
 
 // =============================================================================

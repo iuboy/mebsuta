@@ -138,7 +138,7 @@ func BenchmarkSafeMultiHandler_2Handlers(b *testing.B) {
 	var buf1, buf2 bytes.Buffer
 	h1 := newStdoutHandlerWithWriter(&buf1, slog.LevelInfo, JSON)
 	h2 := newStdoutHandlerWithWriter(&buf2, slog.LevelInfo, JSON)
-	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2})
+	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2}, nil)
 	logger := slog.New(multi)
 
 	b.ResetTimer()
@@ -154,7 +154,7 @@ func BenchmarkSafeMultiHandler_4Handlers(b *testing.B) {
 	h2 := newStdoutHandlerWithWriter(&buf2, slog.LevelInfo, JSON)
 	h3 := newStdoutHandlerWithWriter(&buf3, slog.LevelInfo, JSON)
 	h4 := newStdoutHandlerWithWriter(&buf4, slog.LevelInfo, JSON)
-	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2, h3, h4), []slog.Handler{h1, h2, h3, h4})
+	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2, h3, h4), []slog.Handler{h1, h2, h3, h4}, nil)
 	logger := slog.New(multi)
 
 	b.ResetTimer()
