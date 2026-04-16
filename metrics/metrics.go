@@ -42,6 +42,7 @@ var (
 	globalMetrics *Metrics
 	once          sync.Once
 	registryOnce  sync.Once // 防止重复注册
+	registerErr   error     // 保存首次注册错误
 )
 
 // NewMetrics 创建新的metrics收集器（不自动注册）
@@ -311,11 +312,11 @@ func GetMetricsAsCollector() prometheus.Collector {
 	return GetMetrics()
 }
 
-// Register 注册到默认的 Prometheus 注册表（幂等，可安全多次调用）
+// Register 注册到默认的 Prometheus 注册表（幂等，可安全多次调用）。
+// 如果首次注册失败，后续调用始终返回该错误。
 func Register() error {
-	var err error
 	registryOnce.Do(func() {
-		err = RegisterToRegistry(prometheus.DefaultRegisterer)
+		registerErr = RegisterToRegistry(prometheus.DefaultRegisterer)
 	})
-	return err
+	return registerErr
 }

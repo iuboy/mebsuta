@@ -25,23 +25,23 @@ import (
 // 实现 slog.Handler 和 io.Closer 接口。
 type FileHandler struct {
 	LevelHandler
-	format        EncodingType
-	inner         slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
-	state         *fileState   // 共享可变状态（跨 WithAttrs/WithGroup 子 Handler）
-	cw            *countingWriter
-	errorHandler  ErrorHandler
+	format EncodingType
+	inner  slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
+	state  *fileState   // 共享可变状态（跨 WithAttrs/WithGroup 子 Handler）
+	cw     *countingWriter
 }
 
 // fileState 保存文件相关的共享可变状态。
 // 同一个文件的所有 FileHandler（通过 WithAttrs/WithGroup 创建的子 Handler）共享同一个 fileState。
 type fileState struct {
-	mu        sync.RWMutex // 写入 RLock，轮转 Lock
-	file      *os.File
-	size      atomic.Int64 // 已写入字节数
-	rotatedAt time.Time    // 上次轮转时间
-	closed    atomic.Bool
-	errCount  atomic.Int64
-	cfg       config.FileConfig
+	mu           sync.RWMutex // 写入 RLock，轮转 Lock
+	file         *os.File
+	size         atomic.Int64 // 已写入字节数
+	rotatedAt    time.Time    // 上次轮转时间
+	closed       atomic.Bool
+	errCount     atomic.Int64
+	cfg          config.FileConfig
+	errorHandler atomic.Pointer[ErrorHandler]
 }
 
 // countingWriter 包装当前文件，同时追踪写入字节数。
@@ -105,14 +105,16 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 	cw := &countingWriter{state: state}
 	inner := newInnerHandler(cw, format)
 
-	return &FileHandler{
+	h := &FileHandler{
 		LevelHandler: LevelHandler{Level: level},
 		format:       format,
 		inner:        inner,
 		state:        state,
 		cw:           cw,
-		errorHandler: DefaultErrorHandler,
-	}, nil
+	}
+	eh := DefaultErrorHandler
+	h.state.errorHandler.Store(&eh)
+	return h, nil
 }
 
 // Handle 处理一条日志记录，写入文件。
@@ -140,8 +142,9 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	if err := h.inner.Handle(ctx, r); err != nil {
 		h.state.errCount.Add(1)
-		ReportError(h.errorHandler, "file", err)
-	}
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", err)
+			return err
+		}
 
 	return nil
 }
@@ -154,7 +157,6 @@ func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		inner:        h.inner.WithAttrs(attrs),
 		state:        h.state,
 		cw:           h.cw,
-		errorHandler: h.errorHandler,
 	}
 }
 
@@ -166,7 +168,6 @@ func (h *FileHandler) WithGroup(name string) slog.Handler {
 		inner:        h.inner.WithGroup(name),
 		state:        h.state,
 		cw:           h.cw,
-		errorHandler: h.errorHandler,
 	}
 }
 
@@ -189,7 +190,7 @@ func (h *FileHandler) Close() error {
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler = fn
+	h.state.errorHandler.Store(&fn)
 }
 
 // =============================================================================
@@ -228,18 +229,18 @@ func (h *FileHandler) doRotate() {
 
 	// 关闭当前文件
 	if err := h.state.file.Close(); err != nil {
-		ReportError(h.errorHandler, "file", fmt.Errorf("close for rotation: %w", err))
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("close for rotation: %w", err))
 	}
 	h.state.file = nil
 
 	// 生成备份文件名并重命名
 	backup := h.backupNameLocked()
 	if err := os.Rename(cfg.Path, backup); err != nil {
-		ReportError(h.errorHandler, "file", fmt.Errorf("rename for rotation: %w", err))
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("rename for rotation: %w", err))
 		// 尝试重新打开原文件继续写入
 		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if openErr != nil {
-			ReportError(h.errorHandler, "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
+			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
 			return
 		}
 		h.state.file = f
@@ -249,7 +250,7 @@ func (h *FileHandler) doRotate() {
 	// 创建新文件
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		ReportError(h.errorHandler, "file", fmt.Errorf("create new log file: %w", err))
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("create new log file: %w", err))
 		h.state.closed.Store(true)
 		return
 	}
@@ -260,7 +261,7 @@ func (h *FileHandler) doRotate() {
 
 	// 异步压缩备份
 	if cfg.Compress {
-		eh := h.errorHandler
+		eh := loadErrorHandler(&h.state.errorHandler)
 		go compressFile(backup, eh)
 	}
 

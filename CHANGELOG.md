@@ -5,6 +5,27 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] - 2026-04-16
+
+### 修复
+
+- 修复 `errorHandler` 字段非原子读写导致数据竞争（全部改为 `atomic.Pointer[ErrorHandler]`）
+- 修复 `SamplingHandler` WaitGroup 非指针共享导致 `Close()` 无法等待 goroutine 退出
+- 修复 `FileHandler.Handle` 始终返回 `nil` 导致调用方无法感知写入失败
+- 修复 `syslog_handler` 重连指数退避 `math.Pow` 无上限溢出风险（rc 上限 20）
+- 修复 `database_handler` 批量写入 `batch[:0]` 保留底层数组阻止 GC 回收
+- 修复 `metrics.Register()` 使用局部 `err` 变量导致首次注册错误被后续调用隐藏
+
+### 改进
+
+- `FileHandler.errorHandler` 移入 `fileState` 共享结构体，消除 `WithAttrs`/`WithGroup` 中的 atomic.Pointer 拷贝（go vet copylocks 警告）
+- `math/rand` 升级为 `math/rand/v2`，使用 `rand.Int64N` 替代已弃用的 `rand.Int63n`
+- `safeMulti.Handle` 添加 `r.Clone()` 性能注释，说明无 Attr 快速路径
+- `SyslogHandler.fileLock.Unlock()` 错误通过 `errorHandler` 上报而非静默忽略
+- `SyslogHandler`/`SamplingHandler` 补充 `var _ slog.Handler` 编译期断言
+- 移除未使用的 `config.SyslogConfig.Structured` 字段
+- 测试文件中 `SyslogHandler` 直接构造适配 `atomic.Pointer[ErrorHandler]` 模式
+
 ## [0.3.2] - 2026-04-16
 
 ### 修复

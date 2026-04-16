@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 )
 
 // LevelHandler 提供所有 adapter Handler 共享的 Enabled 逻辑。
@@ -58,6 +59,20 @@ func ReportError(eh ErrorHandler, component string, err error) {
 	if eh != nil {
 		eh(component, err)
 	}
+}
+
+// loadErrorHandler 从 atomic.Pointer[ErrorHandler] 加载当前值。
+func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
+	v := p.Load()
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// LoadErrorHandler 导出版本，供子包（如 database）使用。
+func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
+	return loadErrorHandler(p)
 }
 
 // buildHandler 从选项构建 slog.Handler。
@@ -151,7 +166,9 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 					ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
 				}
 			}()
-			if err := hh.Handle(ctx, r.Clone()); err != nil {
+				// r.Clone() 防止并发 goroutine 竞争 slog.Record。
+				// Clone 内部有快速路径：无 Attr 时仅复制固定字段，无堆分配。
+				if err := hh.Handle(ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

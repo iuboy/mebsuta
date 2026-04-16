@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"regexp"
@@ -57,7 +57,7 @@ type SyslogHandler struct {
 	closed       atomic.Bool
 	fileLock     *flock.Flock
 	location     *time.Location
-	errorHandler ErrorHandler
+	errorHandler atomic.Pointer[ErrorHandler]
 }
 
 // NewSyslogHandler 创建输出到 syslog 的 slog.Handler。
@@ -92,8 +92,9 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 		ctx:          ctx,
 		cancel:       cancel,
 		location:     loc,
-		errorHandler: DefaultErrorHandler,
 	}
+	eh := DefaultErrorHandler
+	h.errorHandler.Store(&eh)
 
 	if cfg.Secure {
 		h.tlsCfg = &tls.Config{
@@ -145,7 +146,9 @@ func (h *SyslogHandler) Close() error {
 	}
 	h.connMu.Unlock()
 
-	_ = h.fileLock.Unlock()
+	if err := h.fileLock.Unlock(); err != nil {
+		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("file unlock: %w", err))
+	}
 	h.closed.Store(true)
 	return nil
 }
@@ -168,7 +171,7 @@ func (h *SyslogHandler) WithGroup(name string) slog.Handler {
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *SyslogHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler = fn
+	h.errorHandler.Store(&fn)
 }
 
 // =============================================================================
@@ -228,7 +231,7 @@ func (h *SyslogHandler) reconnect() {
 		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
 	}
 	if err != nil {
-		ReportError(h.errorHandler, "syslog", fmt.Errorf("reconnect failed: %w", err))
+		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("reconnect failed: %w", err))
 		return
 	}
 	h.conn = conn
@@ -268,7 +271,7 @@ func (h *SyslogHandler) writeWithRetry(msg []byte) {
 		}
 		time.Sleep(h.cfg.RetryDelay)
 	}
-	ReportError(h.errorHandler, "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
+	ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
 }
 
 func (h *SyslogHandler) disconnect() {
@@ -298,9 +301,13 @@ func (h *SyslogHandler) processQueue() {
 
 		case <-reconnector.C:
 			if !h.isConnected() {
-				baseDelay := time.Second * time.Duration(math.Pow(2, float64(atomic.LoadInt32(&retryCount))))
+				rc := atomic.LoadInt32(&retryCount)
+				if rc > 20 {
+				rc = 20 // 防止 math.Pow 溢出
+				}
+				baseDelay := time.Second * time.Duration(math.Pow(2, float64(rc)))
 				baseDelay = min(baseDelay, maxReconnectDelay)
-				jitter := time.Duration(rand.Int63n(int64(baseDelay) / 2))
+				jitter := time.Duration(rand.Int64N(int64(baseDelay) / 2))
 				delay := baseDelay/2 + jitter
 				select {
 				case <-time.After(delay):
@@ -576,3 +583,6 @@ func (h *syslogGroupHandler) WithGroup(name string) slog.Handler {
 		attrs:         h.attrs,
 	}
 }
+
+// 编译期断言
+var _ slog.Handler = (*SyslogHandler)(nil)

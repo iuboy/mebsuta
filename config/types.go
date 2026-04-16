@@ -51,7 +51,6 @@ type SyslogConfig struct {
 	StaticHost    string        `json:"staticHost"`
 	Secure        bool          `json:"secure"`
 	RFC5424       bool          `json:"rfc5424"`
-	Structured    string        `json:"structuredData"`
 	BufferSize    int           `json:"bufferSize"`
 	TimeZone      string        `json:"timeZone"`
 	JSONInMessage bool          `json:"jsonInMessage"`

@@ -372,8 +372,9 @@ func TestSyslogHandler_WithAttrs(t *testing.T) {
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 		closed:       atomic.Bool{},
-		errorHandler: DefaultErrorHandler,
 	}
+		eh := DefaultErrorHandler
+		h.errorHandler.Store(&eh)
 
 	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
 	if child == nil {
@@ -414,8 +415,9 @@ func TestSyslogHandler_GroupPrefix(t *testing.T) {
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 		closed:       atomic.Bool{},
-		errorHandler: DefaultErrorHandler,
 	}
+		eh := DefaultErrorHandler
+		h.errorHandler.Store(&eh)
 
 	grouped := h.WithGroup("req").WithAttrs([]slog.Attr{slog.String("key", "val")})
 	// 类型断言：WithGroup 后 WithAttrs 应返回 syslogAttrsHandler
@@ -459,8 +461,9 @@ func TestSyslogHandler_AttrsSurviveGroup(t *testing.T) {
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 		closed:       atomic.Bool{},
-		errorHandler: DefaultErrorHandler,
 	}
+		eh := DefaultErrorHandler
+		h.errorHandler.Store(&eh)
 
 	chain := h.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
 	attrsH, ok := chain.(*syslogAttrsHandler)

@@ -53,7 +53,7 @@ type DatabaseHandler struct {
 	wg           sync.WaitGroup
 	closed       atomic.Bool
 	errCount     atomic.Int64
-	errorHandler mebsuta.ErrorHandler
+	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
 
 // NewDatabaseHandler 创建输出到数据库的 slog.Handler。
@@ -100,8 +100,9 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 		entries:      make(chan dbLogEntry, batchSize*10),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: mebsuta.DefaultErrorHandler,
 	}
+	eh := mebsuta.DefaultErrorHandler
+	h.errorHandler.Store(&eh)
 
 	h.wg.Add(1)
 	go h.run(batchSize, batchInterval, retryDelay)
@@ -122,7 +123,7 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.errCount.Add(1)
-		mebsuta.ReportError(h.errorHandler, "database", fmt.Errorf("buffer full, log dropped"))
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("buffer full, log dropped"))
 		return nil
 	}
 }
@@ -248,13 +249,13 @@ func (h *DatabaseHandler) run(batchSize int, batchInterval, retryDelay time.Dura
 
 			if len(batch) >= batchSize {
 				h.flush(batch, retryDelay)
-				batch = batch[:0]
+				batch = nil
 			}
 
 		case <-ticker.C:
 			if len(batch) > 0 {
 				h.flush(batch, retryDelay)
-				batch = batch[:0]
+				batch = nil
 			}
 
 		case <-h.ctx.Done():
@@ -278,7 +279,7 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			return
 		}
 		h.errCount.Add(1)
-		mebsuta.ReportError(h.errorHandler, "database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}
@@ -314,7 +315,7 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
-	h.errorHandler = fn
+	h.errorHandler.Store(&fn)
 }
 
 // 编译期断言
