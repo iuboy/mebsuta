@@ -28,7 +28,7 @@ type SamplingHandler struct {
 	ticker  *time.Ticker
 	stopCh  chan struct{}
 	wg      *sync.WaitGroup // 指针，跨 WithAttrs/WithGroup 共享
-	stopped *atomic.Bool   // 指针，跨 WithAttrs/WithGroup 共享
+	stopped *atomic.Bool    // 指针，跨 WithAttrs/WithGroup 共享
 }
 
 // WithSampling 返回一个采样装饰器，包裹给定的 handler。
@@ -47,12 +47,12 @@ func WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler {
 	}
 
 	h := &SamplingHandler{
-		inner:  inner,
-		cfg:    cfg,
-		count:  &atomic.Int64{},
-		ticker: time.NewTicker(cfg.Window),
-		stopCh: make(chan struct{}),
-		wg:     &sync.WaitGroup{},
+		inner:   inner,
+		cfg:     cfg,
+		count:   &atomic.Int64{},
+		ticker:  time.NewTicker(cfg.Window),
+		stopCh:  make(chan struct{}),
+		wg:      &sync.WaitGroup{},
 		stopped: &atomic.Bool{},
 	}
 	h.wg.Add(1)
@@ -93,12 +93,12 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs 返回带有预置属性的新 SamplingHandler，链式传播到内层。
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
-		inner:  h.inner.WithAttrs(attrs),
-		cfg:    h.cfg,
-		count:  h.count, // 共享计数器（atomic，无需额外同步）
-		ticker: h.ticker,
-		stopCh: h.stopCh,
-		wg:     h.wg, // 共享 WaitGroup（Close 需等待 goroutine 退出）
+		inner:   h.inner.WithAttrs(attrs),
+		cfg:     h.cfg,
+		count:   h.count, // 共享计数器（atomic，无需额外同步）
+		ticker:  h.ticker,
+		stopCh:  h.stopCh,
+		wg:      h.wg, // 共享 WaitGroup（Close 需等待 goroutine 退出）
 		stopped: h.stopped,
 	}
 }
@@ -106,12 +106,12 @@ func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup 返回带有分组前缀的新 SamplingHandler，链式传播到内层。
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
-		inner:  h.inner.WithGroup(name),
-		cfg:    h.cfg,
-		count:  h.count,
-		ticker: h.ticker,
-		stopCh: h.stopCh,
-		wg:     h.wg,
+		inner:   h.inner.WithGroup(name),
+		cfg:     h.cfg,
+		count:   h.count,
+		ticker:  h.ticker,
+		stopCh:  h.stopCh,
+		wg:      h.wg,
 		stopped: h.stopped,
 	}
 }

@@ -168,5 +168,5 @@ func BenchmarkSafeMultiHandler_4Handlers(b *testing.B) {
 type nopMetrics struct{}
 
 func (nopMetrics) ObserveHandle(_ time.Duration) {}
-func (nopMetrics) IncError(_ string)               {}
-func (nopMetrics) IncDropped(_ string)             {}
+func (nopMetrics) IncError(_ string)             {}
+func (nopMetrics) IncDropped(_ string)           {}

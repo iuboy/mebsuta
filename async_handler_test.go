@@ -155,7 +155,7 @@ func (h *concurrentHandler) Handle(_ context.Context, _ slog.Record) error {
 	return nil
 }
 func (h *concurrentHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *concurrentHandler) WithGroup(string) slog.Handler        { return h }
+func (h *concurrentHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestAsyncDropped_NonAsync(t *testing.T) {
 	// 非 AsyncHandler 应返回 0
@@ -170,14 +170,14 @@ func TestAsyncDropped_NonAsync(t *testing.T) {
 // =============================================================================
 
 type testMetrics struct {
-	handleCount atomic.Int64
-	errorCount  atomic.Int64
+	handleCount  atomic.Int64
+	errorCount   atomic.Int64
 	droppedCount atomic.Int64
 }
 
-func (m *testMetrics) ObserveHandle(d time.Duration)  { m.handleCount.Add(1) }
-func (m *testMetrics) IncError(name string)            { m.errorCount.Add(1) }
-func (m *testMetrics) IncDropped(name string)          { m.droppedCount.Add(1) }
+func (m *testMetrics) ObserveHandle(d time.Duration) { m.handleCount.Add(1) }
+func (m *testMetrics) IncError(name string)          { m.errorCount.Add(1) }
+func (m *testMetrics) IncDropped(name string)        { m.droppedCount.Add(1) }
 
 func TestWithMetrics_Basic(t *testing.T) {
 	m := &testMetrics{}
@@ -333,7 +333,7 @@ func (h *panicHandler) Handle(_ context.Context, _ slog.Record) error {
 	panic(h.msg)
 }
 func (h *panicHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *panicHandler) WithGroup(string) slog.Handler        { return h }
+func (h *panicHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestSafeMultiHandler_AllEnabled(t *testing.T) {
 	h1 := &countHandler{}

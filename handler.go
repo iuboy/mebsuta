@@ -166,9 +166,9 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 					ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
 				}
 			}()
-				// r.Clone() 防止并发 goroutine 竞争 slog.Record。
-				// Clone 内部有快速路径：无 Attr 时仅复制固定字段，无堆分配。
-				if err := hh.Handle(ctx, r.Clone()); err != nil {
+			// r.Clone() 防止并发 goroutine 竞争 slog.Record。
+			// Clone 内部有快速路径：无 Attr 时仅复制固定字段，无堆分配。
+			if err := hh.Handle(ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err

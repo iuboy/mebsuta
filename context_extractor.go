@@ -14,7 +14,7 @@ type ContextExtractor func(ctx context.Context) []slog.Attr
 
 // contextExtractorHandler 是 slog.Handler 装饰器，从 context 提取字段附加到日志。
 type contextExtractorHandler struct {
-	inner  slog.Handler
+	inner   slog.Handler
 	extract ContextExtractor
 }
 
@@ -24,7 +24,7 @@ func WithContextExtractor(inner slog.Handler, extract ContextExtractor) slog.Han
 		return inner
 	}
 	return &contextExtractorHandler{
-		inner:  inner,
+		inner:   inner,
 		extract: extract,
 	}
 }
@@ -46,7 +46,7 @@ func (h *contextExtractorHandler) Handle(ctx context.Context, r slog.Record) err
 // WithAttrs 链式传播到内层。
 func (h *contextExtractorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &contextExtractorHandler{
-		inner:  h.inner.WithAttrs(attrs),
+		inner:   h.inner.WithAttrs(attrs),
 		extract: h.extract,
 	}
 }
@@ -54,7 +54,7 @@ func (h *contextExtractorHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup 链式传播到内层。
 func (h *contextExtractorHandler) WithGroup(name string) slog.Handler {
 	return &contextExtractorHandler{
-		inner:  h.inner.WithGroup(name),
+		inner:   h.inner.WithGroup(name),
 		extract: h.extract,
 	}
 }

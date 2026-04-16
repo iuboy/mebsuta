@@ -69,10 +69,10 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 
 	eh := DefaultErrorHandler
 	h := &AsyncHandler{
-		inner:        inner,
-		ch:           make(chan asyncRecord, bufferSize),
-		ctx:          ctx,
-		cancel:       cancel,
+		inner:  inner,
+		ch:     make(chan asyncRecord, bufferSize),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 	h.errorHandler.Store(&eh)
 	h.wg.Add(1)

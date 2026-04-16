@@ -143,8 +143,8 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 	if err := h.inner.Handle(ctx, r); err != nil {
 		h.state.errCount.Add(1)
 		ReportError(loadErrorHandler(&h.state.errorHandler), "file", err)
-			return err
-		}
+		return err
+	}
 
 	return nil
 }

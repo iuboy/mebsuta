@@ -26,7 +26,7 @@ import (
 // =============================================================================
 
 const (
-	maxSyslogRetries = 5
+	maxSyslogRetries        = 5
 	syslogWriteTimeout      = 3 * time.Second
 	syslogDialerTimeout     = 5 * time.Second
 	maxSyslogHostnameLength = 255
@@ -303,7 +303,7 @@ func (h *SyslogHandler) processQueue() {
 			if !h.isConnected() {
 				rc := atomic.LoadInt32(&retryCount)
 				if rc > 20 {
-				rc = 20 // 防止 math.Pow 溢出
+					rc = 20 // 防止 math.Pow 溢出
 				}
 				baseDelay := time.Second * time.Duration(math.Pow(2, float64(rc)))
 				baseDelay = min(baseDelay, maxReconnectDelay)

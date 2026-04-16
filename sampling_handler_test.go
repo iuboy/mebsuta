@@ -31,7 +31,7 @@ func (h *countHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 func (h *countHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *countHandler) WithGroup(string) slog.Handler        { return h }
+func (h *countHandler) WithGroup(string) slog.Handler      { return h }
 
 func (h *countHandler) Count() int {
 	h.mu.Lock()
