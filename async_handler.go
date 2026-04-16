@@ -108,7 +108,7 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.dropped.Add(1)
-		reportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
+		ReportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
 		return nil
 	}
 }
@@ -162,7 +162,7 @@ func (h *AsyncHandler) run() {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
 		if err := ar.inner.Handle(context.Background(), r); err != nil {
-			reportError(h.errorHandler, "async", err)
+			ReportError(h.errorHandler, "async", err)
 		}
 	}
 }
@@ -234,7 +234,7 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.dropped.Add(1)
-		reportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
+		ReportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
 		return nil
 	}
 }

@@ -58,14 +58,8 @@ type DatabaseHandler struct {
 
 // NewDatabaseHandler 创建输出到数据库的 slog.Handler。
 func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error) {
-	if cfg.DriverName != "mysql" && cfg.DriverName != "postgres" {
-		return nil, fmt.Errorf("mebsuta: unsupported database driver %q, use mysql or postgres", cfg.DriverName)
-	}
-	if cfg.DataSourceName == "" {
-		return nil, fmt.Errorf("mebsuta: database DSN is required")
-	}
-	if cfg.TableName == "" {
-		cfg.TableName = "logs"
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
 	var dialector gorm.Dialector
@@ -86,28 +80,15 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 		return nil, fmt.Errorf("mebsuta: get database connection: %w", err)
 	}
 
-	if cfg.MaxIdleConns > 0 {
-		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
-	}
-	if cfg.MaxOpenConns > 0 {
-		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
-	}
+	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
+	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
 	if cfg.MaxConnLifetime > 0 {
 		sqlDB.SetConnMaxLifetime(cfg.MaxConnLifetime)
 	}
 
 	batchSize := cfg.BatchSize
-	if batchSize <= 0 {
-		batchSize = config.DefaultBatchSize
-	}
 	batchInterval := cfg.BatchInterval
-	if batchInterval <= 0 {
-		batchInterval = config.DefaultBatchInterval
-	}
 	retryDelay := cfg.RetryDelay
-	if retryDelay <= 0 {
-		retryDelay = config.DefaultRetryDelay
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -141,7 +122,7 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.errCount.Add(1)
-		h.reportError("database", fmt.Errorf("buffer full, log dropped"))
+		mebsuta.ReportError(h.errorHandler, "database", fmt.Errorf("buffer full, log dropped"))
 		return nil
 	}
 }
@@ -297,7 +278,7 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			return
 		}
 		h.errCount.Add(1)
-		h.reportError("database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
+		mebsuta.ReportError(h.errorHandler, "database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}
@@ -334,18 +315,6 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler = fn
-}
-
-// SetErrorHandler 设置内部错误处理函数（供用户手动调用）。
-func (h *DatabaseHandler) SetErrorHandler(fn mebsuta.ErrorHandler) {
-	h.setErrorHandler(fn)
-}
-
-// reportError 安全调用 ErrorHandler，nil 时静默丢弃。
-func (h *DatabaseHandler) reportError(component string, err error) {
-	if h.errorHandler != nil {
-		h.errorHandler(component, err)
-	}
 }
 
 // 编译期断言

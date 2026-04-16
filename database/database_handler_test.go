@@ -52,10 +52,9 @@ func TestDatabaseHandler_WithAttrs(t *testing.T) {
 // Regression: ISSUE-002 — DatabaseHandler 必须实现非导出的 setErrorHandler 方法
 // Found by /qa on 2026-04-15
 // propagateErrorHandler 依赖 errorHandlerSetter 接口（要求 setErrorHandler 方法）。
-// 如果只实现导出的 SetErrorHandler，WithErrorHandler option 会被静默忽略。
+// 如果只实现未导出的 setErrorHandler，WithErrorHandler option 会被静默忽略。
 func TestDatabaseHandler_HasSetErrorHandler(t *testing.T) {
 	// 验证 setErrorHandler 存在且可以调用（编译期检查）
 	h := &DatabaseHandler{}
 	h.setErrorHandler(mebsuta.DefaultErrorHandler)
-	h.SetErrorHandler(mebsuta.DefaultErrorHandler)
 }

@@ -53,8 +53,8 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	}
 }
 
-// reportError 安全调用 ErrorHandler，nil 时静默丢弃。
-func reportError(eh ErrorHandler, component string, err error) {
+// ReportError 安全调用 ErrorHandler，nil 时静默丢弃。
+func ReportError(eh ErrorHandler, component string, err error) {
 	if eh != nil {
 		eh(component, err)
 	}
@@ -81,21 +81,19 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	if len(o.handlers) == 1 {
 		return o.handlers[0], nil
 	}
-	return safeMultiHandler(slog.NewMultiHandler(o.handlers...), o.handlers, o.errorHandler), nil
+	return safeMultiHandler(o.handlers, o.errorHandler), nil
 }
 
-// safeMultiHandler 包装 slog.MultiHandler，每个子 Handler 调用时加 panic recover。
+// safeMultiHandler 包装多个子 Handler，每个调用时加 panic recover。
 // 防止单个 Handler panic 导致整个日志调用崩溃。(Decision #17)
-func safeMultiHandler(multi slog.Handler, handlers []slog.Handler, eh ErrorHandler) slog.Handler {
+func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 	return &safeMulti{
-		multi:        multi,
 		handlers:     handlers,
 		errorHandler: eh,
 	}
 }
 
 type safeMulti struct {
-	multi        slog.Handler
 	handlers     []slog.Handler
 	errorHandler ErrorHandler
 }
@@ -114,7 +112,12 @@ func (h *safeMulti) Close() error {
 }
 
 func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.multi.Enabled(ctx, level)
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
@@ -126,11 +129,7 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		}
 		defer func() {
 			if r := recover(); r != nil {
-				eh := h.errorHandler
-				if eh == nil {
-					eh = DefaultErrorHandler
-				}
-				eh("multi", fmt.Errorf("handler panic recovered: %v", r))
+				ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
 			}
 		}()
 		return hh.Handle(ctx, r)
@@ -149,14 +148,10 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					eh := h.errorHandler
-					if eh == nil {
-						eh = DefaultErrorHandler
-					}
-					eh("multi", fmt.Errorf("handler panic recovered: %v", r))
+					ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
 				}
 			}()
-			if err := hh.Handle(ctx, r); err != nil {
+			if err := hh.Handle(ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -175,7 +170,6 @@ func (h *safeMulti) WithAttrs(attrs []slog.Attr) slog.Handler {
 		propagated[i] = hh.WithAttrs(attrs)
 	}
 	return &safeMulti{
-		multi:        h.multi.WithAttrs(attrs),
 		handlers:     propagated,
 		errorHandler: h.errorHandler,
 	}
@@ -187,7 +181,6 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 		propagated[i] = hh.WithGroup(name)
 	}
 	return &safeMulti{
-		multi:        h.multi.WithGroup(name),
 		handlers:     propagated,
 		errorHandler: h.errorHandler,
 	}

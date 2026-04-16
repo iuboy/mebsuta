@@ -65,8 +65,8 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 // NewFileHandler 创建输出到文件的 slog.Handler。
 // level 控制日志级别过滤。cfg 配置文件路径、轮转策略等。
 func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, error) {
-	if cfg.Path == "" {
-		return nil, fmt.Errorf("mebsuta: file path is required")
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
 	// 确保目录存在
@@ -140,7 +140,7 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	if err := h.inner.Handle(ctx, r); err != nil {
 		h.state.errCount.Add(1)
-		reportError(h.errorHandler, "file", err)
+		ReportError(h.errorHandler, "file", err)
 	}
 
 	return nil
@@ -228,18 +228,18 @@ func (h *FileHandler) doRotate() {
 
 	// 关闭当前文件
 	if err := h.state.file.Close(); err != nil {
-		reportError(h.errorHandler, "file", fmt.Errorf("close for rotation: %w", err))
+		ReportError(h.errorHandler, "file", fmt.Errorf("close for rotation: %w", err))
 	}
 	h.state.file = nil
 
 	// 生成备份文件名并重命名
 	backup := h.backupNameLocked()
 	if err := os.Rename(cfg.Path, backup); err != nil {
-		reportError(h.errorHandler, "file", fmt.Errorf("rename for rotation: %w", err))
+		ReportError(h.errorHandler, "file", fmt.Errorf("rename for rotation: %w", err))
 		// 尝试重新打开原文件继续写入
 		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if openErr != nil {
-			reportError(h.errorHandler, "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
+			ReportError(h.errorHandler, "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
 			return
 		}
 		h.state.file = f
@@ -249,7 +249,7 @@ func (h *FileHandler) doRotate() {
 	// 创建新文件
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		reportError(h.errorHandler, "file", fmt.Errorf("create new log file: %w", err))
+		ReportError(h.errorHandler, "file", fmt.Errorf("create new log file: %w", err))
 		h.state.closed.Store(true)
 		return
 	}
