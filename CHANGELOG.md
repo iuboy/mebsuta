@@ -16,6 +16,8 @@
 - `database/` 子包隔离 — DatabaseHandler 独立子包，消除循环引用
 - `database.SetErrorHandler(fn)` — 供用户手动设置 database handler 的错误处理
 
+## [0.3.1] - 2026-04-16
+
 ### 修复
 
 - 修复 `reportError` 未统一使用导致 `WithErrorHandler(nil)` 时 panic（5 处）
