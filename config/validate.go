@@ -32,19 +32,19 @@ func (fc *FileConfig) Validate() error {
 
 // Validate 验证数据库配置
 func (dc *DatabaseConfig) Validate() error {
-	if dc.BatchSize == 0 {
+	if dc.BatchSize <= 0 {
 		dc.BatchSize = DefaultBatchSize
 	}
-	if dc.BatchInterval == 0 {
+	if dc.BatchInterval <= 0 {
 		dc.BatchInterval = DefaultBatchInterval
 	}
-	if dc.MaxOpenConns == 0 {
+	if dc.MaxOpenConns <= 0 {
 		dc.MaxOpenConns = DefaultMaxOpenConns
 	}
-	if dc.MaxIdleConns == 0 {
+	if dc.MaxIdleConns <= 0 {
 		dc.MaxIdleConns = DefaultMaxIdleConns
 	}
-	if dc.RetryDelay == 0 {
+	if dc.RetryDelay <= 0 {
 		dc.RetryDelay = DefaultRetryDelay
 	}
 
@@ -54,7 +54,7 @@ func (dc *DatabaseConfig) Validate() error {
 			return fmt.Errorf("SQL database requires data source name")
 		}
 		if dc.TableName == "" {
-			return fmt.Errorf("SQL database requires table name")
+			dc.TableName = "logs"
 		}
 		if !validTableNameRe.MatchString(dc.TableName) {
 			return fmt.Errorf("invalid table name: %s, only letters, digits and underscores allowed, must start with letter or underscore", dc.TableName)
@@ -74,9 +74,9 @@ func (sc *SyslogConfig) Validate() error {
 		return fmt.Errorf("syslog address is required")
 	}
 	if sc.Tag == "" {
-		return fmt.Errorf("syslog tag is required")
+		sc.Tag = DefaultSyslogTag
 	}
-	if sc.RetryDelay == 0 {
+	if sc.RetryDelay <= 0 {
 		sc.RetryDelay = DefaultRetryDelay
 	}
 	if sc.Facility < 0 || sc.Facility > 23 {

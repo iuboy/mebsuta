@@ -62,25 +62,13 @@ type SyslogHandler struct {
 
 // NewSyslogHandler 创建输出到 syslog 的 slog.Handler。
 func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
-	if cfg.Address == "" {
-		return nil, fmt.Errorf("mebsuta: syslog address is required")
-	}
-	if cfg.Network == "" {
-		cfg.Network = config.DefaultSyslogNetwork
-	}
-	if cfg.Tag == "" {
-		cfg.Tag = config.DefaultSyslogTag
-	}
-	if cfg.RetryDelay <= 0 {
-		cfg.RetryDelay = config.DefaultRetryDelay
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = defaultSyslogBufferSize
 	} else if cfg.BufferSize > maxSyslogBufferSize {
 		cfg.BufferSize = maxSyslogBufferSize
-	}
-	if cfg.Facility < 0 || cfg.Facility > 23 {
-		return nil, fmt.Errorf("mebsuta: syslog facility must be 0-23, got %d", cfg.Facility)
 	}
 
 	hostname, err := generateHostname(cfg.StaticHost)
@@ -240,7 +228,7 @@ func (h *SyslogHandler) reconnect() {
 		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
 	}
 	if err != nil {
-		reportError(h.errorHandler, "syslog", fmt.Errorf("reconnect failed: %w", err))
+		ReportError(h.errorHandler, "syslog", fmt.Errorf("reconnect failed: %w", err))
 		return
 	}
 	h.conn = conn
@@ -280,7 +268,7 @@ func (h *SyslogHandler) writeWithRetry(msg []byte) {
 		}
 		time.Sleep(h.cfg.RetryDelay)
 	}
-	reportError(h.errorHandler, "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
+	ReportError(h.errorHandler, "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
 }
 
 func (h *SyslogHandler) disconnect() {
@@ -409,7 +397,7 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 			if i > 0 {
 				sd.WriteByte(' ')
 			}
-			fmt.Fprintf(&sd, "%s=\"%v\"", attr.Key, attr.Value)
+			fmt.Fprintf(&sd, "%s=\"%s\"", attr.Key, escapeSDValue(attr.Value.String()))
 		}
 		sd.WriteByte(']')
 		sdStr := sd.String()
@@ -490,6 +478,26 @@ func cleanHostname(hostname string) string {
 		return ip.String()
 	}
 	return clean.String()
+}
+
+// escapeSDValue 转义 RFC5424 SD-ELEMENT PARAM-VALUE 中的特殊字符。
+// 需要转义: " → \", \ → \\, ] → \]
+func escapeSDValue(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case ']':
+			b.WriteString(`\]`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func safeMessageForLog(msg string) string {
