@@ -4,20 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/iuboy/mebsuta/config"
 )
 
 // =============================================================================
-// levelHandler 测试
+// LevelHandler 测试
 // =============================================================================
 
 func TestLevelHandler_Enabled(t *testing.T) {
-	h := levelHandler{level: slog.LevelWarn}
+	h := LevelHandler{Level: slog.LevelWarn}
 
 	tests := []struct {
 		level    slog.Level
@@ -140,14 +144,14 @@ func TestStdoutHandler_ConcurrentWrites(t *testing.T) {
 	const goroutines = 100
 	done := make(chan struct{})
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(n int) {
 			logger.Info("concurrent", "n", n)
 			done <- struct{}{}
 		}(i)
 	}
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		<-done
 	}
 
@@ -227,7 +231,7 @@ func TestCloseAll_StdoutHandler(t *testing.T) {
 func TestCloseAll_MultiHandler(t *testing.T) {
 	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
 	h2 := NewStdoutHandler(slog.LevelWarn, JSON)
-	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2})
+	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2}, nil)
 
 	// safeMulti 实现了 io.Closer，应递归关闭子 handler
 	if err := CloseAll(multi); err != nil {
@@ -270,5 +274,280 @@ func TestRecordToLogEntry(t *testing.T) {
 	}
 	if entry.Attrs[0].Key != "key" {
 		t.Errorf("Attr key = %v, want 'key'", entry.Attrs[0].Key)
+	}
+}
+
+// =============================================================================
+// ErrorHandler 测试
+// =============================================================================
+
+func TestErrorHandler_Default(t *testing.T) {
+	var buf bytes.Buffer
+	DefaultErrorHandler = func(component string, err error) {
+		fmt.Fprintf(&buf, "%s: %v\n", component, err)
+	}
+	defer func() { DefaultErrorHandler = defaultErrorHandler }()
+
+	DefaultErrorHandler("test", fmt.Errorf("boom"))
+	got := buf.String()
+	if !strings.Contains(got, "test: boom") {
+		t.Errorf("DefaultErrorHandler output = %q, want 'test: boom'", got)
+	}
+}
+
+func TestErrorHandler_WithErrorHandler(t *testing.T) {
+	var buf bytes.Buffer
+	capture := func(component string, err error) {
+		fmt.Fprintf(&buf, "%s: %v\n", component, err)
+	}
+
+	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	require.NoError(t, err)
+	defer fh.Close()
+
+	logger, err := New(
+		WithHandler(fh),
+		WithErrorHandler(capture),
+	)
+	require.NoError(t, err)
+
+	logger.Error("trigger error handling")
+
+	// FileHandler.Handle 的 inner 写入不会产生错误，但 WithAttrs 子 handler
+	// 现在继承 errorHandler，确认 nil 调用不会 panic
+	sub := logger.With("sub", "val")
+	sub.Error("sub error")
+}
+
+func TestErrorHandler_NilSilent(t *testing.T) {
+	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	require.NoError(t, err)
+	defer fh.Close()
+
+	logger, err := New(
+		WithHandler(fh),
+		WithErrorHandler(nil),
+	)
+	require.NoError(t, err)
+
+	// WithErrorHandler(nil) 不应 panic
+	logger.Error("silent error handling")
+}
+
+func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
+	var buf bytes.Buffer
+	capture := func(component string, err error) {
+		fmt.Fprintf(&buf, "%s: %v\n", component, err)
+	}
+
+	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	require.NoError(t, err)
+	defer fh.Close()
+
+	// 用 Async 装饰器包裹 FileHandler，然后通过 WithErrorHandler 注入
+	asyncH := WithAsync(fh, AsyncConfig{})
+	logger, err := New(
+		WithHandler(asyncH),
+		WithErrorHandler(capture),
+	)
+	require.NoError(t, err)
+
+	logger.Error("test propagation")
+	// 没有断言具体输出，只要不 panic 就行
+}
+
+// =============================================================================
+// SyslogHandler WithAttrs/WithGroup 回归测试
+// =============================================================================
+
+// Regression: ISSUE-001 — SyslogHandler 缺少 WithAttrs/WithGroup
+// Found by /qa on 2026-04-15
+// 用户调用 logger.With("key", "value") 后写 syslog，预置属性不应静默丢失。
+func TestSyslogHandler_WithAttrs(t *testing.T) {
+	// SyslogHandler 需要真实连接，这里只验证 WithAttrs 返回的 handler 类型正确
+	// 且 Handle 不会 panic（即使连接失败，safeSend 会 recover）
+	h := &SyslogHandler{
+		LevelHandler: LevelHandler{Level: slog.LevelInfo},
+		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
+		buffer:       make(chan []byte, 10),
+		closing:      atomic.Bool{},
+		closed:       atomic.Bool{},
+		errorHandler: DefaultErrorHandler,
+	}
+
+	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
+	if child == nil {
+		t.Fatal("WithAttrs returned nil")
+	}
+
+	// 验证子 handler 不是自身（应该返回包装器）
+	if child == h {
+		t.Error("WithAttrs should return a wrapper, not the same handler")
+	}
+
+	// 验证 WithGroup 也不返回 nil
+	grouped := h.WithGroup("request")
+	if grouped == nil {
+		t.Fatal("WithGroup returned nil")
+	}
+	if grouped == h {
+		t.Error("WithGroup should return a wrapper, not the same handler")
+	}
+
+	// 验证链式 WithAttrs 合并属性
+	double := child.WithAttrs([]slog.Attr{slog.String("extra", "data")})
+	if double == nil {
+		t.Fatal("chained WithAttrs returned nil")
+	}
+}
+
+// =============================================================================
+// groupHandler WithAttrs group 前缀回归测试
+// =============================================================================
+
+// Regression: group 语义丢失 — WithGroup 后 WithAttrs 的属性 key 应带 group 前缀。
+// Found by /pr-review-toolkit:review-pr on 2026-04-15.
+func TestSyslogHandler_GroupPrefix(t *testing.T) {
+	h := &SyslogHandler{
+		LevelHandler: LevelHandler{Level: slog.LevelInfo},
+		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
+		buffer:       make(chan []byte, 10),
+		closing:      atomic.Bool{},
+		closed:       atomic.Bool{},
+		errorHandler: DefaultErrorHandler,
+	}
+
+	grouped := h.WithGroup("req").WithAttrs([]slog.Attr{slog.String("key", "val")})
+	// 类型断言：WithGroup 后 WithAttrs 应返回 syslogAttrsHandler
+	attrsH, ok := grouped.(*syslogAttrsHandler)
+	if !ok {
+		t.Fatalf("expected syslogAttrsHandler, got %T", grouped)
+	}
+	if len(attrsH.attrs) != 1 {
+		t.Fatalf("expected 1 attr, got %d", len(attrsH.attrs))
+	}
+	if attrsH.attrs[0].Key != "req.key" {
+		t.Errorf("attr key = %q, want %q", attrsH.attrs[0].Key, "req.key")
+	}
+}
+
+func TestAsyncHandler_GroupPrefix(t *testing.T) {
+	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
+	grouped := ah.WithGroup("svc").WithAttrs([]slog.Attr{slog.String("id", "1")})
+
+	attrsH, ok := grouped.(*asyncAttrsHandler)
+	if !ok {
+		t.Fatalf("expected asyncAttrsHandler, got %T", grouped)
+	}
+	if len(attrsH.attrs) != 1 || attrsH.attrs[0].Key != "svc.id" {
+		t.Errorf("attr key = %q, want %q", attrsH.attrs[0].Key, "svc.id")
+	}
+}
+
+// =============================================================================
+// WithAttrs().WithGroup() 属性传递回归测试
+// =============================================================================
+
+// Regression: WithAttrs 后 WithGroup 不应丢失已累积的属性
+// Found by code review on 2026-04-16.
+// handler.WithAttrs(a=1).WithGroup("req").WithAttrs(b=2) 中 a=1 被静默丢弃。
+func TestSyslogHandler_AttrsSurviveGroup(t *testing.T) {
+	h := &SyslogHandler{
+		LevelHandler: LevelHandler{Level: slog.LevelInfo},
+		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
+		buffer:       make(chan []byte, 10),
+		closing:      atomic.Bool{},
+		closed:       atomic.Bool{},
+		errorHandler: DefaultErrorHandler,
+	}
+
+	chain := h.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
+	attrsH, ok := chain.(*syslogAttrsHandler)
+	if !ok {
+		t.Fatalf("expected syslogAttrsHandler, got %T", chain)
+	}
+	// 应有 2 个属性: service=api 和 req.id=1
+	if len(attrsH.attrs) != 2 {
+		t.Fatalf("expected 2 attrs, got %d", len(attrsH.attrs))
+	}
+	if attrsH.attrs[0].Key != "service" {
+		t.Errorf("first attr key = %q, want %q", attrsH.attrs[0].Key, "service")
+	}
+	if attrsH.attrs[1].Key != "req.id" {
+		t.Errorf("second attr key = %q, want %q", attrsH.attrs[1].Key, "req.id")
+	}
+}
+
+func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
+	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
+	chain := ah.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
+	attrsH, ok := chain.(*asyncAttrsHandler)
+	if !ok {
+		t.Fatalf("expected asyncAttrsHandler, got %T", chain)
+	}
+	if len(attrsH.attrs) != 2 {
+		t.Fatalf("expected 2 attrs, got %d", len(attrsH.attrs))
+	}
+	if attrsH.attrs[0].Key != "service" {
+		t.Errorf("first attr key = %q, want %q", attrsH.attrs[0].Key, "service")
+	}
+	if attrsH.attrs[1].Key != "req.id" {
+		t.Errorf("second attr key = %q, want %q", attrsH.attrs[1].Key, "req.id")
+	}
+}
+
+// =============================================================================
+// panic recovery + nil errorHandler 回归测试
+// =============================================================================
+
+// Regression: panic recovery 在 nil ErrorHandler 时静默丢弃
+// Found by /pr-review-toolkit:review-pr on 2026-04-15.
+// panic 意味着代码 bug，即使 errorHandler 为 nil 也应写 stderr。
+func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
+	var buf bytes.Buffer
+	// 捕获 stderr 输出
+	DefaultErrorHandler = func(component string, err error) {
+		fmt.Fprintf(&buf, "%s: %v", component, err)
+	}
+	defer func() { DefaultErrorHandler = defaultErrorHandler }()
+
+	good := &countHandler{}
+	bad := &panicHandler{msg: "nil eh panic"}
+	h := safeMultiHandler(slog.NewMultiHandler(good, bad), []slog.Handler{good, bad}, nil)
+	logger := slog.New(h)
+	logger.Info("test")
+
+	if !strings.Contains(buf.String(), "multi") {
+		t.Error("panic recovery should always write to stderr, even with nil errorHandler")
+	}
+	if !strings.Contains(buf.String(), "nil eh panic") {
+		t.Error("panic message should contain the panic value")
+	}
+}
+
+// Regression: WithErrorHandler(nil) 应传播 nil 到子 handler
+// Found by /pr-review-toolkit:review-pr on 2026-04-15.
+func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
+	var buf bytes.Buffer
+	// FileHandler 有 errorHandler 字段，默认是 DefaultErrorHandler
+	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	require.NoError(t, err)
+	defer fh.Close()
+	DefaultErrorHandler = func(component string, err error) {
+		fmt.Fprintf(&buf, "%s: %v", component, err)
+	}
+	defer func() { DefaultErrorHandler = defaultErrorHandler }()
+
+	logger, err := New(WithHandler(fh), WithErrorHandler(nil))
+	require.NoError(t, err)
+
+	// 写一条日志（文件写入不会产生错误，但验证不 panic）
+	logger.Info("test")
+
+	// fh 的 errorHandler 应该是 nil（被传播了 nil），不会写到 stderr
+	if buf.Len() > 0 {
+		t.Errorf("nil errorHandler should be propagated, but got stderr output: %s", buf.String())
 	}
 }

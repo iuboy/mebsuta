@@ -1,4 +1,4 @@
-package mebsuta
+package database
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/iuboy/mebsuta"
 	"github.com/iuboy/mebsuta/config"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
@@ -42,16 +43,17 @@ func (dbLogEntry) TableName() string {
 // 实现 slog.Handler 和 io.Closer 接口。
 // 支持 MySQL 和 Postgres（通过 GORM）。
 type DatabaseHandler struct {
-	levelHandler
-	cfg      config.DatabaseConfig
-	db       *gorm.DB
-	table    string
-	entries  chan dbLogEntry
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	closed   atomic.Bool
-	errCount atomic.Int64
+	mebsuta.LevelHandler
+	cfg          config.DatabaseConfig
+	db           *gorm.DB
+	table        string
+	entries      chan dbLogEntry
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	closed       atomic.Bool
+	errCount     atomic.Int64
+	errorHandler mebsuta.ErrorHandler
 }
 
 // NewDatabaseHandler 创建输出到数据库的 slog.Handler。
@@ -110,13 +112,14 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h := &DatabaseHandler{
-		levelHandler: levelHandler{level: level},
+		LevelHandler: mebsuta.LevelHandler{Level: level},
 		cfg:          cfg,
 		db:           gdb,
 		table:        cfg.TableName,
 		entries:      make(chan dbLogEntry, batchSize*10),
 		ctx:          ctx,
 		cancel:       cancel,
+		errorHandler: mebsuta.DefaultErrorHandler,
 	}
 
 	h.wg.Add(1)
@@ -138,7 +141,7 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.errCount.Add(1)
-		writeError("database", fmt.Errorf("buffer full, log dropped"))
+		h.reportError("database", fmt.Errorf("buffer full, log dropped"))
 		return nil
 	}
 }
@@ -146,8 +149,6 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs 返回带有预置属性的新 DatabaseHandler。
 // 预置属性会在 Handle 中序列化到 JSON Fields。
 func (h *DatabaseHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// DatabaseHandler 是有状态的（通道、goroutine），不能简单复制。
-	// 返回一个包装器，在 Handle 时注入预置属性。
 	return &dbAttrsHandler{
 		DatabaseHandler: h,
 		attrs:           attrs,
@@ -189,6 +190,7 @@ func (h *dbAttrsHandler) WithGroup(name string) slog.Handler {
 	return &dbGroupHandler{
 		DatabaseHandler: h.DatabaseHandler,
 		group:           name,
+		attrs:           h.attrs,
 	}
 }
 
@@ -196,18 +198,25 @@ func (h *dbAttrsHandler) WithGroup(name string) slog.Handler {
 type dbGroupHandler struct {
 	*DatabaseHandler
 	group string
+	attrs []slog.Attr
 }
 
 func (h *dbGroupHandler) Handle(ctx context.Context, r slog.Record) error {
-	// DatabaseHandler 将所有 Attr 序列化为 JSON，group 信息包含在 key 中
-	// slog 内部会处理 group 前缀
+	for _, attr := range h.attrs {
+		r.AddAttrs(attr)
+	}
 	return h.DatabaseHandler.Handle(ctx, r)
 }
 
 func (h *dbGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
+	copy(merged, h.attrs)
+	for _, a := range attrs {
+		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+	}
 	return &dbAttrsHandler{
 		DatabaseHandler: h.DatabaseHandler,
-		attrs:           attrs,
+		attrs:           merged,
 	}
 }
 
@@ -215,6 +224,7 @@ func (h *dbGroupHandler) WithGroup(name string) slog.Handler {
 	return &dbGroupHandler{
 		DatabaseHandler: h.DatabaseHandler,
 		group:           h.group + "." + name,
+		attrs:           h.attrs,
 	}
 }
 
@@ -278,16 +288,16 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), finalFlushTimeout)
-	defer cancel()
-
 	for i := range finalFlushRetries {
-		var dbErr error
-		if dbErr = h.db.WithContext(ctx).Table(h.table).CreateInBatches(batch, len(batch)).Error; dbErr == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), finalFlushTimeout)
+		dbErr := h.db.WithContext(ctx).Table(h.table).CreateInBatches(batch, len(batch)).Error
+		cancel()
+
+		if dbErr == nil {
 			return
 		}
 		h.errCount.Add(1)
-		writeError("database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
+		h.reportError("database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}
@@ -305,7 +315,6 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 		Message: r.Message,
 	}
 
-	// 将 Attrs 序列化为 JSON
 	fields := make(map[string]any)
 	r.Attrs(func(attr slog.Attr) bool {
 		fields[attr.Key] = attr.Value
@@ -320,6 +329,23 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 	}
 
 	return entry
+}
+
+// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
+func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
+	h.errorHandler = fn
+}
+
+// SetErrorHandler 设置内部错误处理函数（供用户手动调用）。
+func (h *DatabaseHandler) SetErrorHandler(fn mebsuta.ErrorHandler) {
+	h.setErrorHandler(fn)
+}
+
+// reportError 安全调用 ErrorHandler，nil 时静默丢弃。
+func (h *DatabaseHandler) reportError(component string, err error) {
+	if h.errorHandler != nil {
+		h.errorHandler(component, err)
+	}
 }
 
 // 编译期断言

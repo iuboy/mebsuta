@@ -177,14 +177,14 @@ func TestFileHandler_ConcurrentWrites(t *testing.T) {
 	const goroutines = 100
 	done := make(chan struct{})
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(n int) {
 			logger.Info("concurrent", "n", n)
 			done <- struct{}{}
 		}(i)
 	}
 
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		<-done
 	}
 
@@ -254,7 +254,7 @@ func TestFileHandler_SizeRotation(t *testing.T) {
 
 	// 写入足够多的数据触发轮转（1MB）
 	msg := strings.Repeat("x", 1024) // 1KB per message
-	for i := 0; i < 1100; i++ {
+	for range 1100 {
 		logger.Info("fill", "data", msg)
 	}
 
@@ -286,7 +286,7 @@ func TestFileHandler_MaxBackups(t *testing.T) {
 
 	// 写入足够多的数据触发多次轮转
 	msg := strings.Repeat("x", 1024)
-	for i := 0; i < 3300; i++ {
+	for range 3300 {
 		logger.Info("fill", "data", msg)
 	}
 
@@ -315,7 +315,7 @@ func TestFileHandler_Compress(t *testing.T) {
 
 	// 写入足够多的数据触发轮转
 	msg := strings.Repeat("x", 1024)
-	for i := 0; i < 1100; i++ {
+	for range 1100 {
 		logger.Info("fill", "data", msg)
 	}
 
@@ -386,7 +386,7 @@ func TestCompressFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	compressFile(src)
+	compressFile(src, DefaultErrorHandler)
 
 	// 压缩文件应该存在
 	if _, err := os.Stat(gzPath); err != nil {

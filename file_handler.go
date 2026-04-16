@@ -24,11 +24,12 @@ import (
 // FileHandler 将日志记录输出到文件，支持大小+时间轮转和 gzip 压缩。
 // 实现 slog.Handler 和 io.Closer 接口。
 type FileHandler struct {
-	levelHandler
-	format EncodingType
-	inner  slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
-	state  *fileState   // 共享可变状态（跨 WithAttrs/WithGroup 子 Handler）
-	cw     *countingWriter
+	LevelHandler
+	format        EncodingType
+	inner         slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
+	state         *fileState   // 共享可变状态（跨 WithAttrs/WithGroup 子 Handler）
+	cw            *countingWriter
+	errorHandler  ErrorHandler
 }
 
 // fileState 保存文件相关的共享可变状态。
@@ -105,11 +106,12 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 	inner := newInnerHandler(cw, format)
 
 	return &FileHandler{
-		levelHandler: levelHandler{level: level},
+		LevelHandler: LevelHandler{Level: level},
 		format:       format,
 		inner:        inner,
 		state:        state,
 		cw:           cw,
+		errorHandler: DefaultErrorHandler,
 	}, nil
 }
 
@@ -138,7 +140,7 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	if err := h.inner.Handle(ctx, r); err != nil {
 		h.state.errCount.Add(1)
-		writeError("file", err)
+		reportError(h.errorHandler, "file", err)
 	}
 
 	return nil
@@ -147,22 +149,24 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs 返回带有预置属性的新 FileHandler。
 func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &FileHandler{
-		levelHandler: h.levelHandler,
+		LevelHandler: h.LevelHandler,
 		format:       h.format,
 		inner:        h.inner.WithAttrs(attrs),
 		state:        h.state,
 		cw:           h.cw,
+		errorHandler: h.errorHandler,
 	}
 }
 
 // WithGroup 返回带有分组前缀的新 FileHandler。
 func (h *FileHandler) WithGroup(name string) slog.Handler {
 	return &FileHandler{
-		levelHandler: h.levelHandler,
+		LevelHandler: h.LevelHandler,
 		format:       h.format,
 		inner:        h.inner.WithGroup(name),
 		state:        h.state,
 		cw:           h.cw,
+		errorHandler: h.errorHandler,
 	}
 }
 
@@ -181,6 +185,11 @@ func (h *FileHandler) Close() error {
 	err := h.state.file.Close()
 	h.state.file = nil
 	return err
+}
+
+// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
+func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler = fn
 }
 
 // =============================================================================
@@ -219,18 +228,18 @@ func (h *FileHandler) doRotate() {
 
 	// 关闭当前文件
 	if err := h.state.file.Close(); err != nil {
-		writeError("file", fmt.Errorf("close for rotation: %w", err))
+		reportError(h.errorHandler, "file", fmt.Errorf("close for rotation: %w", err))
 	}
 	h.state.file = nil
 
 	// 生成备份文件名并重命名
 	backup := h.backupNameLocked()
 	if err := os.Rename(cfg.Path, backup); err != nil {
-		writeError("file", fmt.Errorf("rename for rotation: %w", err))
+		reportError(h.errorHandler, "file", fmt.Errorf("rename for rotation: %w", err))
 		// 尝试重新打开原文件继续写入
 		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if openErr != nil {
-			writeError("file", fmt.Errorf("reopen after failed rotation: %w", openErr))
+			reportError(h.errorHandler, "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
 			return
 		}
 		h.state.file = f
@@ -240,7 +249,7 @@ func (h *FileHandler) doRotate() {
 	// 创建新文件
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		writeError("file", fmt.Errorf("create new log file: %w", err))
+		reportError(h.errorHandler, "file", fmt.Errorf("create new log file: %w", err))
 		h.state.closed.Store(true)
 		return
 	}
@@ -251,7 +260,8 @@ func (h *FileHandler) doRotate() {
 
 	// 异步压缩备份
 	if cfg.Compress {
-		go compressFile(backup)
+		eh := h.errorHandler
+		go compressFile(backup, eh)
 	}
 
 	// 清理旧备份
@@ -339,20 +349,23 @@ func (h *FileHandler) cleanupBackupsLocked() {
 // =============================================================================
 
 // compressFile 将文件异步压缩为 .gz（使用临时文件 + 原子 rename）。
-func compressFile(path string) {
+func compressFile(path string, eh ErrorHandler) {
+	if eh == nil {
+		return
+	}
 	gzPath := path + ".gz"
 	tmpPath := gzPath + ".tmp"
 
 	src, err := os.Open(path)
 	if err != nil {
-		writeError("file", fmt.Errorf("compress open %s: %w", path, err))
+		eh("file", fmt.Errorf("compress open %s: %w", path, err))
 		return
 	}
 	defer src.Close()
 
 	dst, err := os.Create(tmpPath)
 	if err != nil {
-		writeError("file", fmt.Errorf("compress create temp: %w", err))
+		eh("file", fmt.Errorf("compress create temp: %w", err))
 		return
 	}
 
@@ -361,32 +374,34 @@ func compressFile(path string) {
 	if err != nil {
 		dst.Close()
 		os.Remove(tmpPath)
-		writeError("file", fmt.Errorf("compress data: %w", err))
+		eh("file", fmt.Errorf("compress data: %w", err))
 		return
 	}
 
 	if err := gw.Close(); err != nil {
 		dst.Close()
 		os.Remove(tmpPath)
-		writeError("file", fmt.Errorf("compress flush: %w", err))
+		eh("file", fmt.Errorf("compress flush: %w", err))
 		return
 	}
 
 	if err := dst.Close(); err != nil {
 		os.Remove(tmpPath)
-		writeError("file", fmt.Errorf("compress close temp: %w", err))
+		eh("file", fmt.Errorf("compress close temp: %w", err))
 		return
 	}
 
 	// 原子 rename
 	if err := os.Rename(tmpPath, gzPath); err != nil {
 		os.Remove(tmpPath)
-		writeError("file", fmt.Errorf("compress rename: %w", err))
+		eh("file", fmt.Errorf("compress rename: %w", err))
 		return
 	}
 
 	// 删除原文件
-	os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		eh("file", fmt.Errorf("compress remove original %s: %w", path, err))
+	}
 }
 
 // compressResidual 在启动时检测并压缩上次崩溃留下的未压缩轮转文件。
@@ -416,7 +431,7 @@ func compressResidual(logPath string, compress bool) {
 		}
 
 		if compress {
-			go compressFile(filepath.Join(dir, name))
+			go compressFile(filepath.Join(dir, name), DefaultErrorHandler)
 		}
 	}
 }

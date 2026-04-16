@@ -283,8 +283,7 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 //	registry.MustRegister(mebsuta.GetMetricsAsCollector())
 //	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 func RegisterToRegistry(registry prometheus.Registerer) error {
-	registry.MustRegister(GetMetrics())
-	return nil
+	return registry.Register(GetMetrics())
 }
 
 // GetMetricsAsCollector 获取指标作为 prometheus.Collector

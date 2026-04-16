@@ -2,8 +2,6 @@ module github.com/iuboy/mebsuta
 
 go 1.26.0
 
-// 注意: testcontainers-go模块需要Go 1.21+，使用go work workspace时会自动检测版本
-
 require (
 	github.com/gofrs/flock v0.13.0
 	github.com/prometheus/client_golang v1.23.2

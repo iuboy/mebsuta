@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"net/url"
-	"reflect"
 	"regexp"
 	"strings"
 )
@@ -24,13 +23,6 @@ func (dc *DatabaseConfig) Sanitize() string {
 
 	if dc.TableName != "" {
 		parts = append(parts, "TableName="+dc.TableName)
-	}
-
-	if dc.TimeSeries != nil {
-		parts = append(parts, "TimeSeries.URL="+dc.TimeSeries.URL)
-		parts = append(parts, "TimeSeries.Token="+maskToken(dc.TimeSeries.Token))
-		parts = append(parts, "TimeSeries.Org="+dc.TimeSeries.Org)
-		parts = append(parts, "TimeSeries.Bucket="+dc.TimeSeries.Bucket)
 	}
 
 	parts = append(parts, "BatchSize="+fmt.Sprint(dc.BatchSize))
@@ -110,20 +102,6 @@ func maskPasswordInDSN(dsn string) string {
 	return "(hidden)"
 }
 
-// maskToken 隐藏 token 的大部分字符
-func maskToken(token string) string {
-	if token == "" {
-		return ""
-	}
-
-	if len(token) <= 8 {
-		return "****"
-	}
-
-	// 保留前 4 位和后 4 位
-	return token[:4] + "..." + token[len(token)-4:]
-}
-
 // SanitizeForLog 对任意配置进行脱敏（通用方法）
 func SanitizeForLog(cfg any) string {
 	if cfg == nil {
@@ -144,9 +122,5 @@ func SanitizeForLog(cfg any) string {
 }
 
 func getTypeName(v any) string {
-	if t := reflect.TypeOf(v); t.Kind() == reflect.Ptr {
-		return t.Elem().Name()
-	} else {
-		return t.Name()
-	}
+	return fmt.Sprintf("%T", v)
 }
