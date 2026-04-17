@@ -2,6 +2,7 @@ package mebsuta
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -146,4 +147,7 @@ func (h *SamplingHandler) resetLoop() {
 }
 
 // 编译期断言
-var _ slog.Handler = (*SamplingHandler)(nil)
+var (
+	_ slog.Handler = (*SamplingHandler)(nil)
+	_ io.Closer    = (*SamplingHandler)(nil)
+)
