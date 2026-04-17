@@ -1,7 +1,6 @@
 package mebsuta
 
 import (
-	"sync"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 

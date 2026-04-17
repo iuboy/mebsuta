@@ -34,7 +34,8 @@ type Metrics struct {
 	writeLatency prometheus.Histogram
 
 	// Goroutine状态
-	activeGoroutines atomic.Int64
+	activeGoroutines prometheus.Gauge
+	goroutineCount   atomic.Int64
 }
 
 var (
@@ -137,6 +138,13 @@ func NewMetrics() *Metrics {
 				Buckets: prometheus.ExponentialBuckets(0.0001, 2, 10), // 0.1ms, 0.2ms, ... 51.2ms
 			},
 		),
+
+		activeGoroutines: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "mebsuta_active_goroutines",
+				Help: "活跃 goroutine 数量",
+			},
+		),
 	}
 }
 
@@ -210,17 +218,19 @@ func (m *Metrics) ObserveWriteLatency(seconds float64) {
 
 // IncGoroutine 增加活跃goroutine计数
 func (m *Metrics) IncGoroutine() {
-	m.activeGoroutines.Add(1)
+	m.goroutineCount.Add(1)
+	m.activeGoroutines.Inc()
 }
 
 // DecGoroutine 减少活跃goroutine计数
 func (m *Metrics) DecGoroutine() {
-	m.activeGoroutines.Add(-1)
+	m.goroutineCount.Add(-1)
+	m.activeGoroutines.Dec()
 }
 
 // GetGoroutineCount 获取活跃goroutine计数
 func (m *Metrics) GetGoroutineCount() int64 {
-	return m.activeGoroutines.Load()
+	return m.goroutineCount.Load()
 }
 
 // =============================================================================

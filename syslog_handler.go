@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand/v2"
@@ -335,7 +336,7 @@ func (h *SyslogHandler) processQueue() {
 func (h *SyslogHandler) safeSend(data []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = net.ErrClosed
+			err = fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
 		}
 	}()
 	select {
@@ -585,4 +586,7 @@ func (h *syslogGroupHandler) WithGroup(name string) slog.Handler {
 }
 
 // 编译期断言
-var _ slog.Handler = (*SyslogHandler)(nil)
+var (
+	_ slog.Handler = (*SyslogHandler)(nil)
+	_ io.Closer    = (*SyslogHandler)(nil)
+)
