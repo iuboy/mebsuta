@@ -15,6 +15,12 @@
 - 修复 `syslog_handler` 重连指数退避 `math.Pow` 无上限溢出风险（rc 上限 20）
 - 修复 `database_handler` 批量写入 `batch[:0]` 保留底层数组阻止 GC 回收
 - 修复 `metrics.Register()` 使用局部 `err` 变量导致首次注册错误被后续调用隐藏
+- 修复 `DatabaseHandler.Handle()` 并发 `Close()` 时 send on closed channel panic（添加 recover）
+- 修复 `DatabaseHandler.Close()` 可能丢失缓冲区日志条目（调整 close/wait/cancel 顺序）
+- 修复 `DatabaseConfig.Validate()` 未约束 `MaxIdleConns <= MaxOpenConns`
+- 修复 `SyslogConfig.Validate()` 未填充 `BufferSize` 默认值
+- 修复 9 个测试 goroutine 泄漏（SamplingHandler/AsyncHandler 未调用 Close）
+- 移除 `concurrentHandler` 测试辅助类型中未使用的 `mu sync.Mutex` 字段
 
 ### 改进
 

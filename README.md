@@ -64,7 +64,7 @@ h, err := mebsuta.NewFileHandler(config.FileConfig{
     MaxAgeDays:   30,
     Compress:     true,
     Format:       mebsuta.JSON,
-})
+}, slog.LevelInfo)
 ```
 
 ### SyslogHandler
@@ -75,7 +75,7 @@ h, err := mebsuta.NewSyslogHandler(config.SyslogConfig{
     Address:  "localhost:514",
     Tag:      "my-app",
     RFC5424:  true,
-})
+}, slog.LevelInfo)
 ```
 
 ### DatabaseHandler
@@ -87,7 +87,7 @@ h, err := mebsuta.NewDatabaseHandler(config.DatabaseConfig{
     TableName:      "logs",
     BatchSize:      100,
     BatchInterval:  5 * time.Second,
-})
+}, slog.LevelInfo)
 ```
 
 ## 多输出
@@ -95,12 +95,12 @@ h, err := mebsuta.NewDatabaseHandler(config.DatabaseConfig{
 ```go
 logger, err := mebsuta.New(
     mebsuta.WithHandler(mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)),
-    mebsuta.WithHandler(mebsuta.NewFileHandler(fileConfig)),
-    mebsuta.WithHandler(mebsuta.NewSyslogHandler(syslogConfig)),
+    mebsuta.WithHandler(mebsuta.NewFileHandler(fileConfig, slog.LevelInfo)),
+    mebsuta.WithHandler(mebsuta.NewSyslogHandler(syslogConfig, slog.LevelInfo)),
 )
 ```
 
-多个 Handler 自动使用 `slog.NewMultiHandler`，每个子 Handler 独立 panic recovery。
+多个 Handler 自动使用 `safeMultiHandler`（自研实现，per-handler panic recovery + 并行分发）。
 
 ## 装饰器
 
@@ -142,6 +142,19 @@ h := mebsuta.WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 })
 ```
 
+### 自定义错误处理
+
+```go
+logger, err := mebsuta.New(
+    mebsuta.WithHandler(stdoutHandler),
+    mebsuta.WithErrorHandler(func(component string, err error) {
+        sentry.CaptureException(err)
+    }),
+)
+```
+
+所有子 Handler（包括装饰器链内部）自动传播 `ErrorHandler`。设为 `nil` 则静默丢弃内部错误。
+
 装饰器可以自由组合：
 
 ```go
@@ -163,6 +176,9 @@ import (
 registry := prometheus.NewRegistry()
 registry.MustRegister(mebmetrics.GetMetricsAsCollector())
 http.Handle("/metrics", promhttp.HandlerFor(registry, prometheus.HandlerOpts{}))
+
+// 或注册到默认注册表（幂等，可安全多次调用）
+mebmetrics.Register()
 ```
 
 ### 可用指标
@@ -175,9 +191,12 @@ http.Handle("/metrics", promhttp.HandlerFor(registry, prometheus.HandlerOpts{}))
 | `mebsuta_batch_writes_total` | Counter | 批量写入总数 |
 | `mebsuta_batch_size` | Histogram | 批量写入大小 |
 | `mebsuta_batch_latency_seconds` | Histogram | 批量写入延迟 |
+| `mebsuta_batch_failures_total` | Counter | 批量写入失败总数 |
 | `mebsuta_buffer_usage` | Gauge | 缓冲区使用率 |
+| `mebsuta_buffer_full_total` | Counter | 缓冲区满事件总数 |
 | `mebsuta_active_connections` | Gauge | 活跃连接数 |
 | `mebsuta_idle_connections` | Gauge | 空闲连接数 |
+| `mebsuta_write_latency_seconds` | Histogram | 写入延迟分布 |
 
 ## 测试
 
