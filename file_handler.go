@@ -75,9 +75,6 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 		return nil, fmt.Errorf("mebsuta: create log directory: %w", err)
 	}
 
-	// 启动时检测并压缩残留的未压缩轮转文件
-	compressResidual(cfg.Path, cfg.Compress)
-
 	// 打开日志文件
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -102,6 +99,9 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 		cfg:       cfg,
 	}
 	state.size.Store(fi.Size())
+
+	// 启动时检测并压缩残留的未压缩轮转文件
+	compressResidual(cfg.Path, cfg.Compress, &state.compressWg)
 
 	cw := &countingWriter{state: state}
 	inner := newInnerHandler(cw, format)
@@ -415,7 +415,7 @@ func compressFile(path string, eh ErrorHandler) {
 }
 
 // compressResidual 在启动时检测并压缩上次崩溃留下的未压缩轮转文件。
-func compressResidual(logPath string, compress bool) {
+func compressResidual(logPath string, compress bool, wg *sync.WaitGroup) {
 	dir := filepath.Dir(logPath)
 	base := filepath.Base(logPath)
 
@@ -441,7 +441,11 @@ func compressResidual(logPath string, compress bool) {
 		}
 
 		if compress {
-			go compressFile(filepath.Join(dir, name), DefaultErrorHandler)
+			wg.Add(1)
+			go func(path string) {
+				defer wg.Done()
+				compressFile(path, DefaultErrorHandler)
+			}(filepath.Join(dir, name))
 		}
 	}
 }

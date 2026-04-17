@@ -113,14 +113,12 @@ type safeMulti struct {
 	errorHandler ErrorHandler
 }
 
-// Close 递归关闭所有实现 io.Closer 的子 handler。
+// Close 递归关闭所有子 handler（包括装饰器链内层）。
 func (h *safeMulti) Close() error {
 	var errs []error
 	for _, hh := range h.handlers {
-		if closer, ok := hh.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				errs = append(errs, err)
-			}
+		if err := CloseAll(hh); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
