@@ -118,6 +118,14 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	entry := h.recordToDBEntry(r)
 
+	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
+	defer func() {
+		if r := recover(); r != nil {
+			h.errCount.Add(1)
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("send on closed channel, log dropped"))
+		}
+	}()
+
 	select {
 	case h.entries <- entry:
 		return nil
@@ -215,9 +223,9 @@ func (h *DatabaseHandler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	h.cancel()
 	close(h.entries)
 	h.wg.Wait()
+	h.cancel()
 
 	sqlDB, err := h.db.DB()
 	if err != nil {

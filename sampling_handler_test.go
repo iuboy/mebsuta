@@ -47,6 +47,13 @@ func (h *countHandler) Levels() []slog.Level {
 	return cp
 }
 
+func closeSampling(t *testing.T, h slog.Handler) {
+	t.Helper()
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+}
+
 // =============================================================================
 // SamplingHandler 测试
 // =============================================================================
@@ -80,6 +87,7 @@ func TestWithSampling_BasicSampling(t *testing.T) {
 		Thereafter: 2,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 	logger := slog.New(h)
 
 	for i := range 20 {
@@ -104,6 +112,7 @@ func TestWithSampling_ErrorAlwaysRecorded(t *testing.T) {
 		Thereafter: 100,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 	logger := slog.New(h)
 
 	for i := range 10 {
@@ -123,6 +132,7 @@ func TestWithSampling_WarnSampled(t *testing.T) {
 		Thereafter: 100,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 	logger := slog.New(h)
 
 	for i := range 10 {
@@ -142,6 +152,7 @@ func TestWithSampling_WindowReset(t *testing.T) {
 		Thereafter: 10,
 		Window:     100 * time.Millisecond,
 	})
+	defer closeSampling(t, h)
 	logger := slog.New(h)
 
 	// 第一窗口：6 条（前 5 全记录，第 6 条被采样）
@@ -171,6 +182,7 @@ func TestWithSampling_Concurrent(t *testing.T) {
 		Thereafter: 10,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 	logger := slog.New(h)
 
 	var wg sync.WaitGroup
@@ -202,6 +214,7 @@ func TestWithSampling_WithAttrs(t *testing.T) {
 		Thereafter: 10,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 
 	child := h.WithAttrs([]slog.Attr{slog.String("component", "test")})
 	logger := slog.New(child)
@@ -223,6 +236,7 @@ func TestWithSampling_WithGroup(t *testing.T) {
 		Thereafter: 10,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 
 	child := h.WithGroup("request")
 	logger := slog.New(child)
@@ -243,6 +257,7 @@ func TestWithSampling_Enabled(t *testing.T) {
 		Thereafter: 100,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, h)
 
 	if !h.Enabled(context.Background(), slog.LevelError) {
 		t.Error("Error should always be enabled")
@@ -277,6 +292,7 @@ func TestWithSampling_Defaults(t *testing.T) {
 	inner := &countHandler{}
 	// 零值配置应使用默认值
 	h := WithSampling(inner, config.SamplingConfig{Enabled: true})
+	defer closeSampling(t, h)
 	logger := slog.New(h)
 
 	for range 200 {
@@ -456,6 +472,7 @@ func TestStdoutHandler_WithSampling(t *testing.T) {
 		Thereafter: 10,
 		Window:     time.Second,
 	})
+	defer closeSampling(t, sampled)
 
 	logger := slog.New(sampled)
 	for range 20 {

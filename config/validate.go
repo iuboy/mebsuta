@@ -44,6 +44,9 @@ func (dc *DatabaseConfig) Validate() error {
 	if dc.MaxIdleConns <= 0 {
 		dc.MaxIdleConns = DefaultMaxIdleConns
 	}
+	if dc.MaxIdleConns > dc.MaxOpenConns {
+		dc.MaxIdleConns = dc.MaxOpenConns
+	}
 	if dc.RetryDelay <= 0 {
 		dc.RetryDelay = DefaultRetryDelay
 	}
@@ -78,6 +81,9 @@ func (sc *SyslogConfig) Validate() error {
 	}
 	if sc.RetryDelay <= 0 {
 		sc.RetryDelay = DefaultRetryDelay
+	}
+	if sc.BufferSize <= 0 {
+		sc.BufferSize = 1000
 	}
 	if sc.Facility < 0 || sc.Facility > 23 {
 		return fmt.Errorf("invalid syslog facility: %d, must be 0-23", sc.Facility)

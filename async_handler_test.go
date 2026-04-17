@@ -44,7 +44,9 @@ func TestAsyncHandler_DropOnFull(t *testing.T) {
 		logger.Info("test")
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
 
 	dropped := AsyncDropped(h.(*AsyncHandler))
 	if dropped == 0 {
@@ -138,7 +140,10 @@ func TestAsyncHandler_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	time.Sleep(200 * time.Millisecond)
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+
 	if count.Load() == 0 {
 		t.Error("expected some logs to be written")
 	}
@@ -146,7 +151,6 @@ func TestAsyncHandler_Concurrent(t *testing.T) {
 
 type concurrentHandler struct {
 	count *atomic.Int64
-	mu    sync.Mutex
 }
 
 func (h *concurrentHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }

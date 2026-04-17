@@ -346,6 +346,11 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 
 	// 用 Async 装饰器包裹 FileHandler，然后通过 WithErrorHandler 注入
 	asyncH := WithAsync(fh, AsyncConfig{})
+	defer func() {
+		if closer, ok := asyncH.(interface{ Close() error }); ok {
+			closer.Close()
+		}
+	}()
 	logger, err := New(
 		WithHandler(asyncH),
 		WithErrorHandler(capture),
