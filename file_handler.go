@@ -42,6 +42,7 @@ type fileState struct {
 	errCount     atomic.Int64
 	cfg          config.FileConfig
 	errorHandler atomic.Pointer[ErrorHandler]
+	compressWg   sync.WaitGroup // 跟踪异步压缩 goroutine
 }
 
 // countingWriter 包装当前文件，同时追踪写入字节数。
@@ -177,6 +178,9 @@ func (h *FileHandler) Close() error {
 		return nil
 	}
 
+	// 等待所有异步压缩完成后再关闭文件
+	h.state.compressWg.Wait()
+
 	h.state.mu.Lock()
 	defer h.state.mu.Unlock()
 
@@ -262,7 +266,11 @@ func (h *FileHandler) doRotate() {
 	// 异步压缩备份
 	if cfg.Compress {
 		eh := loadErrorHandler(&h.state.errorHandler)
-		go compressFile(backup, eh)
+		h.state.compressWg.Add(1)
+		go func() {
+			defer h.state.compressWg.Done()
+			compressFile(backup, eh)
+		}()
 	}
 
 	// 清理旧备份
@@ -277,13 +285,14 @@ func (h *FileHandler) backupNameLocked() string {
 		return name
 	}
 	// 同一秒内多次轮转，加序号后缀
-	for i := 1; i < 100; i++ {
+	for i := 1; i < 1000; i++ {
 		candidate := fmt.Sprintf("%s.%s.%d", h.state.cfg.Path, ts, i)
 		if _, err := os.Stat(candidate); err != nil {
 			return candidate
 		}
 	}
-	return name
+	// 极端情况：使用纳秒时间戳兜底
+	return h.state.cfg.Path + "." + time.Now().Format("20060102-150405.000000000")
 }
 
 // cleanupBackupsLocked 清理超过 MaxBackups 或 MaxAgeDays 的旧备份文件。

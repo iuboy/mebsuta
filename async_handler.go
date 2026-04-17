@@ -104,6 +104,14 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		return true
 	})
 
+	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
+	defer func() {
+		if r := recover(); r != nil {
+			h.dropped.Add(1)
+			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()))
+		}
+	}()
+
 	select {
 	case h.ch <- ar:
 		return nil
