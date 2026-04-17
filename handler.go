@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 )
 
 // LevelHandler 提供所有 adapter Handler 共享的 Enabled 逻辑。
@@ -53,11 +54,25 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	}
 }
 
-// reportError 安全调用 ErrorHandler，nil 时静默丢弃。
-func reportError(eh ErrorHandler, component string, err error) {
+// ReportError 安全调用 ErrorHandler，nil 时静默丢弃。
+func ReportError(eh ErrorHandler, component string, err error) {
 	if eh != nil {
 		eh(component, err)
 	}
+}
+
+// loadErrorHandler 从 atomic.Pointer[ErrorHandler] 加载当前值。
+func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
+	v := p.Load()
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// LoadErrorHandler 导出版本，供子包（如 database）使用。
+func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
+	return loadErrorHandler(p)
 }
 
 // buildHandler 从选项构建 slog.Handler。
@@ -81,40 +96,41 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	if len(o.handlers) == 1 {
 		return o.handlers[0], nil
 	}
-	return safeMultiHandler(slog.NewMultiHandler(o.handlers...), o.handlers, o.errorHandler), nil
+	return safeMultiHandler(o.handlers, o.errorHandler), nil
 }
 
-// safeMultiHandler 包装 slog.MultiHandler，每个子 Handler 调用时加 panic recover。
+// safeMultiHandler 包装多个子 Handler，每个调用时加 panic recover。
 // 防止单个 Handler panic 导致整个日志调用崩溃。(Decision #17)
-func safeMultiHandler(multi slog.Handler, handlers []slog.Handler, eh ErrorHandler) slog.Handler {
+func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 	return &safeMulti{
-		multi:        multi,
 		handlers:     handlers,
 		errorHandler: eh,
 	}
 }
 
 type safeMulti struct {
-	multi        slog.Handler
 	handlers     []slog.Handler
 	errorHandler ErrorHandler
 }
 
-// Close 递归关闭所有实现 io.Closer 的子 handler。
+// Close 递归关闭所有子 handler（包括装饰器链内层）。
 func (h *safeMulti) Close() error {
 	var errs []error
 	for _, hh := range h.handlers {
-		if closer, ok := hh.(io.Closer); ok {
-			if err := closer.Close(); err != nil {
-				errs = append(errs, err)
-			}
+		if err := CloseAll(hh); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
 func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
-	return h.multi.Enabled(ctx, level)
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
@@ -126,11 +142,7 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		}
 		defer func() {
 			if r := recover(); r != nil {
-				eh := h.errorHandler
-				if eh == nil {
-					eh = DefaultErrorHandler
-				}
-				eh("multi", fmt.Errorf("handler panic recovered: %v", r))
+				ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
 			}
 		}()
 		return hh.Handle(ctx, r)
@@ -149,14 +161,12 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					eh := h.errorHandler
-					if eh == nil {
-						eh = DefaultErrorHandler
-					}
-					eh("multi", fmt.Errorf("handler panic recovered: %v", r))
+					ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
 				}
 			}()
-			if err := hh.Handle(ctx, r); err != nil {
+			// r.Clone() 防止并发 goroutine 竞争 slog.Record。
+			// Clone 内部有快速路径：无 Attr 时仅复制固定字段，无堆分配。
+			if err := hh.Handle(ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -175,7 +185,6 @@ func (h *safeMulti) WithAttrs(attrs []slog.Attr) slog.Handler {
 		propagated[i] = hh.WithAttrs(attrs)
 	}
 	return &safeMulti{
-		multi:        h.multi.WithAttrs(attrs),
 		handlers:     propagated,
 		errorHandler: h.errorHandler,
 	}
@@ -187,7 +196,6 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 		propagated[i] = hh.WithGroup(name)
 	}
 	return &safeMulti{
-		multi:        h.multi.WithGroup(name),
 		handlers:     propagated,
 		errorHandler: h.errorHandler,
 	}

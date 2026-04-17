@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -355,7 +356,7 @@ func TestCompressResidual(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	compressResidual(logPath, true)
+	compressResidual(logPath, true, &sync.WaitGroup{})
 
 	// 等待异步压缩
 	time.Sleep(200 * time.Millisecond)

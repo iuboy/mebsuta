@@ -14,7 +14,7 @@ type StdoutHandler struct {
 	LevelHandler
 	format EncodingType
 	inner  slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
-	mu     sync.Mutex
+	mu     *sync.Mutex
 }
 
 // NewStdoutHandler 创建输出到 stdout 的 slog.Handler。
@@ -23,6 +23,7 @@ func NewStdoutHandler(level slog.Level, format EncodingType) *StdoutHandler {
 	h := &StdoutHandler{
 		LevelHandler: LevelHandler{Level: level},
 		format:       format,
+		mu:           &sync.Mutex{},
 	}
 	h.inner = newInnerHandler(os.Stdout, format)
 	return h
@@ -33,6 +34,7 @@ func newStdoutHandlerWithWriter(w io.Writer, level slog.Level, format EncodingTy
 	h := &StdoutHandler{
 		LevelHandler: LevelHandler{Level: level},
 		format:       format,
+		mu:           &sync.Mutex{},
 	}
 	h.inner = newInnerHandler(w, format)
 	return h
@@ -63,6 +65,7 @@ func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		LevelHandler: h.LevelHandler,
 		format:       h.format,
 		inner:        h.inner.WithAttrs(attrs),
+		mu:           h.mu,
 	}
 }
 
@@ -72,6 +75,7 @@ func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 		LevelHandler: h.LevelHandler,
 		format:       h.format,
 		inner:        h.inner.WithGroup(name),
+		mu:           h.mu,
 	}
 }
 

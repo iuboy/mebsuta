@@ -6,9 +6,10 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"os"
 	"regexp"
@@ -26,7 +27,7 @@ import (
 // =============================================================================
 
 const (
-	maxSyslogRetries = 5
+	maxSyslogRetries        = 5
 	syslogWriteTimeout      = 3 * time.Second
 	syslogDialerTimeout     = 5 * time.Second
 	maxSyslogHostnameLength = 255
@@ -57,30 +58,18 @@ type SyslogHandler struct {
 	closed       atomic.Bool
 	fileLock     *flock.Flock
 	location     *time.Location
-	errorHandler ErrorHandler
+	errorHandler atomic.Pointer[ErrorHandler]
 }
 
 // NewSyslogHandler 创建输出到 syslog 的 slog.Handler。
 func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
-	if cfg.Address == "" {
-		return nil, fmt.Errorf("mebsuta: syslog address is required")
-	}
-	if cfg.Network == "" {
-		cfg.Network = config.DefaultSyslogNetwork
-	}
-	if cfg.Tag == "" {
-		cfg.Tag = config.DefaultSyslogTag
-	}
-	if cfg.RetryDelay <= 0 {
-		cfg.RetryDelay = config.DefaultRetryDelay
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 	if cfg.BufferSize <= 0 {
 		cfg.BufferSize = defaultSyslogBufferSize
 	} else if cfg.BufferSize > maxSyslogBufferSize {
 		cfg.BufferSize = maxSyslogBufferSize
-	}
-	if cfg.Facility < 0 || cfg.Facility > 23 {
-		return nil, fmt.Errorf("mebsuta: syslog facility must be 0-23, got %d", cfg.Facility)
 	}
 
 	hostname, err := generateHostname(cfg.StaticHost)
@@ -104,8 +93,9 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 		ctx:          ctx,
 		cancel:       cancel,
 		location:     loc,
-		errorHandler: DefaultErrorHandler,
 	}
+	eh := DefaultErrorHandler
+	h.errorHandler.Store(&eh)
 
 	if cfg.Secure {
 		h.tlsCfg = &tls.Config{
@@ -157,7 +147,9 @@ func (h *SyslogHandler) Close() error {
 	}
 	h.connMu.Unlock()
 
-	_ = h.fileLock.Unlock()
+	if err := h.fileLock.Unlock(); err != nil {
+		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("file unlock: %w", err))
+	}
 	h.closed.Store(true)
 	return nil
 }
@@ -180,7 +172,7 @@ func (h *SyslogHandler) WithGroup(name string) slog.Handler {
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *SyslogHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler = fn
+	h.errorHandler.Store(&fn)
 }
 
 // =============================================================================
@@ -240,7 +232,7 @@ func (h *SyslogHandler) reconnect() {
 		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
 	}
 	if err != nil {
-		reportError(h.errorHandler, "syslog", fmt.Errorf("reconnect failed: %w", err))
+		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("reconnect failed: %w", err))
 		return
 	}
 	h.conn = conn
@@ -280,7 +272,7 @@ func (h *SyslogHandler) writeWithRetry(msg []byte) {
 		}
 		time.Sleep(h.cfg.RetryDelay)
 	}
-	reportError(h.errorHandler, "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
+	ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
 }
 
 func (h *SyslogHandler) disconnect() {
@@ -310,9 +302,13 @@ func (h *SyslogHandler) processQueue() {
 
 		case <-reconnector.C:
 			if !h.isConnected() {
-				baseDelay := time.Second * time.Duration(math.Pow(2, float64(atomic.LoadInt32(&retryCount))))
+				rc := atomic.LoadInt32(&retryCount)
+				if rc > 20 {
+					rc = 20 // 防止 math.Pow 溢出
+				}
+				baseDelay := time.Second * time.Duration(math.Pow(2, float64(rc)))
 				baseDelay = min(baseDelay, maxReconnectDelay)
-				jitter := time.Duration(rand.Int63n(int64(baseDelay) / 2))
+				jitter := time.Duration(rand.Int64N(int64(baseDelay) / 2))
 				delay := baseDelay/2 + jitter
 				select {
 				case <-time.After(delay):
@@ -340,7 +336,7 @@ func (h *SyslogHandler) processQueue() {
 func (h *SyslogHandler) safeSend(data []byte) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = net.ErrClosed
+			err = fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
 		}
 	}()
 	select {
@@ -409,7 +405,7 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 			if i > 0 {
 				sd.WriteByte(' ')
 			}
-			fmt.Fprintf(&sd, "%s=\"%v\"", attr.Key, attr.Value)
+			fmt.Fprintf(&sd, "%s=\"%s\"", attr.Key, escapeSDValue(attr.Value.String()))
 		}
 		sd.WriteByte(']')
 		sdStr := sd.String()
@@ -492,6 +488,26 @@ func cleanHostname(hostname string) string {
 	return clean.String()
 }
 
+// escapeSDValue 转义 RFC5424 SD-ELEMENT PARAM-VALUE 中的特殊字符。
+// 需要转义: " → \", \ → \\, ] → \]
+func escapeSDValue(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case ']':
+			b.WriteString(`\]`)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 func safeMessageForLog(msg string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		if r >= 0 && r <= 31 {
@@ -568,3 +584,9 @@ func (h *syslogGroupHandler) WithGroup(name string) slog.Handler {
 		attrs:         h.attrs,
 	}
 }
+
+// 编译期断言
+var (
+	_ slog.Handler = (*SyslogHandler)(nil)
+	_ io.Closer    = (*SyslogHandler)(nil)
+)

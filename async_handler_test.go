@@ -44,7 +44,9 @@ func TestAsyncHandler_DropOnFull(t *testing.T) {
 		logger.Info("test")
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
 
 	dropped := AsyncDropped(h.(*AsyncHandler))
 	if dropped == 0 {
@@ -138,7 +140,10 @@ func TestAsyncHandler_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	time.Sleep(200 * time.Millisecond)
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+
 	if count.Load() == 0 {
 		t.Error("expected some logs to be written")
 	}
@@ -146,7 +151,6 @@ func TestAsyncHandler_Concurrent(t *testing.T) {
 
 type concurrentHandler struct {
 	count *atomic.Int64
-	mu    sync.Mutex
 }
 
 func (h *concurrentHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
@@ -155,7 +159,7 @@ func (h *concurrentHandler) Handle(_ context.Context, _ slog.Record) error {
 	return nil
 }
 func (h *concurrentHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *concurrentHandler) WithGroup(string) slog.Handler        { return h }
+func (h *concurrentHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestAsyncDropped_NonAsync(t *testing.T) {
 	// 非 AsyncHandler 应返回 0
@@ -170,14 +174,14 @@ func TestAsyncDropped_NonAsync(t *testing.T) {
 // =============================================================================
 
 type testMetrics struct {
-	handleCount atomic.Int64
-	errorCount  atomic.Int64
+	handleCount  atomic.Int64
+	errorCount   atomic.Int64
 	droppedCount atomic.Int64
 }
 
-func (m *testMetrics) ObserveHandle(d time.Duration)  { m.handleCount.Add(1) }
-func (m *testMetrics) IncError(name string)            { m.errorCount.Add(1) }
-func (m *testMetrics) IncDropped(name string)          { m.droppedCount.Add(1) }
+func (m *testMetrics) ObserveHandle(d time.Duration) { m.handleCount.Add(1) }
+func (m *testMetrics) IncError(name string)          { m.errorCount.Add(1) }
+func (m *testMetrics) IncDropped(name string)        { m.droppedCount.Add(1) }
 
 func TestWithMetrics_Basic(t *testing.T) {
 	m := &testMetrics{}
@@ -313,7 +317,7 @@ func TestSafeMultiHandler_PanicRecovery(t *testing.T) {
 	good := &countHandler{}
 	bad := &panicHandler{msg: "test panic"}
 
-	h := safeMultiHandler(slog.NewMultiHandler(good, bad), []slog.Handler{good, bad}, nil)
+	h := safeMultiHandler([]slog.Handler{good, bad}, nil)
 	logger := slog.New(h)
 
 	// 应该不 panic，bad handler 的 panic 被 recover
@@ -333,13 +337,13 @@ func (h *panicHandler) Handle(_ context.Context, _ slog.Record) error {
 	panic(h.msg)
 }
 func (h *panicHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *panicHandler) WithGroup(string) slog.Handler        { return h }
+func (h *panicHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestSafeMultiHandler_AllEnabled(t *testing.T) {
 	h1 := &countHandler{}
 	h2 := &countHandler{}
 
-	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2}, nil)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 	logger := slog.New(multi)
 
 	logger.Info("test")
@@ -358,7 +362,7 @@ func TestSafeMultiHandler_LevelFilter(t *testing.T) {
 	infoH := newStdoutHandlerWithWriter(&buf1, slog.LevelInfo, JSON)
 	warnH := newStdoutHandlerWithWriter(&buf2, slog.LevelWarn, JSON)
 
-	multi := safeMultiHandler(slog.NewMultiHandler(infoH, warnH), []slog.Handler{infoH, warnH}, nil)
+	multi := safeMultiHandler([]slog.Handler{infoH, warnH}, nil)
 	logger := slog.New(multi)
 
 	logger.Info("info log")

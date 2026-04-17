@@ -52,7 +52,7 @@ type AsyncHandler struct {
 	cancel       context.CancelFunc
 	closed       atomic.Bool
 	dropped      atomic.Int64
-	errorHandler ErrorHandler
+	errorHandler atomic.Pointer[ErrorHandler]
 }
 
 // WithAsync 返回一个异步写入装饰器，包裹给定的 handler。
@@ -67,13 +67,14 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	eh := DefaultErrorHandler
 	h := &AsyncHandler{
-		inner:        inner,
-		ch:           make(chan asyncRecord, bufferSize),
-		ctx:          ctx,
-		cancel:       cancel,
-		errorHandler: DefaultErrorHandler,
+		inner:  inner,
+		ch:     make(chan asyncRecord, bufferSize),
+		ctx:    ctx,
+		cancel: cancel,
 	}
+	h.errorHandler.Store(&eh)
 	h.wg.Add(1)
 	go h.run()
 	return h
@@ -103,12 +104,20 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		return true
 	})
 
+	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
+	defer func() {
+		if r := recover(); r != nil {
+			h.dropped.Add(1)
+			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()))
+		}
+	}()
+
 	select {
 	case h.ch <- ar:
 		return nil
 	default:
 		h.dropped.Add(1)
-		reportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
+		ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
 		return nil
 	}
 }
@@ -142,7 +151,7 @@ func (h *AsyncHandler) Close() error {
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *AsyncHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler = fn
+	h.errorHandler.Store(&fn)
 }
 
 // unwrapHandler 返回内层 handler，供 CloseAll 递归关闭。
@@ -162,7 +171,7 @@ func (h *AsyncHandler) run() {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
 		if err := ar.inner.Handle(context.Background(), r); err != nil {
-			reportError(h.errorHandler, "async", err)
+			ReportError(loadErrorHandler(&h.errorHandler), "async", err)
 		}
 	}
 }
@@ -229,12 +238,20 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		return true
 	})
 
+	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
+	defer func() {
+		if r := recover(); r != nil {
+			h.dropped.Add(1)
+			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()))
+		}
+	}()
+
 	select {
 	case h.ch <- ar:
 		return nil
 	default:
 		h.dropped.Add(1)
-		reportError(h.errorHandler, "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
+		ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
 		return nil
 	}
 }

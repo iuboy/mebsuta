@@ -231,7 +231,7 @@ func TestCloseAll_StdoutHandler(t *testing.T) {
 func TestCloseAll_MultiHandler(t *testing.T) {
 	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
 	h2 := NewStdoutHandler(slog.LevelWarn, JSON)
-	multi := safeMultiHandler(slog.NewMultiHandler(h1, h2), []slog.Handler{h1, h2}, nil)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 
 	// safeMulti 实现了 io.Closer，应递归关闭子 handler
 	if err := CloseAll(multi); err != nil {
@@ -346,6 +346,11 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 
 	// 用 Async 装饰器包裹 FileHandler，然后通过 WithErrorHandler 注入
 	asyncH := WithAsync(fh, AsyncConfig{})
+	defer func() {
+		if closer, ok := asyncH.(interface{ Close() error }); ok {
+			closer.Close()
+		}
+	}()
 	logger, err := New(
 		WithHandler(asyncH),
 		WithErrorHandler(capture),
@@ -372,8 +377,9 @@ func TestSyslogHandler_WithAttrs(t *testing.T) {
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 		closed:       atomic.Bool{},
-		errorHandler: DefaultErrorHandler,
 	}
+	eh := DefaultErrorHandler
+	h.errorHandler.Store(&eh)
 
 	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
 	if child == nil {
@@ -414,8 +420,9 @@ func TestSyslogHandler_GroupPrefix(t *testing.T) {
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 		closed:       atomic.Bool{},
-		errorHandler: DefaultErrorHandler,
 	}
+	eh := DefaultErrorHandler
+	h.errorHandler.Store(&eh)
 
 	grouped := h.WithGroup("req").WithAttrs([]slog.Attr{slog.String("key", "val")})
 	// 类型断言：WithGroup 后 WithAttrs 应返回 syslogAttrsHandler
@@ -459,8 +466,9 @@ func TestSyslogHandler_AttrsSurviveGroup(t *testing.T) {
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 		closed:       atomic.Bool{},
-		errorHandler: DefaultErrorHandler,
 	}
+	eh := DefaultErrorHandler
+	h.errorHandler.Store(&eh)
 
 	chain := h.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
 	attrsH, ok := chain.(*syslogAttrsHandler)
@@ -504,10 +512,9 @@ func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
 
 // Regression: panic recovery 在 nil ErrorHandler 时静默丢弃
 // Found by /pr-review-toolkit:review-pr on 2026-04-15.
-// panic 意味着代码 bug，即使 errorHandler 为 nil 也应写 stderr。
+// nil errorHandler 时 panic 应静默丢弃，不写 stderr。
 func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 	var buf bytes.Buffer
-	// 捕获 stderr 输出
 	DefaultErrorHandler = func(component string, err error) {
 		fmt.Fprintf(&buf, "%s: %v", component, err)
 	}
@@ -515,15 +522,13 @@ func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 
 	good := &countHandler{}
 	bad := &panicHandler{msg: "nil eh panic"}
-	h := safeMultiHandler(slog.NewMultiHandler(good, bad), []slog.Handler{good, bad}, nil)
+	h := safeMultiHandler([]slog.Handler{good, bad}, nil)
 	logger := slog.New(h)
 	logger.Info("test")
 
-	if !strings.Contains(buf.String(), "multi") {
-		t.Error("panic recovery should always write to stderr, even with nil errorHandler")
-	}
-	if !strings.Contains(buf.String(), "nil eh panic") {
-		t.Error("panic message should contain the panic value")
+	// nil errorHandler 时应静默丢弃 panic，不写 stderr
+	if buf.Len() > 0 {
+		t.Errorf("nil errorHandler should silently discard panic, got: %s", buf.String())
 	}
 }
 

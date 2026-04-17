@@ -25,23 +25,24 @@ import (
 // 实现 slog.Handler 和 io.Closer 接口。
 type FileHandler struct {
 	LevelHandler
-	format        EncodingType
-	inner         slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
-	state         *fileState   // 共享可变状态（跨 WithAttrs/WithGroup 子 Handler）
-	cw            *countingWriter
-	errorHandler  ErrorHandler
+	format EncodingType
+	inner  slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
+	state  *fileState   // 共享可变状态（跨 WithAttrs/WithGroup 子 Handler）
+	cw     *countingWriter
 }
 
 // fileState 保存文件相关的共享可变状态。
 // 同一个文件的所有 FileHandler（通过 WithAttrs/WithGroup 创建的子 Handler）共享同一个 fileState。
 type fileState struct {
-	mu        sync.RWMutex // 写入 RLock，轮转 Lock
-	file      *os.File
-	size      atomic.Int64 // 已写入字节数
-	rotatedAt time.Time    // 上次轮转时间
-	closed    atomic.Bool
-	errCount  atomic.Int64
-	cfg       config.FileConfig
+	mu           sync.RWMutex // 写入 RLock，轮转 Lock
+	file         *os.File
+	size         atomic.Int64 // 已写入字节数
+	rotatedAt    time.Time    // 上次轮转时间
+	closed       atomic.Bool
+	errCount     atomic.Int64
+	cfg          config.FileConfig
+	errorHandler atomic.Pointer[ErrorHandler]
+	compressWg   sync.WaitGroup // 跟踪异步压缩 goroutine
 }
 
 // countingWriter 包装当前文件，同时追踪写入字节数。
@@ -65,17 +66,14 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 // NewFileHandler 创建输出到文件的 slog.Handler。
 // level 控制日志级别过滤。cfg 配置文件路径、轮转策略等。
 func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, error) {
-	if cfg.Path == "" {
-		return nil, fmt.Errorf("mebsuta: file path is required")
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
 	// 确保目录存在
 	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0750); err != nil {
 		return nil, fmt.Errorf("mebsuta: create log directory: %w", err)
 	}
-
-	// 启动时检测并压缩残留的未压缩轮转文件
-	compressResidual(cfg.Path, cfg.Compress)
 
 	// 打开日志文件
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -102,17 +100,22 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 	}
 	state.size.Store(fi.Size())
 
+	// 启动时检测并压缩残留的未压缩轮转文件
+	compressResidual(cfg.Path, cfg.Compress, &state.compressWg)
+
 	cw := &countingWriter{state: state}
 	inner := newInnerHandler(cw, format)
 
-	return &FileHandler{
+	h := &FileHandler{
 		LevelHandler: LevelHandler{Level: level},
 		format:       format,
 		inner:        inner,
 		state:        state,
 		cw:           cw,
-		errorHandler: DefaultErrorHandler,
-	}, nil
+	}
+	eh := DefaultErrorHandler
+	h.state.errorHandler.Store(&eh)
+	return h, nil
 }
 
 // Handle 处理一条日志记录，写入文件。
@@ -140,7 +143,8 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	if err := h.inner.Handle(ctx, r); err != nil {
 		h.state.errCount.Add(1)
-		reportError(h.errorHandler, "file", err)
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", err)
+		return err
 	}
 
 	return nil
@@ -154,7 +158,6 @@ func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		inner:        h.inner.WithAttrs(attrs),
 		state:        h.state,
 		cw:           h.cw,
-		errorHandler: h.errorHandler,
 	}
 }
 
@@ -166,7 +169,6 @@ func (h *FileHandler) WithGroup(name string) slog.Handler {
 		inner:        h.inner.WithGroup(name),
 		state:        h.state,
 		cw:           h.cw,
-		errorHandler: h.errorHandler,
 	}
 }
 
@@ -175,6 +177,9 @@ func (h *FileHandler) Close() error {
 	if !h.state.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+
+	// 等待所有异步压缩完成后再关闭文件
+	h.state.compressWg.Wait()
 
 	h.state.mu.Lock()
 	defer h.state.mu.Unlock()
@@ -189,7 +194,7 @@ func (h *FileHandler) Close() error {
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler = fn
+	h.state.errorHandler.Store(&fn)
 }
 
 // =============================================================================
@@ -228,18 +233,18 @@ func (h *FileHandler) doRotate() {
 
 	// 关闭当前文件
 	if err := h.state.file.Close(); err != nil {
-		reportError(h.errorHandler, "file", fmt.Errorf("close for rotation: %w", err))
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("close for rotation: %w", err))
 	}
 	h.state.file = nil
 
 	// 生成备份文件名并重命名
 	backup := h.backupNameLocked()
 	if err := os.Rename(cfg.Path, backup); err != nil {
-		reportError(h.errorHandler, "file", fmt.Errorf("rename for rotation: %w", err))
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("rename for rotation: %w", err))
 		// 尝试重新打开原文件继续写入
 		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if openErr != nil {
-			reportError(h.errorHandler, "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
+			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
 			return
 		}
 		h.state.file = f
@@ -249,7 +254,7 @@ func (h *FileHandler) doRotate() {
 	// 创建新文件
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		reportError(h.errorHandler, "file", fmt.Errorf("create new log file: %w", err))
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("create new log file: %w", err))
 		h.state.closed.Store(true)
 		return
 	}
@@ -260,8 +265,12 @@ func (h *FileHandler) doRotate() {
 
 	// 异步压缩备份
 	if cfg.Compress {
-		eh := h.errorHandler
-		go compressFile(backup, eh)
+		eh := loadErrorHandler(&h.state.errorHandler)
+		h.state.compressWg.Add(1)
+		go func() {
+			defer h.state.compressWg.Done()
+			compressFile(backup, eh)
+		}()
 	}
 
 	// 清理旧备份
@@ -276,13 +285,14 @@ func (h *FileHandler) backupNameLocked() string {
 		return name
 	}
 	// 同一秒内多次轮转，加序号后缀
-	for i := 1; i < 100; i++ {
+	for i := 1; i < 1000; i++ {
 		candidate := fmt.Sprintf("%s.%s.%d", h.state.cfg.Path, ts, i)
 		if _, err := os.Stat(candidate); err != nil {
 			return candidate
 		}
 	}
-	return name
+	// 极端情况：使用纳秒时间戳兜底
+	return h.state.cfg.Path + "." + time.Now().Format("20060102-150405.000000000")
 }
 
 // cleanupBackupsLocked 清理超过 MaxBackups 或 MaxAgeDays 的旧备份文件。
@@ -405,7 +415,7 @@ func compressFile(path string, eh ErrorHandler) {
 }
 
 // compressResidual 在启动时检测并压缩上次崩溃留下的未压缩轮转文件。
-func compressResidual(logPath string, compress bool) {
+func compressResidual(logPath string, compress bool, wg *sync.WaitGroup) {
 	dir := filepath.Dir(logPath)
 	base := filepath.Base(logPath)
 
@@ -431,7 +441,11 @@ func compressResidual(logPath string, compress bool) {
 		}
 
 		if compress {
-			go compressFile(filepath.Join(dir, name), DefaultErrorHandler)
+			wg.Add(1)
+			go func(path string) {
+				defer wg.Done()
+				compressFile(path, DefaultErrorHandler)
+			}(filepath.Join(dir, name))
 		}
 	}
 }

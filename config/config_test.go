@@ -88,7 +88,8 @@ func TestDatabaseConfig_Validate(t *testing.T) {
 			DataSourceName: "root:password@tcp(localhost:3306)/logs",
 		}
 		err := dc.Validate()
-		assert.Error(t, err)
+		require.NoError(t, err)
+		assert.Equal(t, "logs", dc.TableName)
 	})
 
 	t.Run("应用默认值", func(t *testing.T) {
@@ -178,7 +179,8 @@ func TestSyslogConfig_Validate(t *testing.T) {
 			Tag:     "",
 		}
 		err := sc.Validate()
-		assert.Error(t, err)
+		require.NoError(t, err)
+		assert.Equal(t, "mebsuta", sc.Tag)
 	})
 
 	t.Run("无效设施值", func(t *testing.T) {

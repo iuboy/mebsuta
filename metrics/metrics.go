@@ -34,7 +34,8 @@ type Metrics struct {
 	writeLatency prometheus.Histogram
 
 	// Goroutine状态
-	activeGoroutines atomic.Int64
+	activeGoroutines prometheus.Gauge
+	goroutineCount   atomic.Int64
 }
 
 var (
@@ -42,6 +43,7 @@ var (
 	globalMetrics *Metrics
 	once          sync.Once
 	registryOnce  sync.Once // 防止重复注册
+	registerErr   error     // 保存首次注册错误
 )
 
 // NewMetrics 创建新的metrics收集器（不自动注册）
@@ -136,6 +138,13 @@ func NewMetrics() *Metrics {
 				Buckets: prometheus.ExponentialBuckets(0.0001, 2, 10), // 0.1ms, 0.2ms, ... 51.2ms
 			},
 		),
+
+		activeGoroutines: prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "mebsuta_active_goroutines",
+				Help: "活跃 goroutine 数量",
+			},
+		),
 	}
 }
 
@@ -209,17 +218,19 @@ func (m *Metrics) ObserveWriteLatency(seconds float64) {
 
 // IncGoroutine 增加活跃goroutine计数
 func (m *Metrics) IncGoroutine() {
-	m.activeGoroutines.Add(1)
+	m.goroutineCount.Add(1)
+	m.activeGoroutines.Inc()
 }
 
 // DecGoroutine 减少活跃goroutine计数
 func (m *Metrics) DecGoroutine() {
-	m.activeGoroutines.Add(-1)
+	m.goroutineCount.Add(-1)
+	m.activeGoroutines.Dec()
 }
 
 // GetGoroutineCount 获取活跃goroutine计数
 func (m *Metrics) GetGoroutineCount() int64 {
-	return m.activeGoroutines.Load()
+	return m.goroutineCount.Load()
 }
 
 // =============================================================================
@@ -311,11 +322,11 @@ func GetMetricsAsCollector() prometheus.Collector {
 	return GetMetrics()
 }
 
-// Register 注册到默认的 Prometheus 注册表（幂等，可安全多次调用）
+// Register 注册到默认的 Prometheus 注册表（幂等，可安全多次调用）。
+// 如果首次注册失败，后续调用始终返回该错误。
 func Register() error {
-	var err error
 	registryOnce.Do(func() {
-		err = RegisterToRegistry(prometheus.DefaultRegisterer)
+		registerErr = RegisterToRegistry(prometheus.DefaultRegisterer)
 	})
-	return err
+	return registerErr
 }

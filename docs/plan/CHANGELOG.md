@@ -5,6 +5,50 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.3] - 2026-04-16
+
+### 修复
+
+- 修复 `errorHandler` 字段非原子读写导致数据竞争（全部改为 `atomic.Pointer[ErrorHandler]`）
+- 修复 `SamplingHandler` WaitGroup 非指针共享导致 `Close()` 无法等待 goroutine 退出
+- 修复 `FileHandler.Handle` 始终返回 `nil` 导致调用方无法感知写入失败
+- 修复 `syslog_handler` 重连指数退避 `math.Pow` 无上限溢出风险（rc 上限 20）
+- 修复 `database_handler` 批量写入 `batch[:0]` 保留底层数组阻止 GC 回收
+- 修复 `metrics.Register()` 使用局部 `err` 变量导致首次注册错误被后续调用隐藏
+- 修复 `DatabaseHandler.Handle()` 并发 `Close()` 时 send on closed channel panic（添加 recover）
+- 修复 `DatabaseHandler.Close()` 可能丢失缓冲区日志条目（调整 close/wait/cancel 顺序）
+- 修复 `DatabaseConfig.Validate()` 未约束 `MaxIdleConns <= MaxOpenConns`
+- 修复 `SyslogConfig.Validate()` 未填充 `BufferSize` 默认值
+- 修复 9 个测试 goroutine 泄漏（SamplingHandler/AsyncHandler 未调用 Close）
+- 移除 `concurrentHandler` 测试辅助类型中未使用的 `mu sync.Mutex` 字段
+
+### 改进
+
+- `FileHandler.errorHandler` 移入 `fileState` 共享结构体，消除 `WithAttrs`/`WithGroup` 中的 atomic.Pointer 拷贝（go vet copylocks 警告）
+- `math/rand` 升级为 `math/rand/v2`，使用 `rand.Int64N` 替代已弃用的 `rand.Int63n`
+- `safeMulti.Handle` 添加 `r.Clone()` 性能注释，说明无 Attr 快速路径
+- `SyslogHandler.fileLock.Unlock()` 错误通过 `errorHandler` 上报而非静默忽略
+- `SyslogHandler`/`SamplingHandler` 补充 `var _ slog.Handler` 编译期断言
+- 移除未使用的 `config.SyslogConfig.Structured` 字段
+- 测试文件中 `SyslogHandler` 直接构造适配 `atomic.Pointer[ErrorHandler]` 模式
+
+## [0.3.2] - 2026-04-16
+
+### 修复
+
+- 修复 `safeMultiHandler` 多 handler 并发分发时 `slog.Record` 数据竞争（添加 `r.Clone()`）
+- 修复 `config.Validate()` 在验证失败时修改调用者 config 对象的副作用（DatabaseConfig 默认值填充移至验证通过后）
+- 修复 RFC5424 SD-ELEMENT PARAM-VALUE 未转义 `"` `\` `]` 字符导致协议违反
+
+### 改进
+
+- 移除 `safeMultiHandler` 中冗余的 `slog.NewMultiHandler` 包装层，直接实现 Enabled/WithAttrs/WithGroup
+- 导出 `ReportError` 函数，消除 database 子包中重复的 `reportError` 方法
+- 移除 `DatabaseHandler.SetErrorHandler` 导出方法，消除竞态风险（通过 `mebsuta.New()` + `WithErrorHandler` 设置）
+- 构造函数统一调用 `cfg.Validate()`，去重 FileHandler/SyslogHandler/DatabaseHandler 中的验证逻辑
+- `config.SyslogConfig.Validate()` 空 Tag 填充默认值而非报错，`RetryDelay` 改用 `<= 0` 检查
+- `config.DatabaseConfig.Validate()` 空 TableName 填充默认值 `"logs"`，零值检查统一为 `<= 0`
+
 ## [0.3.0] - 2026-04-16
 
 ### 新增
