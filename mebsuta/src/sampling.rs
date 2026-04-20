@@ -9,6 +9,13 @@ use crate::record::{Context, OwnedRecord};
 /// thereafter. Error-level records always pass (never sampled).
 ///
 /// Uses a monotonic counter for window reset (no wall-clock dependency).
+///
+/// # Concurrency
+///
+/// The counter uses `Ordering::Relaxed` atomics. Under high concurrency, the
+/// effective sampling rate may deviate slightly from the configured ratio (e.g.,
+/// a few extra records may pass during counter reset windows). This is acceptable
+/// for observability sampling where exact precision is not required.
 pub struct Sampling<H> {
     inner: H,
     initial: u64,
