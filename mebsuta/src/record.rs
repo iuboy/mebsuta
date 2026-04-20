@@ -4,8 +4,8 @@ use std::time::SystemTime;
 
 use serde::Serialize;
 
-use crate::file::days_to_ymd;
 use crate::level::Level;
+use crate::time::system_time_to_rfc3339;
 use crate::value::{Key, Value};
 
 /// Owned log record. Shared across the handler chain via `Arc<OwnedRecord>`.
@@ -44,24 +44,6 @@ impl OwnedRecord {
         };
         serde_json::to_string(&json_rec)
     }
-}
-
-/// Convert SystemTime to RFC3339 UTC string (no chrono dependency).
-pub(crate) fn system_time_to_rfc3339(t: SystemTime) -> String {
-    let duration = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    let nsecs = duration.subsec_nanos();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let (year, month, day) = days_to_ymd(days);
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{nsecs:09}Z"
-    )
 }
 
 /// Lightweight context for `enabled()` checks. Cheap to construct.
@@ -188,10 +170,9 @@ mod tests {
     #[test]
     fn rfc3339_format() {
         let now = SystemTime::now();
-        let s = system_time_to_rfc3339(now);
-        // Basic format check: YYYY-MM-DDTHH:MM:SS.NNNNNNNNNZ
+        let s = crate::time::system_time_to_rfc3339(now);
         assert!(s.contains('T'));
         assert!(s.ends_with('Z'));
-        assert_eq!(s.len(), 30); // "2026-04-20T12:34:56.123456789Z"
+        assert_eq!(s.len(), 30);
     }
 }

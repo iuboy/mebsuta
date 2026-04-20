@@ -9,6 +9,7 @@ use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 use crate::stdout::{Format, format_json, format_text};
+use crate::time::{backup_timestamp, now_secs};
 
 /// File rotation configuration.
 #[derive(Debug, Clone)]
@@ -193,7 +194,7 @@ impl FileHandler {
     }
 
     fn backup_name(&self) -> PathBuf {
-        let now = chrono_independent_timestamp();
+        let now = backup_timestamp();
         let base = format!("{}.{}", self.state.path.display(), now);
         if !Path::new(&base).exists() {
             return PathBuf::from(base);
@@ -330,56 +331,6 @@ impl Close for FileHandler {
 }
 
 impl Terminal for FileHandler {}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn chrono_independent_timestamp() -> String {
-    let secs = now_secs();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-    // Simple YYYYMMDD-HHMMSS approximation
-    let (year, month, day) = days_to_ymd(days);
-    format!("{year:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
-}
-
-pub(crate) fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    let mut year = 1970u64;
-    loop {
-        let days_in_year = if is_leap(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-    let leap = is_leap(year);
-    let month_days: [u64; 12] = if leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut month = 0u64;
-    for (i, &md) in month_days.iter().enumerate() {
-        if days < md {
-            month = i as u64 + 1;
-            break;
-        }
-        days -= md;
-    }
-    (year, month, days + 1)
-}
-
-pub(crate) fn is_leap(year: u64) -> bool {
-    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
-}
 
 fn compress_file(backup_path: &Path, on_error: impl Fn(&Error) + Send) {
     use std::io::{Read, Write};
