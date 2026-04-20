@@ -43,7 +43,7 @@ impl Default for SyslogConfig {
             address: "127.0.0.1:514".to_owned(),
             tag: "mebsuta".to_owned(),
             hostname: hostname(),
-            facility: 1, // user-level
+            facility: 1,
         }
     }
 }
@@ -54,18 +54,22 @@ fn hostname() -> String {
         .unwrap_or_else(|_| "localhost".to_owned())
 }
 
+enum SyslogConn {
+    Udp(UdpSocket),
+    Tcp(TcpStream),
+}
+
+struct SyslogShared {
+    conn: Mutex<Option<SyslogConn>>,
+    closed: AtomicBool,
+}
+
 /// Handler that sends log records to a syslog server.
 pub struct SyslogHandler {
     level: Level,
     config: SyslogConfig,
-    conn: Mutex<Option<SyslogConn>>,
-    closed: AtomicBool,
+    shared: Arc<SyslogShared>,
     error_handler: ErrorHandler,
-}
-
-enum SyslogConn {
-    Udp(UdpSocket),
-    Tcp(TcpStream),
 }
 
 impl SyslogHandler {
@@ -84,8 +88,10 @@ impl SyslogHandler {
         Ok(SyslogHandler {
             level,
             config,
-            conn: Mutex::new(Some(conn)),
-            closed: AtomicBool::new(false),
+            shared: Arc::new(SyslogShared {
+                conn: Mutex::new(Some(conn)),
+                closed: AtomicBool::new(false),
+            }),
             error_handler: Arc::new(Mutex::new(None)),
         })
     }
@@ -118,7 +124,7 @@ impl SyslogHandler {
     }
 
     fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let mut guard = self.conn.lock().unwrap();
+        let mut guard = self.shared.conn.lock().unwrap();
         match guard.as_mut() {
             Some(SyslogConn::Udp(socket)) => {
                 socket.send_to(data, &self.config.address)?;
@@ -179,7 +185,7 @@ impl Handler for SyslogHandler {
     }
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
-        if self.closed.load(Ordering::Relaxed) {
+        if self.shared.closed.load(Ordering::Relaxed) {
             return Ok(());
         }
 
@@ -197,8 +203,7 @@ impl Handler for SyslogHandler {
         Box::new(SyslogHandler {
             level: self.level,
             config: self.config.clone(),
-            conn: Mutex::new(None), // Clones don't share connection
-            closed: AtomicBool::new(false),
+            shared: Arc::clone(&self.shared),
             error_handler: Arc::clone(&self.error_handler),
         })
     }
@@ -208,13 +213,16 @@ impl Handler for SyslogHandler {
     }
 
     fn flush(&self) {
-        let mut guard = self.conn.lock().unwrap();
+        let mut guard = self.shared.conn.lock().unwrap();
         if let Some(SyslogConn::Tcp(stream)) = guard.as_mut() {
             let _ = stream.flush();
         }
     }
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
+        if Arc::strong_count(&self.shared) > 1 {
+            return None;
+        }
         Some(self.close())
     }
 }
@@ -222,6 +230,7 @@ impl Handler for SyslogHandler {
 impl Close for SyslogHandler {
     fn close(&mut self) -> Result<(), Error> {
         if self
+            .shared
             .closed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -229,8 +238,21 @@ impl Close for SyslogHandler {
             return Ok(());
         }
         self.flush();
-        *self.conn.lock().unwrap() = None;
+        *self.shared.conn.lock().unwrap() = None;
         Ok(())
+    }
+}
+
+impl Drop for SyslogHandler {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.shared) > 1 {
+            return;
+        }
+        if !self.shared.closed.load(Ordering::Relaxed) {
+            self.shared.closed.store(true, Ordering::Relaxed);
+        }
+        self.flush();
+        *self.shared.conn.lock().unwrap() = None;
     }
 }
 
@@ -274,10 +296,9 @@ mod tests {
             facility: 1,
             ..SyslogConfig::default()
         };
-        // We can't easily test format_message without a handler, so test the pieces
         let _record = arc_record(Level::Info, "hello syslog");
         let severity = level_to_severity(Level::Info);
         let priority = config.facility * 8 + severity;
-        assert_eq!(priority, 14); // facility 1 * 8 + severity 6
+        assert_eq!(priority, 14);
     }
 }

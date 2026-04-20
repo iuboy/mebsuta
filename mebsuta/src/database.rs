@@ -7,6 +7,7 @@ use crate::error::Error;
 use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord, system_time_to_rfc3339};
+
 const DEFAULT_BATCH_SIZE: usize = 100;
 const DEFAULT_BATCH_INTERVAL_SECS: u64 = 5;
 const FLUSH_RETRIES: usize = 3;
@@ -33,23 +34,27 @@ impl Default for DatabaseConfig {
     }
 }
 
-/// Handler that writes log records to a SQLite database in batches.
-pub struct DatabaseHandler {
-    level: Level,
-    config: DatabaseConfig,
-    conn: Mutex<Option<rusqlite::Connection>>,
-    tx: Mutex<Option<SyncSender<LogEntry>>>,
-    closed: AtomicBool,
-    dropped: AtomicI64,
-    error_handler: ErrorHandler,
-    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
-}
-
 struct LogEntry {
     time: String,
     level: String,
     message: String,
     fields: String,
+}
+
+struct DatabaseShared {
+    tx: Mutex<Option<SyncSender<LogEntry>>>,
+    closed: AtomicBool,
+    dropped: AtomicI64,
+    worker: Mutex<Option<std::thread::JoinHandle<()>>>,
+    conn: Mutex<Option<rusqlite::Connection>>,
+}
+
+/// Handler that writes log records to a SQLite database in batches.
+pub struct DatabaseHandler {
+    level: Level,
+    config: DatabaseConfig,
+    shared: Arc<DatabaseShared>,
+    error_handler: ErrorHandler,
 }
 
 impl DatabaseHandler {
@@ -87,17 +92,19 @@ impl DatabaseHandler {
         Ok(DatabaseHandler {
             level,
             config,
-            conn: Mutex::new(Some(conn)),
-            tx: Mutex::new(Some(tx)),
-            closed: AtomicBool::new(false),
-            dropped: AtomicI64::new(0),
-            error_handler: Arc::new(std::sync::Mutex::new(None)),
-            worker: Mutex::new(Some(worker)),
+            shared: Arc::new(DatabaseShared {
+                conn: Mutex::new(Some(conn)),
+                tx: Mutex::new(Some(tx)),
+                closed: AtomicBool::new(false),
+                dropped: AtomicI64::new(0),
+                worker: Mutex::new(Some(worker)),
+            }),
+            error_handler: Arc::new(Mutex::new(None)),
         })
     }
 
     pub fn dropped(&self) -> i64 {
-        self.dropped.load(Ordering::Relaxed)
+        self.shared.dropped.load(Ordering::Relaxed)
     }
 
     fn record_to_entry(record: &OwnedRecord) -> LogEntry {
@@ -185,7 +192,6 @@ fn insert_batch(
     batch: &[LogEntry],
 ) -> Result<(), Error> {
     let sql = format!("INSERT INTO {table} (time, level, message, fields) VALUES (?, ?, ?, ?)");
-    // Use a transaction for batch insert
     let tx = conn.unchecked_transaction()?;
     {
         let mut stmt = tx.prepare(&sql)?;
@@ -203,11 +209,11 @@ impl Handler for DatabaseHandler {
     }
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
-        if self.closed.load(Ordering::Relaxed) {
+        if self.shared.closed.load(Ordering::Relaxed) {
             return Ok(());
         }
 
-        let tx = self.tx.lock().unwrap();
+        let tx = self.shared.tx.lock().unwrap();
         let Some(tx) = tx.as_ref() else {
             return Ok(());
         };
@@ -216,7 +222,7 @@ impl Handler for DatabaseHandler {
         match tx.try_send(entry) {
             Ok(()) => Ok(()),
             Err(_) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
+                self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
         }
@@ -226,12 +232,8 @@ impl Handler for DatabaseHandler {
         Box::new(DatabaseHandler {
             level: self.level,
             config: self.config.clone(),
-            conn: Mutex::new(None),
-            tx: Mutex::new(None),
-            closed: AtomicBool::new(true),
-            dropped: AtomicI64::new(0),
+            shared: Arc::clone(&self.shared),
             error_handler: Arc::clone(&self.error_handler),
-            worker: Mutex::new(None),
         })
     }
 
@@ -240,12 +242,13 @@ impl Handler for DatabaseHandler {
     }
 
     fn flush(&self) {
-        // Wake up the worker by sending a batch-interval worth of sleep
-        // The worker's recv_timeout will expire and flush
         std::thread::yield_now();
     }
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
+        if Arc::strong_count(&self.shared) > 1 {
+            return None;
+        }
         Some(self.close())
     }
 }
@@ -253,6 +256,7 @@ impl Handler for DatabaseHandler {
 impl Close for DatabaseHandler {
     fn close(&mut self) -> Result<(), Error> {
         if self
+            .shared
             .closed
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -260,19 +264,34 @@ impl Close for DatabaseHandler {
             return Ok(());
         }
 
-        // Drop sender to signal worker to drain and exit
-        self.tx.lock().unwrap().take();
+        self.shared.tx.lock().unwrap().take();
 
-        // Wait for worker to finish
-        if let Some(handle) = self.worker.lock().unwrap().take() {
+        if let Some(handle) = self.shared.worker.lock().unwrap().take() {
             let _ = handle.join();
         }
 
-        // Close connection
-        if let Some(conn) = self.conn.lock().unwrap().take() {
+        if let Some(conn) = self.shared.conn.lock().unwrap().take() {
             let _ = conn.close();
         }
         Ok(())
+    }
+}
+
+impl Drop for DatabaseHandler {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.shared) > 1 {
+            return;
+        }
+        if !self.shared.closed.load(Ordering::Relaxed) {
+            self.shared.closed.store(true, Ordering::Relaxed);
+        }
+        self.shared.tx.lock().unwrap().take();
+        if let Some(handle) = self.shared.worker.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+        if let Some(conn) = self.shared.conn.lock().unwrap().take() {
+            let _ = conn.close();
+        }
     }
 }
 
@@ -313,7 +332,6 @@ mod tests {
 
         h.close().unwrap();
 
-        // Verify records in database
         let conn = rusqlite::Connection::open(&path).unwrap();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 15);
@@ -362,6 +380,43 @@ mod tests {
         h.close().unwrap();
 
         let r = arc_record(Level::Info, "after close");
-        h.handle(&r).unwrap(); // Should silently skip
+        h.handle(&r).unwrap();
+    }
+
+    #[test]
+    fn database_clone_shares_worker() {
+        let path = temp_db_path("clone_shares");
+        let _ = std::fs::remove_file(&path);
+
+        let config = DatabaseConfig {
+            path: path.clone(),
+            batch_size: 10,
+            batch_interval_secs: 1,
+            ..DatabaseConfig::default()
+        };
+        let mut h1 = DatabaseHandler::new(Level::Info, config).unwrap();
+        let h2 = h1.clone_box();
+
+        let r = arc_record(Level::Info, "from clone");
+        h2.handle(&r).unwrap();
+        drop(h2);
+
+        h1.close().unwrap();
+
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 1);
+
+        cleanup_db(&path);
+    }
+
+    #[test]
+    fn database_rejects_bad_table_name() {
+        let config = DatabaseConfig {
+            path: ":memory:".to_owned(),
+            table: "1bad".to_owned(),
+            ..DatabaseConfig::default()
+        };
+        assert!(DatabaseHandler::new(Level::Info, config).is_err());
     }
 }
