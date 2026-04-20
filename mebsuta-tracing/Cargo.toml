@@ -1,0 +1,12 @@
+[package]
+name = "mebsuta-tracing"
+description = "tracing bridge for mebsuta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mebsuta = { path = "../mebsuta" }
+tracing-core = "0.1"
+tracing-subscriber = "0.3"
