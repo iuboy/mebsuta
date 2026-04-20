@@ -157,9 +157,19 @@ func (h *DatabaseHandler) WithGroup(name string) slog.Handler {
 type dbAttrsHandler struct {
 	*DatabaseHandler
 	attrs []slog.Attr
+	group string
 }
 
 func (h *dbAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.group != "" {
+		newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+		r.Attrs(func(attr slog.Attr) bool {
+			newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
+			return true
+		})
+		newR.AddAttrs(h.attrs...)
+		return h.DatabaseHandler.Handle(ctx, newR)
+	}
 	for _, attr := range h.attrs {
 		r.AddAttrs(attr)
 	}
@@ -169,10 +179,17 @@ func (h *dbAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 func (h *dbAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
 	merged = append(merged, h.attrs...)
-	merged = append(merged, attrs...)
+	if h.group != "" {
+		for _, a := range attrs {
+			merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+		}
+	} else {
+		merged = append(merged, attrs...)
+	}
 	return &dbAttrsHandler{
 		DatabaseHandler: h.DatabaseHandler,
 		attrs:           merged,
+		group:           h.group,
 	}
 }
 
@@ -192,10 +209,13 @@ type dbGroupHandler struct {
 }
 
 func (h *dbGroupHandler) Handle(ctx context.Context, r slog.Record) error {
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.DatabaseHandler.Handle(ctx, r)
+	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(attr slog.Attr) bool {
+		newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
+		return true
+	})
+	newR.AddAttrs(h.attrs...)
+	return h.DatabaseHandler.Handle(ctx, newR)
 }
 
 func (h *dbGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -207,6 +227,7 @@ func (h *dbGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &dbAttrsHandler{
 		DatabaseHandler: h.DatabaseHandler,
 		attrs:           merged,
+		group:           h.group,
 	}
 }
 

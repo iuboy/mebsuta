@@ -525,9 +525,19 @@ func safeMessageForLog(msg string) string {
 type syslogAttrsHandler struct {
 	*SyslogHandler
 	attrs []slog.Attr
+	group string
 }
 
 func (h *syslogAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.group != "" {
+		newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+		r.Attrs(func(attr slog.Attr) bool {
+			newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
+			return true
+		})
+		newR.AddAttrs(h.attrs...)
+		return h.SyslogHandler.Handle(ctx, newR)
+	}
 	for _, attr := range h.attrs {
 		r.AddAttrs(attr)
 	}
@@ -537,10 +547,17 @@ func (h *syslogAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 func (h *syslogAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
 	merged = append(merged, h.attrs...)
-	merged = append(merged, attrs...)
+	if h.group != "" {
+		for _, a := range attrs {
+			merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+		}
+	} else {
+		merged = append(merged, attrs...)
+	}
 	return &syslogAttrsHandler{
 		SyslogHandler: h.SyslogHandler,
 		attrs:         merged,
+		group:         h.group,
 	}
 }
 
@@ -559,10 +576,13 @@ type syslogGroupHandler struct {
 }
 
 func (h *syslogGroupHandler) Handle(ctx context.Context, r slog.Record) error {
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.SyslogHandler.Handle(ctx, r)
+	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(attr slog.Attr) bool {
+		newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
+		return true
+	})
+	newR.AddAttrs(h.attrs...)
+	return h.SyslogHandler.Handle(ctx, newR)
 }
 
 func (h *syslogGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -574,6 +594,7 @@ func (h *syslogGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &syslogAttrsHandler{
 		SyslogHandler: h.SyslogHandler,
 		attrs:         merged,
+		group:         h.group,
 	}
 }
 
