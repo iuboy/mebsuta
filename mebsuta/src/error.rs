@@ -1,48 +1,26 @@
-use std::fmt;
+use thiserror::Error;
 
 /// Error type for mebsuta operations.
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum Error {
     /// An I/O error occurred (file write, network, etc.)
-    Io(std::io::Error),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     /// A database error occurred.
+    #[error("database error: {0}")]
     Database(String),
     /// A configuration error occurred.
+    #[error("config error: {0}")]
     Config(String),
     /// A handler panicked during processing.
+    #[error("handler panicked")]
     HandlerPanic,
     /// The async channel is full and the record was dropped.
+    #[error("async channel full")]
     ChannelFull,
     /// A handler-specific error with a description.
+    #[error("handler error: {0}")]
     Handler(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::Io(e) => write!(f, "io error: {e}"),
-            Error::Database(msg) => write!(f, "database error: {msg}"),
-            Error::Config(msg) => write!(f, "config error: {msg}"),
-            Error::HandlerPanic => write!(f, "handler panicked"),
-            Error::ChannelFull => write!(f, "async channel full"),
-            Error::Handler(msg) => write!(f, "handler error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Error::Io(e) => Some(e),
-            _ => None,
-        }
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Error::Io(e)
-    }
 }
 
 impl From<rusqlite::Error> for Error {
