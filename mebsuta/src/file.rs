@@ -350,7 +350,7 @@ fn chrono_independent_timestamp() -> String {
     format!("{year:04}{month:02}{day:02}-{hours:02}{minutes:02}{seconds:02}")
 }
 
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+pub(crate) fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     let mut year = 1970u64;
     loop {
         let days_in_year = if is_leap(year) { 366 } else { 365 };
@@ -377,7 +377,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
     (year, month, days + 1)
 }
 
-fn is_leap(year: u64) -> bool {
+pub(crate) fn is_leap(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 

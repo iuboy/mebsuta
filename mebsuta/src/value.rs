@@ -1,7 +1,9 @@
 use std::fmt;
 
+use serde::Serialize;
+
 /// Attribute key.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct Key(String);
 
 impl Key {
@@ -42,6 +44,26 @@ pub enum Value {
     Bool(bool),
     Bytes(Vec<u8>),
     Null,
+}
+
+impl Serialize for Value {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Value::Str(s) => serializer.serialize_str(s),
+            Value::Int(n) => serializer.serialize_i64(*n),
+            Value::Uint(n) => serializer.serialize_u64(*n),
+            Value::Float(n) => {
+                if n.is_finite() {
+                    serializer.serialize_f64(*n)
+                } else {
+                    serializer.serialize_none()
+                }
+            }
+            Value::Bool(b) => serializer.serialize_bool(*b),
+            Value::Bytes(_) => serializer.serialize_str("<bytes>"),
+            Value::Null => serializer.serialize_none(),
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -95,26 +117,6 @@ impl From<bool> for Value {
     }
 }
 
-pub(crate) fn value_to_json(v: &Value) -> String {
-    match v {
-        Value::Str(s) => format!("\"{}\"", escape_json(s)),
-        Value::Int(n) => n.to_string(),
-        Value::Uint(n) => n.to_string(),
-        Value::Float(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Bytes(_) => "\"<bytes>\"".to_owned(),
-        Value::Null => "null".to_owned(),
-    }
-}
-
-pub(crate) fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +135,45 @@ mod tests {
         assert_eq!(format!("{}", Value::from("hello")), "hello");
         assert_eq!(format!("{}", Value::from(42i64)), "42");
         assert_eq!(format!("{}", Value::Null), "null");
+    }
+
+    #[test]
+    fn json_str_escaping() {
+        let v = Value::Str("a\"b\nc".to_owned());
+        let json = serde_json::to_string(&v).unwrap();
+        assert_eq!(json, r#""a\"b\nc""#);
+    }
+
+    #[test]
+    fn float_finite_serializes_normally() {
+        let v = Value::Float(3.14);
+        let json = serde_json::to_string(&v).unwrap();
+        assert!(json.contains("3.14"));
+    }
+
+    #[test]
+    fn float_non_finite_serializes_as_null() {
+        assert_eq!(serde_json::to_string(&Value::Float(f64::NAN)).unwrap(), "null");
+        assert_eq!(
+            serde_json::to_string(&Value::Float(f64::INFINITY)).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            serde_json::to_string(&Value::Float(f64::NEG_INFINITY)).unwrap(),
+            "null"
+        );
+    }
+
+    #[test]
+    fn null_serializes_as_null() {
+        assert_eq!(serde_json::to_string(&Value::Null).unwrap(), "null");
+    }
+
+    #[test]
+    fn bytes_serializes_as_placeholder() {
+        assert_eq!(
+            serde_json::to_string(&Value::Bytes(vec![1, 2, 3])).unwrap(),
+            r#""<bytes>""#
+        );
     }
 }
