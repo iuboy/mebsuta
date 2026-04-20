@@ -2,21 +2,21 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
 use crate::error::Error;
-use crate::handler::{Handler, close_all};
+use crate::handler::{ErrorHandler, Handler, close_all};
 use crate::record::{Context, OwnedRecord};
 
 /// Fan-out handler: sends each record to all sub-handlers.
 /// Each sub-handler call is wrapped in `catch_unwind` for panic isolation.
 pub struct MultiHandler {
     handlers: Vec<Box<dyn Handler>>,
-    error_handler: Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &Error) + Send + Sync>>>>,
+    error_handler: ErrorHandler,
 }
 
 impl MultiHandler {
     pub fn new(handlers: Vec<Box<dyn Handler>>) -> Self {
         MultiHandler {
             handlers,
-            error_handler: Arc::new(std::sync::Mutex::new(None)),
+            error_handler: Arc::new(std::sync::Mutex::new(None)) as ErrorHandler,
         }
     }
 }
@@ -52,10 +52,10 @@ impl Handler for MultiHandler {
                 }
                 let record = Arc::clone(record);
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(&record)));
-                if let Err(_) = result {
-                    if let Some(ref eh) = *self.error_handler.lock().unwrap() {
-                        eh("multi", &Error::HandlerPanic);
-                    }
+                if result.is_err()
+                    && let Some(ref eh) = *self.error_handler.lock().unwrap()
+                {
+                    eh("multi", &Error::HandlerPanic);
                 }
             }
             Ok(())
@@ -74,7 +74,11 @@ impl Handler for MultiHandler {
         Self: Sized + 'static,
     {
         Box::new(MultiHandler {
-            handlers: self.handlers.iter().map(|h| h.with_attrs_boxed(attrs.clone())).collect(),
+            handlers: self
+                .handlers
+                .iter()
+                .map(|h| h.with_attrs_boxed(attrs.clone()))
+                .collect(),
             error_handler: Arc::clone(&self.error_handler),
         })
     }
@@ -84,7 +88,11 @@ impl Handler for MultiHandler {
         Self: Sized + 'static,
     {
         Box::new(MultiHandler {
-            handlers: self.handlers.iter().map(|h| h.with_group_boxed(name)).collect(),
+            handlers: self
+                .handlers
+                .iter()
+                .map(|h| h.with_group_boxed(name))
+                .collect(),
             error_handler: Arc::clone(&self.error_handler),
         })
     }
@@ -109,7 +117,13 @@ impl Handler for MultiHandler {
         if errors.is_empty() {
             Some(Ok(()))
         } else {
-            Some(Err(Error::Handler(errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", "))))
+            Some(Err(Error::Handler(
+                errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )))
         }
     }
 }
@@ -154,11 +168,7 @@ mod tests {
             Box::new(self.clone())
         }
 
-        fn set_error_handler(
-            &self,
-            _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>,
-        ) {
-        }
+        fn set_error_handler(&self, _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
     }
 
     #[test]
@@ -177,7 +187,10 @@ mod tests {
     #[test]
     fn fan_out_four_handlers() {
         let mocks: Vec<Mock> = (0..4).map(|_| Mock::new()).collect();
-        let boxes: Vec<Box<dyn Handler>> = mocks.iter().map(|m| Box::new(m.clone()) as Box<dyn Handler>).collect();
+        let boxes: Vec<Box<dyn Handler>> = mocks
+            .iter()
+            .map(|m| Box::new(m.clone()) as Box<dyn Handler>)
+            .collect();
         let multi = MultiHandler::new(boxes);
 
         let r = arc_record(Level::Info, "test");
@@ -226,10 +239,6 @@ mod tests {
             Box::new(PanicHandler)
         }
 
-        fn set_error_handler(
-            &self,
-            _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>,
-        ) {
-        }
+        fn set_error_handler(&self, _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
     }
 }

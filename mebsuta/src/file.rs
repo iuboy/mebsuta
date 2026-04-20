@@ -5,11 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::Error;
-use crate::handler::{Close, Handler, Terminal};
+use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 use crate::stdout::{Format, format_json, format_text};
-
 
 /// File rotation configuration.
 #[derive(Debug, Clone)]
@@ -38,7 +37,7 @@ pub struct FileHandler {
     level: Level,
     format: Format,
     state: Arc<FileState>,
-    error_handler: Arc<Mutex<Option<Box<dyn Fn(&str, &Error) + Send + Sync>>>>,
+    error_handler: ErrorHandler,
 }
 
 struct FileState {
@@ -64,16 +63,13 @@ impl FileHandler {
     ) -> Result<Self, Error> {
         let path = path.into();
 
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
 
         let size = file.metadata()?.len() as i64;
 
@@ -112,7 +108,9 @@ impl FileHandler {
             return Ok(());
         }
         let _ = writer.flush();
-        self.state.size.fetch_add(bytes.len() as i64 + 1, Ordering::Relaxed);
+        self.state
+            .size
+            .fetch_add(bytes.len() as i64 + 1, Ordering::Relaxed);
 
         Ok(())
     }
@@ -125,7 +123,9 @@ impl FileHandler {
 
     fn needs_rotation(&self) -> bool {
         let cfg = &self.state.rotation;
-        if cfg.max_size_bytes > 0 && self.state.size.load(Ordering::Relaxed) >= cfg.max_size_bytes as i64 {
+        if cfg.max_size_bytes > 0
+            && self.state.size.load(Ordering::Relaxed) >= cfg.max_size_bytes as i64
+        {
             return true;
         }
         if cfg.rotate_interval_secs > 0 {
@@ -235,14 +235,14 @@ impl FileHandler {
             if name == base || !name.starts_with(&prefix) {
                 continue;
             }
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(modified) = meta.modified() {
-                    backups.push((name, modified));
-                }
+            if let Ok(meta) = entry.metadata()
+                && let Ok(modified) = meta.modified()
+            {
+                backups.push((name, modified));
             }
         }
 
-        backups.sort_by(|a, b| b.1.cmp(&a.1));
+        backups.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         if cfg.max_backups > 0 && backups.len() > cfg.max_backups {
             for b in &backups[cfg.max_backups..] {
@@ -310,7 +310,12 @@ impl Handler for FileHandler {
 
 impl Close for FileHandler {
     fn close(&mut self) -> Result<(), Error> {
-        if !self.state.closed.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        if self
+            .state
+            .closed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Ok(());
         }
 
@@ -373,7 +378,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 fn compress_file(backup_path: &Path, on_error: impl Fn(&Error) + Send) {
@@ -492,7 +497,10 @@ mod tests {
 
         // Write enough records to trigger rotation
         for i in 0..50 {
-            let r = arc_record(Level::Info, format!("message number {i} with padding data xxxxxxxxxxxx"));
+            let r = arc_record(
+                Level::Info,
+                format!("message number {i} with padding data xxxxxxxxxxxx"),
+            );
             h.handle(&r).unwrap();
         }
         h.flush();
@@ -500,12 +508,13 @@ mod tests {
 
         // Should have at least the main log file and one backup
         let dir = path.parent().unwrap();
-        let entries: Vec<_> = fs::read_dir(dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .collect();
+        let entries: Vec<_> = fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).collect();
         // Main file + at least one backup
-        assert!(entries.len() >= 2, "Expected rotation but found {} files", entries.len());
+        assert!(
+            entries.len() >= 2,
+            "Expected rotation but found {} files",
+            entries.len()
+        );
 
         // Cleanup all
         for e in entries {
@@ -552,9 +561,14 @@ mod tests {
 
         let error_called = std::sync::Arc::new(AtomicBool::new(false));
         let ec_clone = error_called.clone();
-        compress_file(&src_path, move |_| ec_clone.store(true, std::sync::atomic::Ordering::Relaxed));
+        compress_file(&src_path, move |_| {
+            ec_clone.store(true, std::sync::atomic::Ordering::Relaxed)
+        });
 
-        assert!(!error_called.load(std::sync::atomic::Ordering::Relaxed), "compress should not error");
+        assert!(
+            !error_called.load(std::sync::atomic::Ordering::Relaxed),
+            "compress should not error"
+        );
 
         let gz_path = dir.join("data.txt.gz");
         assert!(gz_path.exists(), "gz file should exist");

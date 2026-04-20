@@ -50,6 +50,8 @@ temp/
 # Docker volumes
 docker-volumes/
 
+/target
+
 # Testcontainers lock files
 integration/*.lock
 

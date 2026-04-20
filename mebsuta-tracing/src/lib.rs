@@ -23,7 +23,11 @@ where
     H: Handler + Clone + 'static,
     S: tracing_core::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    fn on_event(&self, event: &tracing_core::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+    fn on_event(
+        &self,
+        event: &tracing_core::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         let level = match *event.metadata().level() {
             l if l == tracing_core::Level::ERROR => Level::Error,
             l if l == tracing_core::Level::WARN => Level::Warn,
@@ -67,7 +71,8 @@ impl tracing_core::field::Visit for MebsutaVisitor {
         if field.name() == "message" {
             self.message = value.to_owned();
         } else {
-            self.attrs.push((field.name().into(), value.to_owned().into()));
+            self.attrs
+                .push((field.name().into(), value.to_owned().into()));
         }
     }
 
@@ -75,7 +80,8 @@ impl tracing_core::field::Visit for MebsutaVisitor {
         if field.name() == "message" {
             self.message = format!("{value:?}");
         } else {
-            self.attrs.push((field.name().into(), format!("{value:?}").into()));
+            self.attrs
+                .push((field.name().into(), format!("{value:?}").into()));
         }
     }
 

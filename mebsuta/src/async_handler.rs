@@ -101,7 +101,11 @@ impl<H: Handler + Clone + 'static> Handler for Async<H> {
     }
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
-        if !self.closed.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        if self
+            .closed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Some(Ok(()));
         }
 
@@ -194,7 +198,11 @@ mod tests {
             let r = arc_record(Level::Info, format!("msg {i}"));
             let _ = async_h.handle(&r);
         }
-        assert!(async_h.dropped() > 0, "Expected drops, got {}", async_h.dropped());
+        assert!(
+            async_h.dropped() > 0,
+            "Expected drops, got {}",
+            async_h.dropped()
+        );
     }
 
     #[test]
