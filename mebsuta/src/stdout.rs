@@ -44,7 +44,7 @@ impl Handler for StdoutHandler {
         let stdout = std::io::stdout();
         let mut lock = stdout.lock();
         if let Err(e) = writeln!(lock, "{output}") {
-            if let Some(ref eh) = *self.error_handler.lock().unwrap() {
+            if let Some(ref eh) = *self.error_handler.lock().expect("stdout error handler lock poisoned") {
                 eh("stdout_handler", &Error::Io(e));
             }
             return Ok(());
@@ -57,7 +57,7 @@ impl Handler for StdoutHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().unwrap() = handler;
+        *self.error_handler.lock().expect("stdout error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {

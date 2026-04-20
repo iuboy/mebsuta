@@ -38,7 +38,7 @@ impl Handler for MultiHandler {
                 Ok(Ok(())) => Ok(()),
                 Ok(Err(e)) => Err(e),
                 Err(_) => {
-                    if let Some(ref eh) = *self.error_handler.lock().unwrap() {
+                    if let Some(ref eh) = *self.error_handler.lock().expect("multi error handler lock poisoned") {
                         eh("multi", &Error::HandlerPanic);
                     }
                     Err(Error::HandlerPanic)
@@ -53,7 +53,7 @@ impl Handler for MultiHandler {
                 let record = Arc::clone(record);
                 let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(&record)));
                 if result.is_err()
-                    && let Some(ref eh) = *self.error_handler.lock().unwrap()
+                    && let Some(ref eh) = *self.error_handler.lock().expect("multi error handler lock poisoned")
                 {
                     eh("multi", &Error::HandlerPanic);
                 }
@@ -98,7 +98,7 @@ impl Handler for MultiHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().unwrap() = handler;
+        *self.error_handler.lock().expect("multi error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
