@@ -50,18 +50,12 @@ pub trait Handler: Send + Sync {
     where
         Self: Sized + 'static,
     {
-        Box::new(GroupHandler {
-            inner: self.clone_box(),
-            group: name.to_owned(),
-        })
+        Box::new(GroupHandler::new(self.clone_box(), name.to_owned()))
     }
 
     /// Object-safe version of `with_group` for `Box<dyn Handler>`.
     fn with_group_boxed(&self, name: &str) -> Box<dyn Handler> {
-        Box::new(GroupHandler {
-            inner: self.clone_box(),
-            group: name.to_owned(),
-        })
+        Box::new(GroupHandler::new(self.clone_box(), name.to_owned()))
     }
 
     /// Set an error handler callback. Called when internal errors occur.
@@ -143,6 +137,18 @@ impl Handler for AttrsHandler {
 struct GroupHandler {
     inner: Box<dyn Handler>,
     group: String,
+    group_prefix: String,
+}
+
+impl GroupHandler {
+    fn new(inner: Box<dyn Handler>, group: String) -> Self {
+        let group_prefix = format!("{group}.");
+        GroupHandler {
+            inner,
+            group,
+            group_prefix,
+        }
+    }
 }
 
 impl Handler for GroupHandler {
@@ -152,11 +158,12 @@ impl Handler for GroupHandler {
 
     fn handle(&self, record: &Arc<crate::record::OwnedRecord>) -> Result<(), Error> {
         let mut enriched = (**record).clone();
+        let prefix = &self.group_prefix;
         enriched.attrs = record
             .attrs
             .iter()
             .map(|(k, v)| {
-                let prefixed = format!("{}.{}", self.group, k.as_str());
+                let prefixed = format!("{prefix}{}", k.as_str());
                 (Key::new(prefixed), v.clone())
             })
             .collect();
@@ -164,10 +171,7 @@ impl Handler for GroupHandler {
     }
 
     fn clone_box(&self) -> Box<dyn Handler> {
-        Box::new(GroupHandler {
-            inner: self.inner.clone_box(),
-            group: self.group.clone(),
-        })
+        Box::new(GroupHandler::new(self.inner.clone_box(), self.group.clone()))
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
@@ -180,5 +184,88 @@ impl Handler for GroupHandler {
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
         self.inner.close_if_needed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arc_record;
+    use crate::level::Level;
+    use crate::record::Context;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[derive(Clone)]
+    struct Mock {
+        count: Arc<AtomicUsize>,
+        last_attrs: Arc<std::sync::Mutex<Vec<(Key, Value)>>>,
+    }
+
+    impl Mock {
+        fn new() -> Self {
+            Mock {
+                count: Arc::new(AtomicUsize::new(0)),
+                last_attrs: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+        #[expect(dead_code)]
+        fn count(&self) -> usize {
+            self.count.load(Ordering::Relaxed)
+        }
+        fn last_attrs(&self) -> Vec<(Key, Value)> {
+            self.last_attrs.lock().unwrap().clone()
+        }
+    }
+
+    impl Handler for Mock {
+        fn enabled(&self, _ctx: &Context<'_>) -> bool {
+            true
+        }
+        fn handle(&self, record: &std::sync::Arc<crate::record::OwnedRecord>) -> Result<(), Error> {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            *self.last_attrs.lock().unwrap() = record.attrs.clone();
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn Handler> {
+            Box::new(self.clone())
+        }
+        fn set_error_handler(&self, _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
+    }
+
+    #[test]
+    fn group_handler_prefixes_keys() {
+        let mock = Mock::new();
+        let h = mock.with_group("app");
+        let r = crate::record::RecordBuilder::new(Level::Info, "test")
+            .attr("key", "val")
+            .build();
+        h.handle(&std::sync::Arc::new(r)).unwrap();
+        let attrs = mock.last_attrs();
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0].0.as_str(), "app.key");
+        assert_eq!(attrs[0].1.to_string(), "val");
+    }
+
+    #[test]
+    fn group_handler_no_attrs() {
+        let mock = Mock::new();
+        let h = mock.with_group("ns");
+        let r = arc_record(Level::Info, "no attrs");
+        h.handle(&r).unwrap();
+        assert!(mock.last_attrs().is_empty());
+    }
+
+    #[test]
+    fn group_handler_clone_preserves_prefix() {
+        let mock = Mock::new();
+        let h = mock.with_group("svc");
+        let h2 = h.clone_box();
+        let r = crate::record::RecordBuilder::new(Level::Info, "x")
+            .attr("a", 1i64)
+            .build();
+        h2.handle(&std::sync::Arc::new(r)).unwrap();
+        let attrs = mock.last_attrs();
+        assert_eq!(attrs[0].0.as_str(), "svc.a");
     }
 }

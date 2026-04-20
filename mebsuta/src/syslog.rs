@@ -164,7 +164,15 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_owned()
     } else {
-        format!("{}...", &s[..max - 3])
+        let tail = "...";
+        let limit = max - tail.len();
+        let boundary = s
+            .char_indices()
+            .take_while(|(i, c)| i + c.len_utf8() <= limit)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}{tail}", &s[..boundary])
     }
 }
 
@@ -288,6 +296,16 @@ mod tests {
         let truncated = truncate(&long, 100);
         assert!(truncated.len() == 100);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_utf8_safe() {
+        let chinese = "你好世界这是中文测试数据".repeat(100);
+        let truncated = truncate(&chinese, 20);
+        assert!(truncated.ends_with("..."));
+        assert!(truncated.len() <= 20);
+        // Must be valid UTF-8
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
     #[test]

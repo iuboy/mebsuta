@@ -27,39 +27,38 @@ impl Handler for MultiHandler {
     }
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
-        if self.handlers.len() == 1 {
-            let h = &self.handlers[0];
+        for h in &self.handlers {
             let ctx = Context::new(record.level);
             if !h.enabled(&ctx) {
-                return Ok(());
+                continue;
             }
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(record)));
+            let record = Arc::clone(record);
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(&record)));
             match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(e),
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if let Some(ref eh) =
+                        *self
+                            .error_handler
+                            .lock()
+                            .expect("multi error handler lock poisoned")
+                    {
+                        eh("multi", &e);
+                    }
+                }
                 Err(_) => {
-                    if let Some(ref eh) = *self.error_handler.lock().expect("multi error handler lock poisoned") {
+                    if let Some(ref eh) =
+                        *self
+                            .error_handler
+                            .lock()
+                            .expect("multi error handler lock poisoned")
+                    {
                         eh("multi", &Error::HandlerPanic);
                     }
-                    Err(Error::HandlerPanic)
                 }
             }
-        } else {
-            for h in &self.handlers {
-                let ctx = Context::new(record.level);
-                if !h.enabled(&ctx) {
-                    continue;
-                }
-                let record = Arc::clone(record);
-                let result = std::panic::catch_unwind(AssertUnwindSafe(|| h.handle(&record)));
-                if result.is_err()
-                    && let Some(ref eh) = *self.error_handler.lock().expect("multi error handler lock poisoned")
-                {
-                    eh("multi", &Error::HandlerPanic);
-                }
-            }
-            Ok(())
         }
+        Ok(())
     }
 
     fn clone_box(&self) -> Box<dyn Handler> {
@@ -240,5 +239,53 @@ mod tests {
         }
 
         fn set_error_handler(&self, _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
+    }
+
+    /// Handler that always errors.
+    #[derive(Clone)]
+    struct FailHandler;
+
+    impl FailHandler {
+        fn new() -> Self {
+            FailHandler
+        }
+    }
+
+    impl Handler for FailHandler {
+        fn enabled(&self, _ctx: &Context<'_>) -> bool {
+            true
+        }
+
+        fn handle(&self, _record: &Arc<OwnedRecord>) -> Result<(), Error> {
+            Err(Error::Handler("always fails".to_owned()))
+        }
+
+        fn clone_box(&self) -> Box<dyn Handler> {
+            Box::new(self.clone())
+        }
+
+        fn set_error_handler(&self, _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
+    }
+
+    #[test]
+    fn swallows_handler_errors() {
+        let good = Mock::new();
+        let bad = FailHandler::new();
+        let multi = MultiHandler::new(vec![Box::new(good.clone()), Box::new(bad)]);
+
+        let r = arc_record(Level::Info, "test");
+        // Should return Ok even though one handler errors
+        assert!(multi.handle(&r).is_ok());
+        assert_eq!(good.count(), 1);
+    }
+
+    #[test]
+    fn single_handler_also_swallows_errors() {
+        let bad = FailHandler::new();
+        let multi = MultiHandler::new(vec![Box::new(bad)]);
+
+        let r = arc_record(Level::Info, "test");
+        // Single handler path should also swallow errors
+        assert!(multi.handle(&r).is_ok());
     }
 }
