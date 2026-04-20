@@ -428,10 +428,8 @@ mod tests {
     fn cleanup(path: &Path) {
         let _ = fs::remove_file(path);
         if let Some(dir) = path.parent() {
-            for entry in fs::read_dir(dir).unwrap_or_else(|_| fs::read_dir(".").unwrap()) {
-                if let Ok(e) = entry {
-                    let _ = fs::remove_file(e.path());
-                }
+            for e in fs::read_dir(dir).unwrap_or_else(|_| fs::read_dir(".").unwrap()).flatten() {
+                let _ = fs::remove_file(e.path());
             }
             let _ = fs::remove_dir(dir);
         }
