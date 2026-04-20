@@ -162,18 +162,26 @@ fn level_to_severity(level: Level) -> u8 {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_owned()
-    } else {
-        let tail = "...";
-        let limit = max - tail.len();
+        return s.to_owned();
+    }
+    if max < 4 {
+        // Not enough room for any char + "...", find the largest char boundary <= max
         let boundary = s
             .char_indices()
-            .take_while(|(i, c)| i + c.len_utf8() <= limit)
+            .take_while(|(i, c)| i + c.len_utf8() <= max)
             .last()
             .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
-        format!("{}{tail}", &s[..boundary])
+        return s[..boundary].to_owned();
     }
+    let limit = max - 3;
+    let boundary = s
+        .char_indices()
+        .take_while(|(i, c)| i + c.len_utf8() <= limit)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    format!("{}...", &s[..boundary])
 }
 
 fn escape_sd(s: &str) -> String {
@@ -298,14 +306,288 @@ mod tests {
         assert!(truncated.ends_with("..."));
     }
 
+    // Helper: assert result is valid UTF-8 and within byte limit
+    fn assert_valid_utf8_within(s: &str, max: usize) {
+        assert!(
+            std::str::from_utf8(s.as_bytes()).is_ok(),
+            "result is not valid UTF-8: {s:?}"
+        );
+        assert!(
+            s.len() <= max,
+            "result len {} exceeds max {}: {:?}",
+            s.len(),
+            max,
+            s
+        );
+    }
+
+    // --- 1-byte ASCII (U+0000..U+007F) ---
+
     #[test]
-    fn truncate_utf8_safe() {
-        let chinese = "你好世界这是中文测试数据".repeat(100);
-        let truncated = truncate(&chinese, 20);
-        assert!(truncated.ends_with("..."));
-        assert!(truncated.len() <= 20);
-        // Must be valid UTF-8
-        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    fn truncate_ascii_short() {
+        assert_eq!(truncate("hi", 10), "hi");
+    }
+
+    #[test]
+    fn truncate_ascii_exact_boundary() {
+        assert_eq!(truncate("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_ascii_long() {
+        let s = "abcdefghij".repeat(100);
+        let t = truncate(&s, 20);
+        assert_valid_utf8_within(&t, 20);
+        assert!(t.ends_with("..."));
+        assert_eq!(&t[..17], "abcdefghijabcdefg");
+    }
+
+    #[test]
+    fn truncate_ascii_one_over() {
+        assert_eq!(truncate("abcdef", 5), "ab...");
+    }
+
+    // --- 2-byte UTF-8 (U+0080..U+07FF): é, ñ, ö, µ ---
+
+    #[test]
+    fn truncate_2byte_latin() {
+        // é = 2 bytes (0xC3 0xA9)
+        let s = "café".repeat(100);
+        let t = truncate(&s, 10);
+        assert_valid_utf8_within(&t, 10);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_2byte_boundary_exact() {
+        // "ééééé" = 10 bytes, max = 10 → no truncation
+        assert_eq!(truncate("ééééé", 10), "ééééé");
+    }
+
+    #[test]
+    fn truncate_2byte_boundary_split() {
+        // "ééééé" = 10 bytes, max = 9 → must not split mid-é
+        let t = truncate("ééééé", 9);
+        assert_valid_utf8_within(&t, 9);
+        assert!(t.ends_with("..."));
+        // limit = 6, fits 3 é (6 bytes), result = "ééé..." = 9 bytes
+        assert_eq!(t, "ééé...");
+    }
+
+    #[test]
+    fn truncate_2byte_all_extended_latin() {
+        // ñ=2B ö=2B Ü=2B — all 2-byte
+        let s = "ñöÜ".repeat(100);
+        let t = truncate(&s, 12);
+        assert_valid_utf8_within(&t, 12);
+        assert!(t.ends_with("..."));
+    }
+
+    // --- 3-byte UTF-8 (U+0800..U+FFFF): CJK, Korean, U+FFFD ---
+
+    #[test]
+    fn truncate_3byte_cjk() {
+        // 你 = 3 bytes (0xE4 0xBD 0xA0)
+        let s = "你好世界".repeat(100);
+        let t = truncate(&s, 15);
+        assert_valid_utf8_within(&t, 15);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_3byte_cjk_boundary() {
+        // "你好" = 6 bytes, max = 6 → no truncation
+        assert_eq!(truncate("你好", 6), "你好");
+    }
+
+    #[test]
+    fn truncate_3byte_cjk_split() {
+        // "你好" = 6 bytes, max = 5 → limit=2, 你(3B) doesn't fit → "..."
+        let t = truncate("你好", 5);
+        assert_valid_utf8_within(&t, 5);
+        assert_eq!(t, "...");
+    }
+
+    #[test]
+    fn truncate_3byte_replacement_char() {
+        // U+FFFD = 3 bytes
+        let s = "\u{FFFD}".repeat(100);
+        let t = truncate(&s, 10);
+        assert_valid_utf8_within(&t, 10);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_3byte_korean() {
+        let s = "한글테스트".repeat(100);
+        let t = truncate(&s, 20);
+        assert_valid_utf8_within(&t, 20);
+        assert!(t.ends_with("..."));
+    }
+
+    // --- 4-byte UTF-8 (U+10000..U+10FFFF): emoji, CJK Extension B ---
+
+    #[test]
+    fn truncate_4byte_emoji() {
+        // 🎉 = 4 bytes (0xF0 0x9F 0x8E 0x89)
+        let s = "🎉🎊🎁".repeat(100);
+        let t = truncate(&s, 15);
+        assert_valid_utf8_within(&t, 15);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_4byte_emoji_boundary() {
+        // "🎉🎉" = 8 bytes, max = 8 → no truncation
+        assert_eq!(truncate("🎉🎉", 8), "🎉🎉");
+    }
+
+    #[test]
+    fn truncate_4byte_emoji_split() {
+        // "🎉🎉" = 8 bytes, max = 7 → must not split 🎉
+        let t = truncate("🎉🎉", 7);
+        assert_valid_utf8_within(&t, 7);
+        assert_eq!(t, "🎉...");
+    }
+
+    #[test]
+    fn truncate_4byte_cjk_ext() {
+        // 𐍈 = U+10348, 4 bytes (Gothic letter)
+        let s = "𐍈".repeat(100);
+        let t = truncate(&s, 10);
+        assert_valid_utf8_within(&t, 10);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_4byte_only_one_fits() {
+        // max = 7: limit=4, fits one 4-byte char → "𐍈..."
+        let t = truncate("𐍈test", 7);
+        assert_valid_utf8_within(&t, 7);
+        assert_eq!(t, "𐍈...");
+    }
+
+    // --- Mixed byte widths ---
+
+    #[test]
+    fn truncate_mixed_ascii_cjk_emoji() {
+        // "a你🎉" = 1 + 3 + 4 = 8 bytes
+        assert_eq!(truncate("a你🎉", 8), "a你🎉");
+        let t = truncate("a你🎉", 7);
+        assert_valid_utf8_within(&t, 7);
+        assert_eq!(t, "a你...");
+    }
+
+    #[test]
+    fn truncate_mixed_latin_cjk() {
+        // café = c(1)+a(1)+f(1)+é(2) = 5 bytes, 你(3), 好(3) = 11 bytes total
+        assert_eq!(truncate("café你好", 11), "café你好");
+        let t = truncate("café你好", 10);
+        assert_valid_utf8_within(&t, 10);
+        // limit=7, café(5B) fits, 你(3B) → 5+3=8 > 7 → "café..."
+        assert_eq!(t, "café...");
+    }
+
+    #[test]
+    fn truncate_mixed_1_2_3_4_bytes() {
+        // a(1) + é(2) + 你(3) + 🎉(4) = 10 bytes
+        assert_eq!(truncate("aé你🎉", 10), "aé你🎉");
+        let t = truncate("aé你🎉", 9);
+        assert_valid_utf8_within(&t, 9);
+        // limit=6, "aé你" = 1+2+3 = 6 → "aé你..."
+        assert_eq!(t, "aé你...");
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn truncate_empty_string() {
+        assert_eq!(truncate("", 10), "");
+    }
+
+    #[test]
+    fn truncate_max_equals_string_len() {
+        assert_eq!(truncate("abc", 3), "abc");
+    }
+
+    #[test]
+    fn truncate_max_zero() {
+        assert_eq!(truncate("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_max_one() {
+        // max=1 < 4: no "...", just safe-truncate to char boundary
+        assert_eq!(truncate("abc", 1), "a");
+    }
+
+    #[test]
+    fn truncate_max_one_utf8() {
+        // é is 2 bytes, doesn't fit in 1 byte → empty
+        assert_eq!(truncate("éabc", 1), "");
+    }
+
+    #[test]
+    fn truncate_max_two() {
+        // max=2 < 4: no "...", fit what we can
+        assert_eq!(truncate("abcdef", 2), "ab");
+        assert_eq!(truncate("éabc", 2), "é");
+    }
+
+    #[test]
+    fn truncate_max_three() {
+        // max=3 < 4: no "..."
+        assert_eq!(truncate("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn truncate_combining_characters() {
+        // é as e + U+0301 (combining acute accent): 1 + 2 = 3 bytes
+        let s = "e\u{0301}test"; // "étest" with combining char
+        let t = truncate(s, 6);
+        assert_valid_utf8_within(&t, 6);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_rtl_text() {
+        // Arabic: مرحبا = 5 chars, each 2 bytes = 10 bytes
+        let s = "مرحبا".repeat(100);
+        let t = truncate(&s, 15);
+        assert_valid_utf8_within(&t, 15);
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_only_multibyte_no_ascii() {
+        // "你好世界" = 12 bytes, max=12 → no truncation
+        assert_eq!(truncate("你好世界", 12), "你好世界");
+        let t = truncate("你好世界", 11);
+        assert_valid_utf8_within(&t, 11);
+        assert_eq!(t, "你好...");
+    }
+
+    #[test]
+    fn truncate_single_char_too_large() {
+        // A single 4-byte emoji, max = 3 → char doesn't fit, empty
+        let t = truncate("🎉", 3);
+        assert_valid_utf8_within(&t, 3);
+        // max=3 < 4, no "...", char doesn't fit → empty
+        assert_eq!(t, "");
+    }
+
+    #[test]
+    fn truncate_single_char_fits_exactly() {
+        // A single 4-byte emoji, max = 4 → fits exactly
+        assert_eq!(truncate("🎉", 4), "🎉");
+    }
+
+    #[test]
+    fn truncate_ascii_max_4() {
+        // max=4, "abcde" = 5 bytes → limit=1, "a..." = 4 bytes
+        let t = truncate("abcde", 4);
+        assert_valid_utf8_within(&t, 4);
+        assert_eq!(t, "a...");
     }
 
     #[test]
