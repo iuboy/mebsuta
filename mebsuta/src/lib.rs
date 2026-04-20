@@ -4,6 +4,7 @@
 //! and multiple output handlers (Stdout, File, Syslog, Database).
 
 mod async_handler;
+mod config;
 mod context;
 mod database;
 mod error;
@@ -18,6 +19,11 @@ mod syslog;
 mod value;
 
 pub use async_handler::Async;
+pub use config::{
+    AsyncConfig, DatabaseConfig as ConfigDatabaseConfig, FileConfig as ConfigFileConfig,
+    MebsutaConfig, SamplingConfig as ConfigSamplingConfig, StdoutConfig,
+    SyslogConfig as ConfigSyslogConfig, mask_dsn_password, sanitize_config,
+};
 pub use context::{ExtractorFn, WithContext};
 pub use database::{DatabaseConfig, DatabaseHandler};
 pub use error::Error;

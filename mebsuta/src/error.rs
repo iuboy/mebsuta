@@ -7,6 +7,8 @@ pub enum Error {
     Io(std::io::Error),
     /// A database error occurred.
     Database(String),
+    /// A configuration error occurred.
+    Config(String),
     /// A handler panicked during processing.
     HandlerPanic,
     /// The async channel is full and the record was dropped.
@@ -20,6 +22,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "io error: {e}"),
             Error::Database(msg) => write!(f, "database error: {msg}"),
+            Error::Config(msg) => write!(f, "config error: {msg}"),
             Error::HandlerPanic => write!(f, "handler panicked"),
             Error::ChannelFull => write!(f, "async channel full"),
             Error::Handler(msg) => write!(f, "handler error: {msg}"),
@@ -45,5 +48,11 @@ impl From<std::io::Error> for Error {
 impl From<rusqlite::Error> for Error {
     fn from(e: rusqlite::Error) -> Self {
         Error::Database(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Error::Config(e.to_string())
     }
 }
