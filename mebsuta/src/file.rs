@@ -97,7 +97,7 @@ impl FileHandler {
             Format::Text => format_text(record),
         };
 
-        let mut writer = self.state.writer.lock().unwrap();
+        let mut writer = self.state.writer.lock().expect("file writer lock poisoned");
         let bytes = output.as_bytes();
         if let Err(e) = writer.write_all(bytes) {
             self.call_error_handler("file_handler", &Error::Io(e));
@@ -116,7 +116,7 @@ impl FileHandler {
     }
 
     fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self.error_handler.lock().unwrap() {
+        if let Some(ref eh) = *self.error_handler.lock().expect("file error handler lock poisoned") {
             eh(component, err);
         }
     }
@@ -138,7 +138,7 @@ impl FileHandler {
     }
 
     fn do_rotate(&self) {
-        let mut writer = self.state.writer.lock().unwrap();
+        let mut writer = self.state.writer.lock().expect("file writer lock poisoned");
         if self.state.closed.load(Ordering::Relaxed) {
             return;
         }
@@ -166,7 +166,7 @@ impl FileHandler {
 
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(new_file) => {
-                *self.state.writer.lock().unwrap() = BufWriter::new(new_file);
+                *self.state.writer.lock().expect("file writer lock poisoned") = BufWriter::new(new_file);
                 self.state.size.store(0, Ordering::Relaxed);
                 self.state.rotated_at.store(now_secs(), Ordering::Relaxed);
             }
@@ -181,12 +181,12 @@ impl FileHandler {
             let eh = self.error_handler.clone();
             let handle = std::thread::spawn(move || {
                 compress_file(&backup_path, move |e: &Error| {
-                    if let Some(ref handler) = *eh.lock().unwrap() {
+                    if let Some(ref handler) = *eh.lock().expect("compress error handler lock poisoned") {
                         handler("file", e);
                     }
                 });
             });
-            *self.state.compress_wg.lock().unwrap() = Some(handle);
+            *self.state.compress_wg.lock().expect("compress wg lock poisoned") = Some(handle);
         }
 
         self.cleanup_backups();
@@ -294,7 +294,7 @@ impl Handler for FileHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().unwrap() = handler;
+        *self.error_handler.lock().expect("file error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
@@ -319,11 +319,11 @@ impl Close for FileHandler {
             return Ok(());
         }
 
-        if let Some(handle) = self.state.compress_wg.lock().unwrap().take() {
+        if let Some(handle) = self.state.compress_wg.lock().expect("compress wg lock poisoned").take() {
             let _ = handle.join();
         }
 
-        let mut writer = self.state.writer.lock().unwrap();
+        let mut writer = self.state.writer.lock().expect("file writer lock poisoned");
         let _ = writer.flush();
         Ok(())
     }

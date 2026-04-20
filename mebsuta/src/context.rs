@@ -59,7 +59,7 @@ impl<H: Handler + Clone + 'static> Handler for WithContext<H> {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().unwrap() = handler;
+        *self.error_handler.lock().expect("context error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {

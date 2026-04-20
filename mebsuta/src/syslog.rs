@@ -124,7 +124,7 @@ impl SyslogHandler {
     }
 
     fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let mut guard = self.shared.conn.lock().unwrap();
+        let mut guard = self.shared.conn.lock().expect("syslog conn lock poisoned");
         match guard.as_mut() {
             Some(SyslogConn::Udp(socket)) => {
                 socket.send_to(data, &self.config.address)?;
@@ -143,7 +143,7 @@ impl SyslogHandler {
     }
 
     fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self.error_handler.lock().unwrap() {
+        if let Some(ref eh) = *self.error_handler.lock().expect("syslog error handler lock poisoned") {
             eh(component, err);
         }
     }
@@ -209,11 +209,11 @@ impl Handler for SyslogHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().unwrap() = handler;
+        *self.error_handler.lock().expect("syslog error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
-        let mut guard = self.shared.conn.lock().unwrap();
+        let mut guard = self.shared.conn.lock().expect("syslog conn lock poisoned");
         if let Some(SyslogConn::Tcp(stream)) = guard.as_mut() {
             let _ = stream.flush();
         }
@@ -238,7 +238,7 @@ impl Close for SyslogHandler {
             return Ok(());
         }
         self.flush();
-        *self.shared.conn.lock().unwrap() = None;
+        *self.shared.conn.lock().expect("syslog conn lock poisoned") = None;
         Ok(())
     }
 }
@@ -252,7 +252,7 @@ impl Drop for SyslogHandler {
             self.shared.closed.store(true, Ordering::Relaxed);
         }
         self.flush();
-        *self.shared.conn.lock().unwrap() = None;
+        *self.shared.conn.lock().expect("syslog conn lock poisoned") = None;
     }
 }
 

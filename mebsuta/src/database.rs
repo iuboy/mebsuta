@@ -126,7 +126,7 @@ impl DatabaseHandler {
 
     #[expect(dead_code)]
     fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self.error_handler.lock().unwrap() {
+        if let Some(ref eh) = *self.error_handler.lock().expect("db error handler lock poisoned") {
             eh(component, err);
         }
     }
@@ -213,7 +213,7 @@ impl Handler for DatabaseHandler {
             return Ok(());
         }
 
-        let tx = self.shared.tx.lock().unwrap();
+        let tx = self.shared.tx.lock().expect("db tx lock poisoned");
         let Some(tx) = tx.as_ref() else {
             return Ok(());
         };
@@ -238,7 +238,7 @@ impl Handler for DatabaseHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().unwrap() = handler;
+        *self.error_handler.lock().expect("db error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
@@ -264,13 +264,13 @@ impl Close for DatabaseHandler {
             return Ok(());
         }
 
-        self.shared.tx.lock().unwrap().take();
+        self.shared.tx.lock().expect("db tx lock poisoned").take();
 
-        if let Some(handle) = self.shared.worker.lock().unwrap().take() {
+        if let Some(handle) = self.shared.worker.lock().expect("db worker lock poisoned").take() {
             let _ = handle.join();
         }
 
-        if let Some(conn) = self.shared.conn.lock().unwrap().take() {
+        if let Some(conn) = self.shared.conn.lock().expect("db conn lock poisoned").take() {
             let _ = conn.close();
         }
         Ok(())
@@ -285,11 +285,11 @@ impl Drop for DatabaseHandler {
         if !self.shared.closed.load(Ordering::Relaxed) {
             self.shared.closed.store(true, Ordering::Relaxed);
         }
-        self.shared.tx.lock().unwrap().take();
-        if let Some(handle) = self.shared.worker.lock().unwrap().take() {
+        self.shared.tx.lock().expect("db tx lock poisoned").take();
+        if let Some(handle) = self.shared.worker.lock().expect("db worker lock poisoned").take() {
             let _ = handle.join();
         }
-        if let Some(conn) = self.shared.conn.lock().unwrap().take() {
+        if let Some(conn) = self.shared.conn.lock().expect("db conn lock poisoned").take() {
             let _ = conn.close();
         }
     }
