@@ -5,6 +5,7 @@
 
 mod async_handler;
 mod context;
+mod database;
 mod error;
 mod file;
 mod handler;
@@ -18,6 +19,7 @@ mod value;
 
 pub use async_handler::Async;
 pub use context::{ExtractorFn, WithContext};
+pub use database::{DatabaseConfig, DatabaseHandler};
 pub use error::Error;
 pub use file::{FileHandler, RotationConfig};
 pub use handler::{Close, Handler, Middleware, Terminal, close_all};

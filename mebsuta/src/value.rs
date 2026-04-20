@@ -95,6 +95,26 @@ impl From<bool> for Value {
     }
 }
 
+pub(crate) fn value_to_json(v: &Value) -> String {
+    match v {
+        Value::Str(s) => format!("\"{}\"", escape_json(s)),
+        Value::Int(n) => n.to_string(),
+        Value::Uint(n) => n.to_string(),
+        Value::Float(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Bytes(_) => "\"<bytes>\"".to_owned(),
+        Value::Null => "null".to_owned(),
+    }
+}
+
+pub(crate) fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

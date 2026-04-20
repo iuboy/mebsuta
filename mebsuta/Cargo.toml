@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 thiserror.workspace = true
 flate2.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 criterion = "0.5"
