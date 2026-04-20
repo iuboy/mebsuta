@@ -151,9 +151,16 @@ impl Handler for GroupHandler {
     }
 
     fn handle(&self, record: &Arc<crate::record::OwnedRecord>) -> Result<(), Error> {
-        // The inner handler is responsible for applying the group prefix
-        // in its output format (JSON nesting, Text dot notation, etc.)
-        self.inner.handle(record)
+        let mut enriched = (**record).clone();
+        enriched.attrs = record
+            .attrs
+            .iter()
+            .map(|(k, v)| {
+                let prefixed = format!("{}.{}", self.group, k.as_str());
+                (Key::new(prefixed), v.clone())
+            })
+            .collect();
+        self.inner.handle(&Arc::new(enriched))
     }
 
     fn clone_box(&self) -> Box<dyn Handler> {
