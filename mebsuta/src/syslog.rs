@@ -3,6 +3,8 @@ use std::net::{TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use crate::error::Error;
 use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
@@ -160,28 +162,36 @@ fn level_to_severity(level: Level) -> u8 {
     }
 }
 
+/// Truncate a string to fit within `max` bytes, respecting grapheme cluster boundaries.
+///
+/// When the string exceeds `max` bytes, it is cut at the last complete grapheme
+/// cluster that fits and "..." is appended. If `max < 4` and no grapheme fits,
+/// returns an empty string or a truncated prefix without ellipsis.
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_owned();
     }
     if max < 4 {
-        // Not enough room for any char + "...", find the largest char boundary <= max
-        let boundary = s
-            .char_indices()
-            .take_while(|(i, c)| i + c.len_utf8() <= max)
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
+        // Not enough room for ellipsis. Find the last grapheme boundary <= max.
+        let boundary = grapheme_boundary_before(s, max);
         return s[..boundary].to_owned();
     }
     let limit = max - 3;
-    let boundary = s
-        .char_indices()
-        .take_while(|(i, c)| i + c.len_utf8() <= limit)
-        .last()
-        .map(|(i, c)| i + c.len_utf8())
-        .unwrap_or(0);
+    let boundary = grapheme_boundary_before(s, limit);
     format!("{}...", &s[..boundary])
+}
+
+/// Find the largest grapheme-cluster boundary that is <= `byte_limit`.
+fn grapheme_boundary_before(s: &str, byte_limit: usize) -> usize {
+    let mut boundary = 0;
+    for (idx, grapheme) in s.grapheme_indices(true) {
+        let end = idx + grapheme.len();
+        if end > byte_limit {
+            break;
+        }
+        boundary = end;
+    }
+    boundary
 }
 
 fn escape_sd(s: &str) -> String {
@@ -602,5 +612,283 @@ mod tests {
         let severity = level_to_severity(Level::Info);
         let priority = config.facility * 8 + severity;
         assert_eq!(priority, 14);
+    }
+
+    // ========================================================================
+    // Grapheme cluster tests — verify truncate never splits a grapheme
+    // ========================================================================
+
+    // --- Combining characters (base + combining mark = single grapheme) ---
+
+    #[test]
+    fn grapheme_combining_acute() {
+        // é = e + U+0301 combining acute accent (1+2 = 3 bytes, 1 grapheme)
+        let s = "e\u{0301}abc"; // "éabc"
+        assert_eq!(s.graphemes(true).count(), 4);
+        let t = truncate(s, 5);
+        // limit=2, grapheme "é" = 3 bytes > 2, doesn't fit → boundary=0 → "..."
+        assert_valid_utf8_within(&t, 5);
+        assert_eq!(t, "...");
+    }
+
+    #[test]
+    fn grapheme_combining_preserves_base() {
+        // e + combining diaeresis = ë (1 grapheme, 3 bytes)
+        let s = "e\u{0308}test";
+        let t = truncate(s, 10);
+        assert_valid_utf8_within(&t, 10);
+        // The combining ë must stay intact, not split into "e" + "̈"
+        assert!(!t.starts_with('e') || t.starts_with("e\u{0308}"));
+    }
+
+    #[test]
+    fn grapheme_multiple_combining() {
+        // e + combining tilde + combining dot below (1 grapheme, 5 bytes)
+        let s = "e\u{0303}\u{0323}abc";
+        assert_eq!(s.graphemes(true).next().unwrap().len(), 5);
+        let t = truncate(s, 10);
+        assert_valid_utf8_within(&t, 10);
+        // The whole grapheme "e\u{0303}\u{0323}" should be preserved or dropped together
+        if t.starts_with('e') {
+            assert!(t.starts_with("e\u{0303}\u{0303}") || t.starts_with("e\u{0303}\u{0323}"));
+        }
+    }
+
+    #[test]
+    fn grapheme_combining_long_chain() {
+        // Base + 5 combining marks = 1 grapheme
+        let s = "a\u{0300}\u{0301}\u{0302}\u{0303}\u{0304}xyz";
+        let grapheme = s.graphemes(true).next().unwrap();
+        assert_eq!(grapheme.len(), 11); // 1 + 5*2
+        let t = truncate(s, 20);
+        assert_valid_utf8_within(&t, 20);
+        // Must not split the combining chain
+        assert!(!t.contains("a\u{0300}\u{0301}...")); // should keep all or none of combining
+    }
+
+    // --- Zero-Width Joiner (ZWJ) sequences ---
+
+    #[test]
+    fn grapheme_zwj_family() {
+        // 👨‍👩‍👧 = Man + ZWJ + Woman + ZWJ + Girl (1 grapheme, multiple codepoints)
+        let family = "👨\u{200D}👩\u{200D}👧";
+        assert_eq!(family.graphemes(true).count(), 1);
+        let s = format!("{family}hello world more text here");
+        let t = truncate(&s, 30);
+        assert_valid_utf8_within(&t, 30);
+        // The ZWJ family must not be split
+        let first_grapheme = t.graphemes(true).next().unwrap();
+        assert!(first_grapheme.contains('\u{200D}') || first_grapheme == "...");
+    }
+
+    #[test]
+    fn grapheme_zwj_emoji_sequence() {
+        // 👩‍🔬 = Woman + ZWJ + Microscope
+        let scientist = "👩\u{200D}🔬";
+        assert_eq!(scientist.graphemes(true).count(), 1);
+        let s = format!("{scientist}data");
+        let t = truncate(&s, 15);
+        assert_valid_utf8_within(&t, 15);
+    }
+
+    #[test]
+    fn grapheme_zwj_flag_england() {
+        // 🏴󠁧󠁢󠁥󠁮󠁧󠁿 = flag tag sequence (1 grapheme, many codepoints)
+        let flag = "🏴󠁧󠁢󠁥󠁮󠁧󠁿";
+        assert_eq!(flag.graphemes(true).count(), 1);
+        let s = format!("{flag}padding");
+        let t = truncate(&s, 30);
+        assert_valid_utf8_within(&t, 30);
+    }
+
+    // --- Variation selectors ---
+
+    #[test]
+    fn grapheme_variation_selector() {
+        // ☎️ = ☎ (U+260E) + VS16 (U+FE0F) = 1 grapheme
+        let phone = "\u{260E}\u{FE0F}";
+        assert_eq!(phone.graphemes(true).count(), 1);
+        let s = format!("{phone}hello world padding data");
+        let t = truncate(&s, 15);
+        assert_valid_utf8_within(&t, 15);
+        // VS must stay with its base
+        if t.starts_with('\u{260E}') {
+            assert!(t.starts_with(phone));
+        }
+    }
+
+    // --- Regional indicators (flag pairs) ---
+
+    #[test]
+    fn grapheme_regional_indicator_flag() {
+        // 🇺🇸 = U+1F1FA + U+1F1F8 = US flag (1 grapheme, 8 bytes each = 16 bytes)
+        let flag = "\u{1F1FA}\u{1F1F8}";
+        assert_eq!(flag.graphemes(true).count(), 1);
+        assert_eq!(flag.len(), 8); // each regional indicator is 4 bytes
+        let s = format!("{flag}hello");
+        let t = truncate(&s, 15);
+        assert_valid_utf8_within(&t, 15);
+        // Flag must not be split into two regional indicators
+        if t.contains('\u{1F1FA}') {
+            assert!(t.contains(flag));
+        }
+    }
+
+    #[test]
+    fn grapheme_multiple_flags() {
+        let flags = "\u{1F1E8}\u{1F1F3}\u{1F1FA}\u{1F1F8}"; // 🇨🇳🇺🇸
+        assert_eq!(flags.graphemes(true).count(), 2);
+        let t = truncate(flags, 10);
+        assert_valid_utf8_within(&t, 10);
+        // Should truncate at grapheme boundary: first flag (8 bytes) + "..." = 11 > 10
+        // limit=7, first flag = 8 bytes > 7 → boundary=0 → "..."
+        assert_eq!(t, "...");
+    }
+
+    // --- Hangul syllable composition ---
+
+    #[test]
+    fn grapheme_hangul_jamo() {
+        // Hangul jamo that compose: ᄒ + ᅡ + ᆫ = 한 (1 grapheme, 3+3+3 = 9 bytes)
+        let jamo = "\u{1112}\u{1161}\u{11AB}";
+        assert_eq!(jamo.graphemes(true).count(), 1);
+        let s = format!("{jamo}text data here padding");
+        let t = truncate(&s, 20);
+        assert_valid_utf8_within(&t, 20);
+    }
+
+    // --- Mixed grapheme complexity ---
+
+    #[test]
+    fn grapheme_mixed_complex() {
+        // ASCII + combining + ZWJ emoji + CJK + flag
+        let s = format!(
+            "hi{}{} world 你好 {} more",
+            "e\u{0301}",          // é as combining
+            "👩\u{200D}🔬",       // woman scientist ZWJ
+            "\u{1F1E8}\u{1F1F3}", // 🇨🇳 flag
+        );
+        let t = truncate(&s, 30);
+        assert_valid_utf8_within(&t, 30);
+    }
+
+    #[test]
+    fn grapheme_all_graphemes_intact() {
+        // Verify truncated result only contains complete graphemes
+        let s = "a\u{0308}b\u{0301}🎉\u{FE0F}👨\u{200D}👩\u{200D}👧xyz";
+        let t = truncate(s, 20);
+        assert_valid_utf8_within(&t, 20);
+        // Strip the "..." suffix and check remaining graphemes are in original
+        let body = t.strip_suffix("...").unwrap_or(&t);
+        for g in body.graphemes(true) {
+            assert!(s.contains(g), "orphan grapheme '{g}' not in original");
+        }
+    }
+
+    // ========================================================================
+    // Malformed / illegal UTF-8 tests
+    // ========================================================================
+
+    #[test]
+    fn sanitize_replaces_invalid_bytes() {
+        // Valid ASCII + invalid continuation byte
+        let bytes = b"hello\xFFworld";
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.contains('\u{FFFD}'));
+        assert!(s.contains("hello"));
+        assert!(s.contains("world"));
+    }
+
+    #[test]
+    fn sanitize_replaces_incomplete_sequence() {
+        // Start of a 3-byte sequence, but truncated
+        let bytes = b"abc\xe4\xbd"; // 你 starts with E4 BD A0, missing A0
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.starts_with("abc"));
+        assert!(s.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn sanitize_handles_overlong_encoding() {
+        // Overlong encoding of '/' (C0 AF instead of 2F)
+        let bytes = b"path\xc0\xaffile";
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.contains('\u{FFFD}'));
+        assert!(s.contains("path"));
+        assert!(s.contains("file"));
+    }
+
+    #[test]
+    fn sanitize_handles_lone_continuation() {
+        // Lone continuation byte (80-8F range)
+        let bytes = b"test\x80data";
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.contains("test"));
+        assert!(s.contains("data"));
+        assert!(s.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn sanitize_handles_surrogate_half() {
+        // UTF-8 encoding of U+D800 (surrogate, invalid in UTF-8): ED A0 80
+        let bytes = b"before\xed\xa0\x80after";
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.contains("before"));
+        assert!(s.contains("after"));
+        assert!(s.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn sanitize_all_valid_passthrough() {
+        let bytes = "你好世界🎉".as_bytes();
+        let s = crate::record::sanitize_utf8(bytes);
+        assert_eq!(s, "你好世界🎉");
+    }
+
+    #[test]
+    fn sanitize_empty() {
+        assert_eq!(crate::record::sanitize_utf8(b""), "");
+    }
+
+    #[test]
+    fn sanitize_multiple_invalid() {
+        // Multiple invalid sequences mixed with valid
+        let bytes = b"a\xff\xff\xfe\xc0b";
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.contains('a'));
+        assert!(s.contains('b'));
+        // Should have replacement chars for invalid bytes
+        let without_ab: String = s.chars().filter(|c| *c != 'a' && *c != 'b').collect();
+        assert!(!without_ab.is_empty());
+    }
+
+    #[test]
+    fn sanitize_consecutive_invalid() {
+        let bytes = b"\xff\xff\xff";
+        let s = crate::record::sanitize_utf8(bytes);
+        assert!(s.contains('\u{FFFD}'));
+    }
+
+    // --- sanitize_utf8 + truncate end-to-end ---
+
+    #[test]
+    fn sanitize_then_truncate() {
+        // Malformed input → sanitize → truncate should produce valid UTF-8
+        let mut bytes = b"hello world ".to_vec();
+        bytes.push(0xFF);
+        bytes.extend_from_slice("这是中文测试数据".as_bytes());
+        let clean = crate::record::sanitize_utf8(&bytes);
+        let t = truncate(&clean, 20);
+        assert_valid_utf8_within(&t, 20);
+    }
+
+    #[test]
+    fn sanitize_preserves_graphemes() {
+        // Valid grapheme clusters survive sanitize_utf8
+        let input = "e\u{0308}👨\u{200D}👩\u{200D}👧🎉";
+        let clean = crate::record::sanitize_utf8(input.as_bytes());
+        assert_eq!(clean, input);
+        // grapheme count preserved
+        assert_eq!(clean.graphemes(true).count(), input.graphemes(true).count());
     }
 }

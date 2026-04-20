@@ -32,7 +32,7 @@ pub use file::{FileHandler, RotationConfig};
 pub use handler::{Close, Handler, Middleware, Terminal, close_all};
 pub use level::Level;
 pub use multi::MultiHandler;
-pub use record::{Context, OwnedRecord, RecordBuilder, arc_record};
+pub use record::{Context, OwnedRecord, RecordBuilder, arc_record, sanitize_utf8};
 pub use sampling::Sampling;
 pub use stdout::{Format, StdoutHandler};
 pub use syslog::{SyslogConfig, SyslogFormat, SyslogHandler, SyslogTransport};

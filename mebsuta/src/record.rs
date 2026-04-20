@@ -112,6 +112,15 @@ pub fn arc_record(level: Level, message: impl Into<String>) -> Arc<OwnedRecord> 
     Arc::new(RecordBuilder::new(level, message).build())
 }
 
+/// Sanitize raw bytes into a valid UTF-8 string.
+///
+/// Invalid UTF-8 sequences are replaced with U+FFFD (�).
+/// Use this when consuming data from external sources (FFI, network, files)
+/// before passing it into the logging pipeline.
+pub fn sanitize_utf8(bytes: &[u8]) -> String {
+    std::string::String::from_utf8_lossy(bytes).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
