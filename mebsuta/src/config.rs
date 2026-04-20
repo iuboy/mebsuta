@@ -395,7 +395,13 @@ pub fn mask_dsn_password(dsn: &str) -> String {
         return format!("{}****{}", &dsn[..start], &dsn[end..]);
     }
     if dsn.len() > 20 {
-        format!("{}...(hidden)", &dsn[..20])
+        let boundary = dsn
+            .char_indices()
+            .take_while(|(i, c)| *i + c.len_utf8() <= 20)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}...(hidden)", &dsn[..boundary])
     } else {
         "(hidden)".to_owned()
     }
@@ -551,5 +557,57 @@ mod tests {
         let mut cfg = MebsutaConfig::default();
         // All sub-configs disabled by default, so empty paths are fine
         cfg.validate().unwrap();
+    }
+
+    // --- mask_dsn_password UTF-8 safety ---
+
+    #[test]
+    fn mask_dsn_non_ascii_host_fallback() {
+        // DSN with non-ASCII hostname, falls through to the >20 branch
+        let dsn = "postgresql://user:pass@数据库服务器主机名称非常长.example.com/db";
+        let masked = mask_dsn_password(dsn);
+        // Should mask the password
+        assert!(masked.contains("****"));
+        assert!(!masked.contains("pass"));
+        // Result must be valid UTF-8
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn mask_dsn_short_non_ascii() {
+        // Short non-ASCII that doesn't match any pattern → "(hidden)"
+        let masked = mask_dsn_password("测试");
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn mask_dsn_long_non_ascii_fallback() {
+        // No URI or key=value pattern, long non-ASCII → truncates at byte 20 boundary
+        let dsn = "这是一段包含中文字符的很长的连接字符串用于测试截断";
+        let masked = mask_dsn_password(dsn);
+        assert!(masked.contains("...(hidden)"));
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
+        // Must not exceed original length
+        assert!(masked.len() <= dsn.len() + 20); // generous bound
+    }
+
+    #[test]
+    fn mask_dsn_fallback_boundary_valid_utf8() {
+        // Construct a string where byte 20 falls in the middle of a 3-byte CJK char
+        // "aaaaaaaaaaaaa" = 13 bytes + "你" = 3 bytes = 16, + "好" = 3 = 19, + "世" = 3 = 22
+        let dsn = "aaaaaaaaaaaaa你好世界更多内容";
+        assert!(dsn.len() > 20);
+        let masked = mask_dsn_password(dsn);
+        assert!(masked.contains("...(hidden)"));
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn mask_dsn_fallback_emoji() {
+        // 4-byte emoji near boundary
+        let dsn = "aaaaaaaaaaaaaaaa🎉🎊🎁data";
+        let masked = mask_dsn_password(dsn);
+        assert!(masked.contains("...(hidden)"));
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
     }
 }
