@@ -12,3 +12,7 @@ flate2.workspace = true
 
 [dev-dependencies]
 criterion = "0.5"
+
+[[bench]]
+name = "handler_bench"
+harness = false

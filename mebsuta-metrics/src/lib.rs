@@ -132,6 +132,7 @@ mod tests {
                 count: Arc::new(AtomicUsize::new(0)),
             }
         }
+        #[expect(dead_code)]
         fn count(&self) -> usize {
             self.count.load(AtomicOrdering::Relaxed)
         }

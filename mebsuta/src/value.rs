@@ -104,7 +104,7 @@ mod tests {
         assert!(matches!(Value::from("hello"), Value::Str(_)));
         assert!(matches!(Value::from(42i64), Value::Int(42)));
         assert!(matches!(Value::from(42u64), Value::Uint(42)));
-        assert!(matches!(Value::from(3.14f64), Value::Float(_)));
+        assert!(matches!(Value::from(3.15f64), Value::Float(_)));
         assert!(matches!(Value::from(true), Value::Bool(true)));
     }
 
