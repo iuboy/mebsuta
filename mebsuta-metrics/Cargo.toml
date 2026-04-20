@@ -1,0 +1,11 @@
+[package]
+name = "mebsuta-metrics"
+description = "Prometheus metrics decorator for mebsuta"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mebsuta = { path = "../mebsuta" }
+prometheus = "0.14"

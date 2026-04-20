@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "mebsuta",
+    "mebsuta-tracing",
+    "mebsuta-metrics",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/iuboy/mebsuta"
+
+[workspace.dependencies]
+thiserror = "2"
+flate2 = "1"
