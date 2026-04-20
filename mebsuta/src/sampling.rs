@@ -191,4 +191,20 @@ mod tests {
         let _ = sampling.handle(&r);
         assert!(mock.count() > count_before);
     }
+
+    #[test]
+    fn clone_box_resets_counter() {
+        let mock = Mock::new();
+        let s1 = Sampling::new(mock.clone(), 1, 100, 1000);
+        // Consume the initial slot
+        let r = arc_record(Level::Info, "first");
+        s1.handle(&r).unwrap();
+        assert_eq!(mock.count(), 1);
+
+        // Clone resets counter
+        let s2 = s1.clone_box();
+        let r2 = arc_record(Level::Info, "cloned first");
+        s2.handle(&r2).unwrap();
+        assert_eq!(mock.count(), 2);
+    }
 }
