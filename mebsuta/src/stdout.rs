@@ -8,6 +8,7 @@ use crate::record::{Context, OwnedRecord};
 
 /// Output format for StdoutHandler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     Json,
     Text,

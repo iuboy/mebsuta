@@ -36,6 +36,7 @@ impl From<String> for Key {
 
 /// Attribute value.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Value {
     Str(String),
     Int(i64),
