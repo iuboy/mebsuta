@@ -10,6 +10,8 @@ repository.workspace = true
 thiserror.workspace = true
 flate2.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 criterion = "0.5"
