@@ -2,6 +2,7 @@ use thiserror::Error;
 
 /// Error type for mebsuta operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// An I/O error occurred (file write, network, etc.)
     #[error("io error: {0}")]
@@ -15,9 +16,6 @@ pub enum Error {
     /// A handler panicked during processing.
     #[error("handler panicked")]
     HandlerPanic,
-    /// The async channel is full and the record was dropped.
-    #[error("async channel full")]
-    ChannelFull,
     /// A handler-specific error with a description.
     #[error("handler error: {0}")]
     Handler(String),

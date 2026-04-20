@@ -8,6 +8,7 @@ use crate::level::Level;
 /// Top-level configuration for the entire mebsuta handler pipeline.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct MebsutaConfig {
     pub level: String,
     pub format: String,
@@ -95,6 +96,7 @@ fn parse_format(s: &str) -> Result<crate::stdout::Format, Error> {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct StdoutConfig {
     pub enabled: bool,
 }
@@ -107,6 +109,7 @@ impl Default for StdoutConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct FileConfig {
     pub enabled: bool,
     pub path: String,
@@ -164,6 +167,7 @@ impl FileConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct DatabaseConfig {
     pub enabled: bool,
     pub path: String,
@@ -220,6 +224,7 @@ impl DatabaseConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SyslogConfig {
     pub enabled: bool,
     pub transport: String,
@@ -290,6 +295,7 @@ impl SyslogConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SamplingConfig {
     pub enabled: bool,
     pub initial: u64,
@@ -324,6 +330,7 @@ impl SamplingConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct AsyncConfig {
     pub enabled: bool,
     pub buffer_size: usize,

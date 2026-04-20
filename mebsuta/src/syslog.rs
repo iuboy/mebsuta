@@ -12,6 +12,7 @@ const MAX_SYSLOG_MSG_SIZE: usize = 4096;
 
 /// Syslog transport protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SyslogTransport {
     Udp,
     Tcp,
@@ -19,6 +20,7 @@ pub enum SyslogTransport {
 
 /// Syslog format variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SyslogFormat {
     RFC3164,
     RFC5424,
