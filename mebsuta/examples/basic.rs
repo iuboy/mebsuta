@@ -1,4 +1,4 @@
-use mebsuta::{Format, Handler, Sampling, StdoutHandler, arc_record, Level};
+use mebsuta::{Format, Handler, Level, Sampling, StdoutHandler, arc_record};
 
 fn main() {
     let stdout = StdoutHandler::new(Level::Info, Format::Json);

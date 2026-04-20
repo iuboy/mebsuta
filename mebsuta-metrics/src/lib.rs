@@ -115,8 +115,8 @@ impl<H: Handler + Clone + 'static> Middleware<H> for Metrics<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use super::*;
     use mebsuta::{Level, arc_record};

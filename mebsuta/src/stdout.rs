@@ -1,8 +1,8 @@
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::error::Error;
-use crate::handler::{Handler, Terminal};
+use crate::handler::{ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 use crate::value::Value;
@@ -19,7 +19,7 @@ pub enum Format {
 pub struct StdoutHandler {
     level: Level,
     format: Format,
-    error_handler: Arc<Mutex<Option<Box<dyn Fn(&str, &Error) + Send + Sync>>>>,
+    error_handler: ErrorHandler,
 }
 
 impl StdoutHandler {
@@ -27,7 +27,7 @@ impl StdoutHandler {
         StdoutHandler {
             level,
             format,
-            error_handler: Arc::new(Mutex::new(None)),
+            error_handler: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -77,14 +77,23 @@ pub(crate) fn format_json(r: &OwnedRecord) -> String {
         parts.push(format!("\"module\":\"{}\"", escape_json(mp)));
     }
     for (k, v) in &r.attrs {
-        parts.push(format!("\"{}\":{}", escape_json(k.as_str()), value_to_json(v)));
+        parts.push(format!(
+            "\"{}\":{}",
+            escape_json(k.as_str()),
+            value_to_json(v)
+        ));
     }
     format!("{{{}}}", parts.join(","))
 }
 
 pub(crate) fn format_text(r: &OwnedRecord) -> String {
     let level = format!("{:<5}", r.level);
-    let mut base = format!("{} {} {}", level, r.time.elapsed().unwrap_or_default().as_secs(), r.message);
+    let mut base = format!(
+        "{} {} {}",
+        level,
+        r.time.elapsed().unwrap_or_default().as_secs(),
+        r.message
+    );
     for (k, v) in &r.attrs {
         base.push_str(&format!(" {k}={v}"));
     }
@@ -118,8 +127,7 @@ mod tests {
 
     #[test]
     fn json_format_basic() {
-        let r = RecordBuilder::new(Level::Info, "hello")
-            .build();
+        let r = RecordBuilder::new(Level::Info, "hello").build();
         let json = format_json(&r);
         assert!(json.contains("\"level\":\"INFO\""));
         assert!(json.contains("\"message\":\"hello\""));

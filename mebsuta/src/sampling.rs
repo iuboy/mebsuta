@@ -53,7 +53,7 @@ impl<H: Handler + Clone + 'static> Handler for Sampling<H> {
         if local_count < self.initial {
             return self.inner.handle(record);
         }
-        if (local_count - self.initial) % self.thereafter == 0 {
+        if (local_count - self.initial).is_multiple_of(self.thereafter) {
             return self.inner.handle(record);
         }
 
@@ -92,8 +92,8 @@ impl<H: Handler + Clone + 'static> Middleware<H> for Sampling<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::arc_record;
@@ -131,11 +131,7 @@ mod tests {
             Box::new(self.clone())
         }
 
-        fn set_error_handler(
-            &self,
-            _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>,
-        ) {
-        }
+        fn set_error_handler(&self, _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
     }
 
     #[test]

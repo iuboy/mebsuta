@@ -1,10 +1,10 @@
 use std::io::Write;
-use std::net::{UdpSocket, TcpStream};
+use std::net::{TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::Error;
-use crate::handler::{Close, Handler, Terminal};
+use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 
@@ -60,7 +60,7 @@ pub struct SyslogHandler {
     config: SyslogConfig,
     conn: Mutex<Option<SyslogConn>>,
     closed: AtomicBool,
-    error_handler: Arc<Mutex<Option<Box<dyn Fn(&str, &Error) + Send + Sync>>>>,
+    error_handler: ErrorHandler,
 }
 
 enum SyslogConn {
@@ -126,7 +126,12 @@ impl SyslogHandler {
             Some(SyslogConn::Tcp(stream)) => {
                 stream.write_all(data)?;
             }
-            None => return Err(Error::Io(std::io::Error::new(std::io::ErrorKind::NotConnected, "connection closed"))),
+            None => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    "connection closed",
+                )));
+            }
         }
         Ok(())
     }
@@ -204,10 +209,8 @@ impl Handler for SyslogHandler {
 
     fn flush(&self) {
         let mut guard = self.conn.lock().unwrap();
-        if let Some(conn) = guard.as_mut() {
-            if let SyslogConn::Tcp(stream) = conn {
-                let _ = stream.flush();
-            }
+        if let Some(SyslogConn::Tcp(stream)) = guard.as_mut() {
+            let _ = stream.flush();
         }
     }
 
@@ -218,7 +221,11 @@ impl Handler for SyslogHandler {
 
 impl Close for SyslogHandler {
     fn close(&mut self) -> Result<(), Error> {
-        if !self.closed.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+        if self
+            .closed
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
             return Ok(());
         }
         self.flush();

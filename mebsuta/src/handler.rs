@@ -4,6 +4,10 @@ use crate::error::Error;
 use crate::record::Context;
 use crate::value::{Key, Value};
 
+/// Type alias for the error handler callback to reduce complexity.
+pub(crate) type ErrorHandler =
+    Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &Error) + Send + Sync>>>>;
+
 /// Core log processing trait.
 ///
 /// All output handlers and decorators implement this trait.
@@ -61,6 +65,7 @@ pub trait Handler: Send + Sync {
     }
 
     /// Set an error handler callback. Called when internal errors occur.
+    #[allow(clippy::type_complexity)]
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>);
 
     /// Flush buffered data (if any).

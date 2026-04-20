@@ -1,208 +1,168 @@
 # Mebsuta
 
-Go 结构化日志库，基于 `log/slog` Handler 插件架构。
+Rust 结构化日志库，Handler 插件架构。同时保留 Go 版本（见 `go/` 目录）。
 
 ## 特性
 
-- **slog Handler 插件**：stdout、file、syslog、database 输出
-- **装饰器链**：采样、异步写入、指标收集、上下文提取
-- **文件轮转**：自研实现，时间 + 大小双策略，gzip 压缩
-- **安全多输出**：MultiHandler 带 panic recovery
-- **Prometheus 指标**：内置 HandlerMetrics 接口
+- **Handler 插件**：Stdout、File、Syslog 输出
+- **装饰器链**：Sampling（采样）、Async（异步写入）、Metrics（指标收集）
+- **文件轮转**：大小 + 时间双策略，gzip 压缩，旧备份清理
+- **MultiHandler**：fan-out 多输出 + per-handler panic recovery
+- **Prometheus 指标**：独立 `mebsuta-metrics` crate
+- **tracing 桥接**：`MebsutaLayer` 将 tracing 事件转发到 Handler
+- **泛型装饰器**：`Sampling<H>` 编译时单态化，零 vtable 开销
 
 ## 安装
 
-```bash
-go get github.com/iuboy/mebsuta
+```toml
+[dependencies]
+mebsuta = "0.1"
+```
+
+可选：
+```toml
+mebsuta-tracing = "0.1"   # tracing bridge
+mebsuta-metrics = "0.1"   # Prometheus 指标
 ```
 
 ## 快速开始
 
-```go
-package main
+```rust
+use mebsuta::*;
 
-import (
-    "log/slog"
-    "github.com/iuboy/mebsuta"
-)
-
-func main() {
-    logger, err := mebsuta.New(
-        mebsuta.WithHandler(
-            mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON),
-        ),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    slog.SetDefault(logger)
-    defer mebsuta.CloseAll(logger.Handler())
-
-    slog.Info("服务启动成功", "key", "value")
+fn main() {
+    let handler = StdoutHandler::new(Level::Info, Format::Json);
+    let r = arc_record(Level::Info, "服务启动成功");
+    handler.handle(&r).unwrap();
+    handler.flush();
 }
+```
+
+## 装饰器组合
+
+```rust
+use mebsuta::*;
+
+let stdout = StdoutHandler::new(Level::Info, Format::Json);
+let sampling = Sampling::new(stdout, 100, 10, 1000);
+
+let r = arc_record(Level::Info, "sampled message");
+sampling.handle(&r).unwrap();
+sampling.flush();
 ```
 
 ## 输出 Handler
 
 ### StdoutHandler
 
-```go
-h := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)
+```rust
+let h = StdoutHandler::new(Level::Info, Format::Json);
 // 或
-h := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.Console)
+let h = StdoutHandler::new(Level::Info, Format::Text);
 ```
 
-### FileHandler（自研轮转）
+### FileHandler（含轮转）
 
-```go
-import "github.com/iuboy/mebsuta/config"
-
-h, err := mebsuta.NewFileHandler(config.FileConfig{
-    Path:         "/var/log/app.log",
-    MaxSizeMB:    100,
-    MaxBackups:   5,
-    MaxAgeDays:   30,
-    Compress:     true,
-    Format:       mebsuta.JSON,
-}, slog.LevelInfo)
+```rust
+let rotation = RotationConfig {
+    max_size_bytes: 100 * 1024 * 1024, // 100 MB
+    rotate_interval_secs: 86400,        // 每天轮转
+    max_backups: 5,
+    max_age_days: 30,
+    compress: true,
+    ..Default::default()
+};
+let mut h = FileHandler::with_rotation("/var/log/app.log", Level::Info, Format::Json, rotation)?;
+h.handle(&arc_record(Level::Info, "hello"))?;
+h.close()?;
 ```
 
 ### SyslogHandler
 
-```go
-h, err := mebsuta.NewSyslogHandler(config.SyslogConfig{
-    Network:  "tcp",
-    Address:  "localhost:514",
-    Tag:      "my-app",
-    RFC5424:  true,
-}, slog.LevelInfo)
+```rust
+use mebsuta::{SyslogHandler, SyslogConfig, SyslogTransport, SyslogFormat};
+
+let config = SyslogConfig {
+    transport: SyslogTransport::Udp,
+    format: SyslogFormat::RFC5424,
+    address: "127.0.0.1:514".to_owned(),
+    tag: "my-app".to_owned(),
+    ..Default::default()
+};
+let h = SyslogHandler::new(Level::Info, config)?;
 ```
 
-### DatabaseHandler
+## MultiHandler（多输出）
 
-```go
-h, err := mebsuta.NewDatabaseHandler(config.DatabaseConfig{
-    DriverName:     "mysql",
-    DataSourceName: "user:pass@tcp(localhost:3306)/logs",
-    TableName:      "logs",
-    BatchSize:      100,
-    BatchInterval:  5 * time.Second,
-}, slog.LevelInfo)
+```rust
+let h = MultiHandler::new(vec![
+    Box::new(StdoutHandler::new(Level::Info, Format::Json)),
+    Box::new(FileHandler::new("app.log", Level::Debug, Format::Text).unwrap()),
+]);
+h.handle(&arc_record(Level::Info, "fan-out")).unwrap();
 ```
 
-## 多输出
+## Async（异步写入）
 
-```go
-logger, err := mebsuta.New(
-    mebsuta.WithHandler(mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)),
-    mebsuta.WithHandler(mebsuta.NewFileHandler(fileConfig, slog.LevelInfo)),
-    mebsuta.WithHandler(mebsuta.NewSyslogHandler(syslogConfig, slog.LevelInfo)),
-)
+```rust
+let inner = StdoutHandler::new(Level::Info, Format::Json);
+let mut async_h = Async::with_buffer_size(inner, 1024);
+
+async_h.handle(&arc_record(Level::Info, "async message")).unwrap();
+async_h.close_if_needed(); // graceful drain
 ```
 
-多个 Handler 自动使用 `safeMultiHandler`（自研实现，per-handler panic recovery + 并行分发）。
+## Metrics（Prometheus 指标）
 
-## 装饰器
+```rust
+use mebsuta_metrics::{Metrics, MetricsCounters};
+use prometheus::Registry;
 
-### 采样
+let registry = Registry::new();
+let counters = MetricsCounters::new("myapp", &registry).unwrap();
+let inner = StdoutHandler::new(Level::Info, Format::Json);
+let metrics = Metrics::new(inner, counters);
 
-```go
-inner := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)
-h := mebsuta.WithSampling(inner, config.SamplingConfig{
-    Enabled:    true,
-    Initial:    100,
-    Thereafter: 10,
-    Window:     time.Minute,
-})
+metrics.handle(&arc_record(Level::Info, "counted")).unwrap();
+println!("total: {}", metrics.counters.total());
 ```
 
-### 异步写入
+## Tracing 桥接
 
-```go
-h := mebsuta.WithAsync(inner, mebsuta.AsyncConfig{
-    BufferSize: 1024,
-})
-defer mebsuta.CloseAll(h)
+```rust
+use mebsuta_tracing::MebsutaLayer;
+use mebsuta::{StdoutHandler, Level, Format};
+use tracing_subscriber::layer::SubscriberExt;
+
+let handler = StdoutHandler::new(Level::Info, Format::Json);
+let layer = MebsutaLayer::new(handler);
+let subscriber = tracing_subscriber::registry().with(layer);
+tracing::subscriber::set_global_default(subscriber).unwrap();
+
+tracing::info!("this goes through mebsuta");
 ```
 
-### 指标收集
+## Crate 结构
 
-```go
-h := mebsuta.WithMetrics(inner, myMetrics, "stdout")
+| Crate | 说明 |
+|-------|------|
+| `mebsuta` | 核心：Handler trait、装饰器、输出 Handler |
+| `mebsuta-tracing` | tracing → mebsuta 桥接 |
+| `mebsuta-metrics` | Prometheus 指标装饰器 |
+
+## Go 版本
+
+Go 版本保留在 `go/` 目录，完整可用：
+
+```bash
+cd go && go test -race -count=1 ./...
 ```
-
-### 上下文提取
-
-```go
-h := mebsuta.WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
-    if id, ok := ctx.Value(myKey).(string); ok {
-        return []slog.Attr{slog.String("request_id", id)}
-    }
-    return nil
-})
-```
-
-### 自定义错误处理
-
-```go
-logger, err := mebsuta.New(
-    mebsuta.WithHandler(stdoutHandler),
-    mebsuta.WithErrorHandler(func(component string, err error) {
-        sentry.CaptureException(err)
-    }),
-)
-```
-
-所有子 Handler（包括装饰器链内部）自动传播 `ErrorHandler`。设为 `nil` 则静默丢弃内部错误。
-
-装饰器可以自由组合：
-
-```go
-h := mebsuta.WithMetrics(
-    mebsuta.WithSampling(inner, samplingCfg),
-    myMetrics, "stdout",
-)
-```
-
-## 监控指标
-
-```go
-import (
-    mebmetrics "github.com/iuboy/mebsuta/metrics"
-    "github.com/prometheus/client_golang/prometheus"
-    "github.com/prometheus/client_golang/prometheus/promhttp"
-)
-
-registry := prometheus.NewRegistry()
-registry.MustRegister(mebmetrics.GetMetricsAsCollector())
-http.Handle("/metrics", promhttp.HandlerFor(registry, prometheus.HandlerOpts{}))
-
-// 或注册到默认注册表（幂等，可安全多次调用）
-mebmetrics.Register()
-```
-
-### 可用指标
-
-| 指标 | 类型 | 说明 |
-|------|------|------|
-| `mebsuta_log_writes_total` | Counter | 日志写入总数 |
-| `mebsuta_log_dropped_total` | Counter | 日志丢弃总数 |
-| `mebsuta_log_errors_total` | Counter | 日志错误总数 |
-| `mebsuta_batch_writes_total` | Counter | 批量写入总数 |
-| `mebsuta_batch_size` | Histogram | 批量写入大小 |
-| `mebsuta_batch_latency_seconds` | Histogram | 批量写入延迟 |
-| `mebsuta_batch_failures_total` | Counter | 批量写入失败总数 |
-| `mebsuta_buffer_usage` | Gauge | 缓冲区使用率 |
-| `mebsuta_buffer_full_total` | Counter | 缓冲区满事件总数 |
-| `mebsuta_active_connections` | Gauge | 活跃连接数 |
-| `mebsuta_idle_connections` | Gauge | 空闲连接数 |
-| `mebsuta_write_latency_seconds` | Histogram | 写入延迟分布 |
 
 ## 测试
 
 ```bash
-go test -race -count=1 ./...
-go test -bench=. -benchmem .
+cargo test
+cargo test --workspace
 ```
 
 ## 许可证
