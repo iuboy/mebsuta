@@ -14,6 +14,7 @@ mod level;
 mod multi;
 mod record;
 mod sampling;
+mod time;
 mod stdout;
 mod syslog;
 mod value;

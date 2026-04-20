@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use crate::error::Error;
 use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
-use crate::record::{Context, OwnedRecord, system_time_to_rfc3339};
+use crate::record::{Context, OwnedRecord};
+use crate::time::system_time_to_rfc3339;
 
 const DEFAULT_BATCH_SIZE: usize = 100;
 const DEFAULT_BATCH_INTERVAL_SECS: u64 = 5;
