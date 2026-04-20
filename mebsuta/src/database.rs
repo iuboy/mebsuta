@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -5,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use crate::error::Error;
 use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
-use crate::record::{Context, OwnedRecord};
+use crate::record::{Context, OwnedRecord, system_time_to_rfc3339};
 const DEFAULT_BATCH_SIZE: usize = 100;
 const DEFAULT_BATCH_INTERVAL_SECS: u64 = 5;
 const FLUSH_RETRIES: usize = 3;
@@ -53,6 +54,8 @@ struct LogEntry {
 
 impl DatabaseHandler {
     pub fn new(level: Level, config: DatabaseConfig) -> Result<Self, Error> {
+        crate::config::validate_table_name(&config.table)?;
+
         let conn = rusqlite::Connection::open(&config.path)?;
         let table = &config.table;
         conn.execute_batch(&format!(
@@ -101,19 +104,13 @@ impl DatabaseHandler {
         let fields = if record.attrs.is_empty() {
             "{}".to_owned()
         } else {
-            let mut parts = Vec::new();
-            for (k, v) in &record.attrs {
-                parts.push(format!(
-                    "\"{}\":{}",
-                    crate::value::escape_json(k.as_str()),
-                    crate::value::value_to_json(v)
-                ));
-            }
-            format!("{{{}}}", parts.join(","))
+            let attrs_map: HashMap<&str, &crate::value::Value> =
+                record.attrs.iter().map(|(k, v)| (k.as_str(), v)).collect();
+            serde_json::to_string(&attrs_map).unwrap_or_else(|_| "{}".to_owned())
         };
 
         LogEntry {
-            time: format!("{:?}", record.time),
+            time: system_time_to_rfc3339(record.time),
             level: record.level.to_string(),
             message: record.message.clone(),
             fields,

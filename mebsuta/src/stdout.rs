@@ -5,7 +5,6 @@ use crate::error::Error;
 use crate::handler::{ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
-use crate::value::{escape_json, value_to_json};
 
 /// Output format for StdoutHandler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,21 +68,12 @@ impl Handler for StdoutHandler {
 impl Terminal for StdoutHandler {}
 
 pub(crate) fn format_json(r: &OwnedRecord) -> String {
-    let mut parts = Vec::new();
-    parts.push(format!("\"time\":\"{:?}\"", r.time));
-    parts.push(format!("\"level\":\"{}\"", r.level));
-    parts.push(format!("\"message\":\"{}\"", escape_json(&r.message)));
-    if let Some(ref mp) = r.module_path {
-        parts.push(format!("\"module\":\"{}\"", escape_json(mp)));
-    }
-    for (k, v) in &r.attrs {
-        parts.push(format!(
-            "\"{}\":{}",
-            escape_json(k.as_str()),
-            value_to_json(v)
-        ));
-    }
-    format!("{{{}}}", parts.join(","))
+    r.to_json_string().unwrap_or_else(|_| {
+        format!(
+            r#"{{"time":"error","level":"{}","message":"serialization error"}}"#,
+            r.level
+        )
+    })
 }
 
 pub(crate) fn format_text(r: &OwnedRecord) -> String {
@@ -109,8 +99,10 @@ mod tests {
     fn json_format_basic() {
         let r = RecordBuilder::new(Level::Info, "hello").build();
         let json = format_json(&r);
-        assert!(json.contains("\"level\":\"INFO\""));
-        assert!(json.contains("\"message\":\"hello\""));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["level"], "INFO");
+        assert_eq!(parsed["message"], "hello");
+        assert!(parsed["time"].is_string());
     }
 
     #[test]
@@ -120,13 +112,20 @@ mod tests {
             .attr("count", 42i64)
             .build();
         let json = format_json(&r);
-        assert!(json.contains("\"key\":\"value\""));
-        assert!(json.contains("\"count\":42"));
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["attrs"]["key"], "value");
+        assert_eq!(parsed["attrs"]["count"], 42);
     }
 
     #[test]
-    fn json_escape() {
-        assert_eq!(escape_json("a\"b\nc"), "a\\\"b\\nc");
+    fn json_special_chars() {
+        let r = RecordBuilder::new(Level::Info, "line1\nline2\t\"quoted\"")
+            .attr("path", "C:\\Users\\test")
+            .build();
+        let json = format_json(&r);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["message"], "line1\nline2\t\"quoted\"");
+        assert_eq!(parsed["attrs"]["path"], "C:\\Users\\test");
     }
 
     #[test]

@@ -338,7 +338,7 @@ impl Default for AsyncConfig {
     }
 }
 
-fn validate_table_name(name: &str) -> Result<(), Error> {
+pub(crate) fn validate_table_name(name: &str) -> Result<(), Error> {
     if name.is_empty() {
         return Err(Error::Config("table name is required".to_owned()));
     }

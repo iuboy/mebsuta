@@ -22,6 +22,12 @@ impl fmt::Display for Level {
     }
 }
 
+impl serde::Serialize for Level {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -38,5 +44,10 @@ mod tests {
     fn display() {
         assert_eq!(format!("{}", Level::Info), "INFO");
         assert_eq!(format!("{}", Level::Error), "ERROR");
+    }
+
+    #[test]
+    fn serialize() {
+        assert_eq!(serde_json::to_string(&Level::Info).unwrap(), "\"INFO\"");
     }
 }
