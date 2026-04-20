@@ -5,6 +5,8 @@ use std::fmt;
 pub enum Error {
     /// An I/O error occurred (file write, network, etc.)
     Io(std::io::Error),
+    /// A database error occurred.
+    Database(String),
     /// A handler panicked during processing.
     HandlerPanic,
     /// The async channel is full and the record was dropped.
@@ -17,6 +19,7 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io(e) => write!(f, "io error: {e}"),
+            Error::Database(msg) => write!(f, "database error: {msg}"),
             Error::HandlerPanic => write!(f, "handler panicked"),
             Error::ChannelFull => write!(f, "async channel full"),
             Error::Handler(msg) => write!(f, "handler error: {msg}"),
@@ -36,5 +39,11 @@ impl std::error::Error for Error {
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
         Error::Io(e)
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(e: rusqlite::Error) -> Self {
+        Error::Database(e.to_string())
     }
 }

@@ -5,7 +5,7 @@ use crate::error::Error;
 use crate::handler::{ErrorHandler, Handler, Terminal};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
-use crate::value::Value;
+use crate::value::{escape_json, value_to_json};
 
 /// Output format for StdoutHandler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,26 +98,6 @@ pub(crate) fn format_text(r: &OwnedRecord) -> String {
         base.push_str(&format!(" {k}={v}"));
     }
     base
-}
-
-fn value_to_json(v: &Value) -> String {
-    match v {
-        Value::Str(s) => format!("\"{}\"", escape_json(s)),
-        Value::Int(n) => n.to_string(),
-        Value::Uint(n) => n.to_string(),
-        Value::Float(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Bytes(_) => "\"<bytes>\"".to_owned(),
-        Value::Null => "null".to_owned(),
-    }
-}
-
-fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t")
 }
 
 #[cfg(test)]
