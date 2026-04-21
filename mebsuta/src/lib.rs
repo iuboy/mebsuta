@@ -23,9 +23,9 @@ mod level;
 mod multi;
 mod record;
 mod sampling;
-mod time;
 mod stdout;
 mod syslog;
+mod time;
 mod value;
 
 pub use async_handler::Async;
@@ -41,7 +41,9 @@ pub use file::{FileHandler, RotationConfig};
 pub use handler::{Close, Handler, Middleware, Terminal, close_all};
 pub use level::Level;
 pub use multi::MultiHandler;
-pub use record::{Context, EventType, OwnedRecord, RecordBuilder, arc_record, audit_record, sanitize_utf8};
+pub use record::{
+    Context, EventType, OwnedRecord, RecordBuilder, arc_record, audit_record, sanitize_utf8,
+};
 pub use sampling::Sampling;
 pub use stdout::{Format, StdoutHandler};
 pub use syslog::{SyslogConfig, SyslogFormat, SyslogHandler, SyslogTransport};

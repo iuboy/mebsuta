@@ -133,7 +133,11 @@ impl FileHandler {
     }
 
     fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self.error_handler.lock().expect("file error handler lock poisoned") {
+        if let Some(ref eh) = *self
+            .error_handler
+            .lock()
+            .expect("file error handler lock poisoned")
+        {
             eh(component, err);
         }
     }
@@ -184,7 +188,8 @@ impl FileHandler {
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(new_file) => {
                 restrict_file_permissions(&new_file);
-                *self.state.writer.lock().expect("file writer lock poisoned") = BufWriter::new(new_file);
+                *self.state.writer.lock().expect("file writer lock poisoned") =
+                    BufWriter::new(new_file);
                 self.state.size.store(0, Ordering::Relaxed);
                 self.state.rotated_at.store(now_secs(), Ordering::Relaxed);
             }
@@ -199,12 +204,18 @@ impl FileHandler {
             let eh = self.error_handler.clone();
             let handle = std::thread::spawn(move || {
                 compress_file(&backup_path, move |e: &Error| {
-                    if let Some(ref handler) = *eh.lock().expect("compress error handler lock poisoned") {
+                    if let Some(ref handler) =
+                        *eh.lock().expect("compress error handler lock poisoned")
+                    {
                         handler("file", e);
                     }
                 });
             });
-            *self.state.compress_wg.lock().expect("compress wg lock poisoned") = Some(handle);
+            *self
+                .state
+                .compress_wg
+                .lock()
+                .expect("compress wg lock poisoned") = Some(handle);
         }
 
         self.cleanup_backups();
@@ -312,7 +323,10 @@ impl Handler for FileHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().expect("file error handler lock poisoned") = handler;
+        *self
+            .error_handler
+            .lock()
+            .expect("file error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
@@ -337,7 +351,13 @@ impl Close for FileHandler {
             return Ok(());
         }
 
-        if let Some(handle) = self.state.compress_wg.lock().expect("compress wg lock poisoned").take() {
+        if let Some(handle) = self
+            .state
+            .compress_wg
+            .lock()
+            .expect("compress wg lock poisoned")
+            .take()
+        {
             let _ = handle.join();
         }
 
@@ -396,7 +416,10 @@ mod tests {
     fn cleanup(path: &Path) {
         let _ = fs::remove_file(path);
         if let Some(dir) = path.parent() {
-            for e in fs::read_dir(dir).unwrap_or_else(|_| fs::read_dir(".").unwrap()).flatten() {
+            for e in fs::read_dir(dir)
+                .unwrap_or_else(|_| fs::read_dir(".").unwrap())
+                .flatten()
+            {
                 let _ = fs::remove_file(e.path());
             }
             let _ = fs::remove_dir(dir);

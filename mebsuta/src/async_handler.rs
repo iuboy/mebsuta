@@ -117,9 +117,19 @@ impl<H: Handler + Clone + 'static> Handler for Async<H> {
             return Some(Ok(()));
         }
 
-        self.shared.tx.lock().expect("async tx lock poisoned").take();
+        self.shared
+            .tx
+            .lock()
+            .expect("async tx lock poisoned")
+            .take();
 
-        if let Some(handle) = self.shared.worker.lock().expect("async worker lock poisoned").take() {
+        if let Some(handle) = self
+            .shared
+            .worker
+            .lock()
+            .expect("async worker lock poisoned")
+            .take()
+        {
             let _ = handle.join();
         }
 
@@ -135,8 +145,18 @@ impl<H: Handler + Clone + 'static> Drop for Async<H> {
         if !self.shared.closed.load(Ordering::Relaxed) {
             self.shared.closed.store(true, Ordering::Relaxed);
         }
-        self.shared.tx.lock().expect("async tx lock poisoned").take();
-        if let Some(handle) = self.shared.worker.lock().expect("async worker lock poisoned").take() {
+        self.shared
+            .tx
+            .lock()
+            .expect("async tx lock poisoned")
+            .take();
+        if let Some(handle) = self
+            .shared
+            .worker
+            .lock()
+            .expect("async worker lock poisoned")
+            .take()
+        {
             let _ = handle.join();
         }
     }
