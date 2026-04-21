@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
@@ -26,21 +26,14 @@ impl Handler for NullHandler {
     fn enabled(&self, _ctx: &Context<'_>) -> bool {
         true
     }
-    fn handle(
-        &self,
-        _record: &std::sync::Arc<mebsuta::OwnedRecord>,
-    ) -> Result<(), Error> {
+    fn handle(&self, _record: &std::sync::Arc<mebsuta::OwnedRecord>) -> Result<(), Error> {
         self.count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
     fn clone_box(&self) -> Box<dyn Handler> {
         Box::new(self.clone())
     }
-    fn set_error_handler(
-        &self,
-        _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>,
-    ) {
-    }
+    fn set_error_handler(&self, _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
 }
 
 fn bench_stdout_json(c: &mut Criterion) {

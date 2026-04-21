@@ -420,7 +420,11 @@ pub fn sanitize_config(cfg: &MebsutaConfig) -> String {
         "MebsutaConfig {{ level: {}, format: {}, file: {}, database: {{ path: {}, table: {} }}, syslog: {{ address: {} }} }}",
         cfg.level,
         cfg.format,
-        if cfg.file.enabled { &cfg.file.path } else { "(disabled)" },
+        if cfg.file.enabled {
+            &cfg.file.path
+        } else {
+            "(disabled)"
+        },
         db_path,
         cfg.database.table,
         cfg.syslog.address,
@@ -549,7 +553,10 @@ mod tests {
     fn parse_level_variants() {
         assert_eq!(parse_level("ERROR").unwrap(), Level::Error);
         assert_eq!(parse_level("warn").unwrap(), Level::Warn);
-        assert_eq!(parse_level("audit").unwrap(), Level::Audit(EventType::System));
+        assert_eq!(
+            parse_level("audit").unwrap(),
+            Level::Audit(EventType::System)
+        );
         assert_eq!(parse_level("Info").unwrap(), Level::Info);
         assert_eq!(parse_level("debug").unwrap(), Level::Debug);
         assert_eq!(parse_level("TRACE").unwrap(), Level::Trace);

@@ -154,7 +154,10 @@ mod tests {
 
     #[test]
     fn float_non_finite_serializes_as_null() {
-        assert_eq!(serde_json::to_string(&Value::Float(f64::NAN)).unwrap(), "null");
+        assert_eq!(
+            serde_json::to_string(&Value::Float(f64::NAN)).unwrap(),
+            "null"
+        );
         assert_eq!(
             serde_json::to_string(&Value::Float(f64::INFINITY)).unwrap(),
             "null"

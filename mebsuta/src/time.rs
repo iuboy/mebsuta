@@ -2,9 +2,7 @@ use std::time::SystemTime;
 
 /// Convert SystemTime to RFC3339 UTC string (no chrono dependency).
 pub(crate) fn system_time_to_rfc3339(t: SystemTime) -> String {
-    let duration = t
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
+    let duration = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
     let nsecs = duration.subsec_nanos();
     let days = secs / 86400;
@@ -13,9 +11,7 @@ pub(crate) fn system_time_to_rfc3339(t: SystemTime) -> String {
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
-    format!(
-        "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{nsecs:09}Z"
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{nsecs:09}Z")
 }
 
 /// Convert days since UNIX epoch to (year, month, day).

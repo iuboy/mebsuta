@@ -147,7 +147,11 @@ impl SyslogHandler {
     }
 
     fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self.error_handler.lock().expect("syslog error handler lock poisoned") {
+        if let Some(ref eh) = *self
+            .error_handler
+            .lock()
+            .expect("syslog error handler lock poisoned")
+        {
             eh(component, err);
         }
     }
@@ -238,7 +242,10 @@ impl Handler for SyslogHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().expect("syslog error handler lock poisoned") = handler;
+        *self
+            .error_handler
+            .lock()
+            .expect("syslog error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {

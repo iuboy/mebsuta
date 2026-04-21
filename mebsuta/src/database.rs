@@ -92,7 +92,14 @@ impl DatabaseHandler {
         let worker = std::thread::Builder::new()
             .name("mebsuta-db-worker".to_owned())
             .spawn(move || {
-                run_worker(rx, &db_path, &table_name, batch_size, batch_interval, retry_delay);
+                run_worker(
+                    rx,
+                    &db_path,
+                    &table_name,
+                    batch_size,
+                    batch_interval,
+                    retry_delay,
+                );
             })
             .expect("failed to spawn database worker thread");
 
@@ -139,7 +146,11 @@ impl DatabaseHandler {
 
     #[expect(dead_code)]
     fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self.error_handler.lock().expect("db error handler lock poisoned") {
+        if let Some(ref eh) = *self
+            .error_handler
+            .lock()
+            .expect("db error handler lock poisoned")
+        {
             eh(component, err);
         }
     }
@@ -199,17 +210,23 @@ fn flush_batch(conn: &rusqlite::Connection, table: &str, batch: &[LogEntry], ret
     }
 }
 
-fn insert_batch(
-    conn: &rusqlite::Connection,
-    table: &str,
-    batch: &[LogEntry],
-) -> Result<(), Error> {
-    let sql = format!("INSERT INTO {table} (time, level, event_type, actor, success, message, fields) VALUES (?, ?, ?, ?, ?, ?, ?)");
+fn insert_batch(conn: &rusqlite::Connection, table: &str, batch: &[LogEntry]) -> Result<(), Error> {
+    let sql = format!(
+        "INSERT INTO {table} (time, level, event_type, actor, success, message, fields) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    );
     let tx = conn.unchecked_transaction()?;
     {
         let mut stmt = tx.prepare(&sql)?;
         for entry in batch {
-            stmt.execute(rusqlite::params![entry.time, entry.level, entry.event_type, entry.actor, entry.success, entry.message, entry.fields])?;
+            stmt.execute(rusqlite::params![
+                entry.time,
+                entry.level,
+                entry.event_type,
+                entry.actor,
+                entry.success,
+                entry.message,
+                entry.fields
+            ])?;
         }
     }
     tx.commit()?;
@@ -251,7 +268,10 @@ impl Handler for DatabaseHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().expect("db error handler lock poisoned") = handler;
+        *self
+            .error_handler
+            .lock()
+            .expect("db error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
@@ -279,11 +299,23 @@ impl Close for DatabaseHandler {
 
         self.shared.tx.lock().expect("db tx lock poisoned").take();
 
-        if let Some(handle) = self.shared.worker.lock().expect("db worker lock poisoned").take() {
+        if let Some(handle) = self
+            .shared
+            .worker
+            .lock()
+            .expect("db worker lock poisoned")
+            .take()
+        {
             let _ = handle.join();
         }
 
-        if let Some(conn) = self.shared.conn.lock().expect("db conn lock poisoned").take() {
+        if let Some(conn) = self
+            .shared
+            .conn
+            .lock()
+            .expect("db conn lock poisoned")
+            .take()
+        {
             let _ = conn.close();
         }
         Ok(())
@@ -299,10 +331,22 @@ impl Drop for DatabaseHandler {
             self.shared.closed.store(true, Ordering::Relaxed);
         }
         self.shared.tx.lock().expect("db tx lock poisoned").take();
-        if let Some(handle) = self.shared.worker.lock().expect("db worker lock poisoned").take() {
+        if let Some(handle) = self
+            .shared
+            .worker
+            .lock()
+            .expect("db worker lock poisoned")
+            .take()
+        {
             let _ = handle.join();
         }
-        if let Some(conn) = self.shared.conn.lock().expect("db conn lock poisoned").take() {
+        if let Some(conn) = self
+            .shared
+            .conn
+            .lock()
+            .expect("db conn lock poisoned")
+            .take()
+        {
             let _ = conn.close();
         }
     }
@@ -346,11 +390,15 @@ mod tests {
         h.close().unwrap();
 
         let conn = rusqlite::Connection::open(&path).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 15);
 
         let msg: String = conn
-            .query_row("SELECT message FROM logs WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT message FROM logs WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(msg, "msg 0");
 
@@ -417,7 +465,9 @@ mod tests {
         h1.close().unwrap();
 
         let conn = rusqlite::Connection::open(&path).unwrap();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 1);
 
         cleanup_db(&path);

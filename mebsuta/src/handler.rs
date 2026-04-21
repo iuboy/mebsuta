@@ -171,7 +171,10 @@ impl Handler for GroupHandler {
     }
 
     fn clone_box(&self) -> Box<dyn Handler> {
-        Box::new(GroupHandler::new(self.inner.clone_box(), self.group.clone()))
+        Box::new(GroupHandler::new(
+            self.inner.clone_box(),
+            self.group.clone(),
+        ))
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
@@ -193,8 +196,8 @@ mod tests {
     use crate::arc_record;
     use crate::level::Level;
     use crate::record::Context;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Clone)]
     struct Mock {

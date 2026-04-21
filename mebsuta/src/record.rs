@@ -267,7 +267,10 @@ mod tests {
     fn event_type_display() {
         assert_eq!(EventType::Login.to_string(), "login");
         assert_eq!(EventType::PermissionChange.to_string(), "permission_change");
-        assert_eq!(EventType::Custom("data_export".into()).to_string(), "custom:data_export");
+        assert_eq!(
+            EventType::Custom("data_export".into()).to_string(),
+            "custom:data_export"
+        );
     }
 
     #[test]

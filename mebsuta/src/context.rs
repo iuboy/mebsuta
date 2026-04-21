@@ -59,7 +59,10 @@ impl<H: Handler + Clone + 'static> Handler for WithContext<H> {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self.error_handler.lock().expect("context error handler lock poisoned") = handler;
+        *self
+            .error_handler
+            .lock()
+            .expect("context error handler lock poisoned") = handler;
     }
 
     fn flush(&self) {
@@ -79,8 +82,8 @@ impl<H: Handler + Clone + 'static> Middleware<H> for WithContext<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
     use crate::arc_record;
