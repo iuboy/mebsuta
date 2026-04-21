@@ -44,7 +44,7 @@ impl<H: Handler + Clone + 'static> Handler for Sampling<H> {
     }
 
     fn handle(&self, record: &std::sync::Arc<OwnedRecord>) -> Result<(), Error> {
-        if record.level == Level::Error {
+        if matches!(record.level, Level::Error | Level::Audit(_)) {
             return self.inner.handle(record);
         }
 

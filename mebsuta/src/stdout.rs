@@ -34,7 +34,7 @@ impl StdoutHandler {
 
 impl Handler for StdoutHandler {
     fn enabled(&self, ctx: &Context<'_>) -> bool {
-        ctx.level >= self.level
+        ctx.level.severity() >= self.level.severity()
     }
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
@@ -85,6 +85,15 @@ pub(crate) fn format_text(r: &OwnedRecord) -> String {
         r.time.elapsed().unwrap_or_default().as_secs(),
         r.message
     );
+    if let crate::level::Level::Audit(ref et) = r.level {
+        base.push_str(&format!(" event_type={et}"));
+    }
+    if let Some(ref actor) = r.actor {
+        base.push_str(&format!(" actor={actor}"));
+    }
+    if let Some(success) = r.success {
+        base.push_str(&format!(" success={success}"));
+    }
     for (k, v) in &r.attrs {
         base.push_str(&format!(" {k}={v}"));
     }

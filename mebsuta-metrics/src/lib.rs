@@ -72,7 +72,7 @@ impl<H: Handler + Clone + 'static> Handler for Metrics<H> {
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
         self.counters.total.inc();
 
-        let ctx = Context::new(record.level);
+        let ctx = Context::new(record.level.clone());
         if !self.inner.enabled(&ctx) {
             self.counters.filtered.inc();
             return Ok(());

@@ -2,6 +2,10 @@
 //!
 //! `MebsutaLayer` implements `tracing::Layer` and forwards events
 //! to a mebsuta `Handler`.
+//!
+//! Note: The tracing crate does not have an Audit level.
+//! Audit records should be created directly via mebsuta's
+//! `audit_record()` function or `RecordBuilder`, not through this bridge.
 
 use std::sync::Arc;
 

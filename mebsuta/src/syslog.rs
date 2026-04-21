@@ -101,7 +101,7 @@ impl SyslogHandler {
     }
 
     fn format_message(&self, record: &OwnedRecord) -> String {
-        let severity = level_to_severity(record.level);
+        let severity = level_to_severity(&record.level);
         let priority = self.config.facility * 8 + severity;
         let host = &self.config.hostname;
         let tag = &self.config.tag;
@@ -153,10 +153,11 @@ impl SyslogHandler {
     }
 }
 
-fn level_to_severity(level: Level) -> u8 {
+fn level_to_severity(level: &Level) -> u8 {
     match level {
         Level::Error => 3,
         Level::Warn => 4,
+        Level::Audit(_) => 5,
         Level::Info => 6,
         Level::Debug | Level::Trace => 7,
     }
@@ -209,7 +210,7 @@ fn escape_sd(s: &str) -> String {
 
 impl Handler for SyslogHandler {
     fn enabled(&self, ctx: &Context<'_>) -> bool {
-        ctx.level >= self.level
+        ctx.level.severity() >= self.level.severity()
     }
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
@@ -229,7 +230,7 @@ impl Handler for SyslogHandler {
 
     fn clone_box(&self) -> Box<dyn Handler> {
         Box::new(SyslogHandler {
-            level: self.level,
+            level: self.level.clone(),
             config: self.config.clone(),
             shared: Arc::clone(&self.shared),
             error_handler: Arc::clone(&self.error_handler),
@@ -291,14 +292,16 @@ mod tests {
     use super::*;
     use crate::arc_record;
     use crate::level::Level;
+    use crate::record::EventType;
 
     #[test]
     fn level_to_severity_mapping() {
-        assert_eq!(level_to_severity(Level::Error), 3);
-        assert_eq!(level_to_severity(Level::Warn), 4);
-        assert_eq!(level_to_severity(Level::Info), 6);
-        assert_eq!(level_to_severity(Level::Debug), 7);
-        assert_eq!(level_to_severity(Level::Trace), 7);
+        assert_eq!(level_to_severity(&Level::Error), 3);
+        assert_eq!(level_to_severity(&Level::Warn), 4);
+        assert_eq!(level_to_severity(&Level::Audit(EventType::Login)), 5);
+        assert_eq!(level_to_severity(&Level::Info), 6);
+        assert_eq!(level_to_severity(&Level::Debug), 7);
+        assert_eq!(level_to_severity(&Level::Trace), 7);
     }
 
     #[test]
@@ -609,7 +612,7 @@ mod tests {
             ..SyslogConfig::default()
         };
         let _record = arc_record(Level::Info, "hello syslog");
-        let severity = level_to_severity(Level::Info);
+        let severity = level_to_severity(&Level::Info);
         let priority = config.facility * 8 + severity;
         assert_eq!(priority, 14);
     }
