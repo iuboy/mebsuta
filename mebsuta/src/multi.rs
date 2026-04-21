@@ -28,7 +28,7 @@ impl Handler for MultiHandler {
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
         for h in &self.handlers {
-            let ctx = Context::new(record.level);
+            let ctx = Context::new(record.level.clone());
             if !h.enabled(&ctx) {
                 continue;
             }

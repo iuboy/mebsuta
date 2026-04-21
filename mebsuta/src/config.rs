@@ -4,6 +4,7 @@ use serde::Deserialize;
 
 use crate::error::Error;
 use crate::level::Level;
+use crate::record::EventType;
 
 /// Top-level configuration for the entire mebsuta handler pipeline.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +76,7 @@ fn parse_level(s: &str) -> Result<Level, Error> {
     match s.to_lowercase().as_str() {
         "error" => Ok(Level::Error),
         "warn" | "warning" => Ok(Level::Warn),
+        "audit" => Ok(Level::Audit(EventType::System)),
         "info" => Ok(Level::Info),
         "debug" => Ok(Level::Debug),
         "trace" => Ok(Level::Trace),
@@ -128,7 +130,7 @@ impl Default for FileConfig {
             max_size_bytes: 100 * 1024 * 1024,
             rotate_interval_secs: 0,
             max_backups: 5,
-            max_age_days: 30,
+            max_age_days: 180,
             compress: false,
         }
     }
@@ -547,6 +549,7 @@ mod tests {
     fn parse_level_variants() {
         assert_eq!(parse_level("ERROR").unwrap(), Level::Error);
         assert_eq!(parse_level("warn").unwrap(), Level::Warn);
+        assert_eq!(parse_level("audit").unwrap(), Level::Audit(EventType::System));
         assert_eq!(parse_level("Info").unwrap(), Level::Info);
         assert_eq!(parse_level("debug").unwrap(), Level::Debug);
         assert_eq!(parse_level("TRACE").unwrap(), Level::Trace);

@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use crate::error::Error;
 use crate::handler::{Close, ErrorHandler, Handler, Terminal};
 use crate::level::Level;
@@ -30,6 +33,18 @@ impl Default for RotationConfig {
             max_age_days: 0,
             compress: false,
         }
+    }
+}
+
+/// Restrict log file permissions to owner-only (0o600) on Unix.
+fn restrict_file_permissions(file: &File) {
+    #[cfg(unix)]
+    {
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
     }
 }
 
@@ -71,6 +86,7 @@ impl FileHandler {
         }
 
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        restrict_file_permissions(&file);
 
         let size = file.metadata()?.len() as i64;
 
@@ -167,6 +183,7 @@ impl FileHandler {
 
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(new_file) => {
+                restrict_file_permissions(&new_file);
                 *self.state.writer.lock().expect("file writer lock poisoned") = BufWriter::new(new_file);
                 self.state.size.store(0, Ordering::Relaxed);
                 self.state.rotated_at.store(now_secs(), Ordering::Relaxed);
@@ -266,7 +283,7 @@ impl FileHandler {
 
 impl Handler for FileHandler {
     fn enabled(&self, ctx: &Context<'_>) -> bool {
-        ctx.level >= self.level
+        ctx.level.severity() >= self.level.severity()
     }
 
     fn handle(&self, record: &std::sync::Arc<OwnedRecord>) -> Result<(), Error> {
@@ -287,7 +304,7 @@ impl Handler for FileHandler {
 
     fn clone_box(&self) -> Box<dyn Handler> {
         Box::new(FileHandler {
-            level: self.level,
+            level: self.level.clone(),
             format: self.format,
             state: Arc::clone(&self.state),
             error_handler: Arc::clone(&self.error_handler),
@@ -532,5 +549,22 @@ mod tests {
 
         let _ = fs::remove_file(&gz_path);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_permissions_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_log_path("file_perms");
+        let _ = fs::remove_file(&path);
+        let mut h = FileHandler::new(&path, Level::Info, Format::Json).unwrap();
+        let r = arc_record(Level::Info, "perm test");
+        h.handle(&r).unwrap();
+        h.close().unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "log file should have 0600 permissions");
+
+        cleanup(&path);
     }
 }

@@ -38,6 +38,9 @@ impl Default for DatabaseConfig {
 struct LogEntry {
     time: String,
     level: String,
+    event_type: Option<String>,
+    actor: Option<String>,
+    success: Option<bool>,
     message: String,
     fields: String,
 }
@@ -69,6 +72,9 @@ impl DatabaseHandler {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 time TEXT NOT NULL,
                 level TEXT NOT NULL,
+                event_type TEXT,
+                actor TEXT,
+                success INTEGER,
                 message TEXT NOT NULL,
                 fields TEXT NOT NULL DEFAULT '{{}}'
             )"
@@ -116,10 +122,16 @@ impl DatabaseHandler {
                 record.attrs.iter().map(|(k, v)| (k.as_str(), v)).collect();
             serde_json::to_string(&attrs_map).unwrap_or_else(|_| "{}".to_owned())
         };
-
+        let event_type = match &record.level {
+            crate::level::Level::Audit(et) => Some(et.to_string()),
+            _ => None,
+        };
         LogEntry {
             time: system_time_to_rfc3339(record.time),
             level: record.level.to_string(),
+            event_type,
+            actor: record.actor.clone(),
+            success: record.success,
             message: record.message.clone(),
             fields,
         }
@@ -192,12 +204,12 @@ fn insert_batch(
     table: &str,
     batch: &[LogEntry],
 ) -> Result<(), Error> {
-    let sql = format!("INSERT INTO {table} (time, level, message, fields) VALUES (?, ?, ?, ?)");
+    let sql = format!("INSERT INTO {table} (time, level, event_type, actor, success, message, fields) VALUES (?, ?, ?, ?, ?, ?, ?)");
     let tx = conn.unchecked_transaction()?;
     {
         let mut stmt = tx.prepare(&sql)?;
         for entry in batch {
-            stmt.execute(rusqlite::params![entry.time, entry.level, entry.message, entry.fields])?;
+            stmt.execute(rusqlite::params![entry.time, entry.level, entry.event_type, entry.actor, entry.success, entry.message, entry.fields])?;
         }
     }
     tx.commit()?;
@@ -206,7 +218,7 @@ fn insert_batch(
 
 impl Handler for DatabaseHandler {
     fn enabled(&self, ctx: &Context<'_>) -> bool {
-        ctx.level >= self.level
+        ctx.level.severity() >= self.level.severity()
     }
 
     fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
@@ -231,7 +243,7 @@ impl Handler for DatabaseHandler {
 
     fn clone_box(&self) -> Box<dyn Handler> {
         Box::new(DatabaseHandler {
-            level: self.level,
+            level: self.level.clone(),
             config: self.config.clone(),
             shared: Arc::clone(&self.shared),
             error_handler: Arc::clone(&self.error_handler),
