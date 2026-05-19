@@ -2,30 +2,39 @@ name: Release
 
 on:
   push:
-    branches: [main]
     tags:
+      - "go/v*"
+      - "rust/v*"
       - "v*"
-  pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  rust:
+  guard:
     runs-on: ubuntu-latest
+    env:
+      TAG_NAME: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo run --example basic
+      - name: Reject legacy Go-only root tags
+        run: |
+          case "$TAG_NAME" in
+            v0.1.*|v0.2.*|v0.3.[0-4])
+              echo "::error::Tag $TAG_NAME is a legacy Go-only release. Create go/v* or rust/v* tags instead."
+              exit 1
+              ;;
+          esac
+      - name: Validate tag prefix
+        run: |
+          case "$TAG_NAME" in
+            go/v*|rust/v*|v*) ;;
+            *) echo "::error::Unexpected tag prefix: $TAG_NAME. Use go/v*, rust/v*, or v*." >&2; exit 1 ;;
+          esac
 
   go:
     runs-on: ubuntu-latest
+    needs: guard
+    if: startsWith(github.ref_name, 'go/v') || startsWith(github.ref_name, 'v')
     defaults:
       run:
         working-directory: go
@@ -33,5 +42,107 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
       - run: go test -race -count=1 ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -s -l .)"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Validate Go module path
+        run: |
+          module_path="$(go list -m)"
+          if [ "$module_path" != 'github.com/iuboy/mebsuta/go' ]; then
+            echo "::error::Expected module path github.com/iuboy/mebsuta/go, got $module_path"
+            exit 1
+          fi
+      - name: Check CHANGELOG has Go section
+        run: |
+          if ! grep -q '^### Go$' ../CHANGELOG.md; then
+            echo "::error::CHANGELOG.md missing '### Go' section"
+            exit 1
+          fi
+
+  rust:
+    runs-on: ubuntu-latest
+    needs: guard
+    if: startsWith(github.ref_name, 'rust/v') || startsWith(github.ref_name, 'v')
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo run -p mebsuta --example basic
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+      - run: cargo package -p mebsuta
+      - run: cargo package -p mebsuta-metrics --no-verify
+      - run: cargo package -p mebsuta-tracing --no-verify
+      - name: Validate Rust version matches tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          case "$TAG_NAME" in
+            rust/v*) tag_version="${TAG_NAME#rust/v}" ;;
+            v*) tag_version="${TAG_NAME#v}" ;;
+            *) echo "::error::Unexpected Rust release tag: $TAG_NAME"; exit 1 ;;
+          esac
+          cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.source == null) | "\(.name) \(.version)"' \
+            | while read -r name version; do
+                if [ "$version" != "$tag_version" ]; then
+                  echo "::error::$name version $version does not match tag version $tag_version"
+                  exit 1
+                fi
+              done
+      - name: Check CHANGELOG has Rust section
+        run: |
+          if ! grep -q '^### Rust$' ../CHANGELOG.md; then
+            echo "::error::CHANGELOG.md missing '### Rust' section"
+            exit 1
+          fi
+
+  status:
+    runs-on: ubuntu-latest
+    needs: [guard, go, rust]
+    if: always()
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      GO_RESULT: ${{ needs.go.result }}
+      RUST_RESULT: ${{ needs.rust.result }}
+    steps:
+      - name: Report release status
+        run: |
+          echo "## Release Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Triggered | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          case "$TAG_NAME" in
+            go/v*|v*) echo "| go | yes | $GO_RESULT |" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "| go | no | skipped |" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          case "$TAG_NAME" in
+            rust/v*|v*) echo "| rust | yes | $RUST_RESULT |" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "| rust | no | skipped |" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+      - name: Fail if any triggered job failed
+        run: |
+          failed=0
+          case "$TAG_NAME" in
+            go/v*|v*)
+              [ "$GO_RESULT" = 'success' ] || { echo "::error::go release job failed"; failed=1; }
+              ;;
+          esac
+          case "$TAG_NAME" in
+            rust/v*|v*)
+              [ "$RUST_RESULT" = 'success' ] || { echo "::error::rust release job failed"; failed=1; }
+              ;;
+          esac
+          exit "$failed"
