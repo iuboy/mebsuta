@@ -14,8 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go/config"
 )
+
+const logFileMode os.FileMode = 0600
 
 // =============================================================================
 // FileHandler — 文件输出 slog.Handler
@@ -76,7 +78,7 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 	}
 
 	// 打开日志文件
-	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: open log file: %w", err)
 	}
@@ -242,7 +244,7 @@ func (h *FileHandler) doRotate() {
 	if err := os.Rename(cfg.Path, backup); err != nil {
 		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("rename for rotation: %w", err))
 		// 尝试重新打开原文件继续写入
-		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 		if openErr != nil {
 			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
 			return
@@ -252,7 +254,7 @@ func (h *FileHandler) doRotate() {
 	}
 
 	// 创建新文件
-	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 	if err != nil {
 		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("create new log file: %w", err))
 		h.state.closed.Store(true)

@@ -1,5 +1,4 @@
-# docker-compose.yml
-# 启动 MySQL 和可选的 Syslog 接收器，用于运行集成测试
+# 启动 MySQL 和可选的 Syslog 接收器，用于运行 Go 集成测试
 
 version: '3.8'
 

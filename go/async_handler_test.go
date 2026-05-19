@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go/config"
 )
 
 // =============================================================================

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Mebsuta 测试脚本
+# Mebsuta Go 测试脚本
 
 set -e
 
@@ -29,6 +29,10 @@ run_unit_tests() {
 
 run_integration_tests() {
     print_info "运行集成测试（需要 Docker）..."
+    if [ ! -d integration ]; then
+        print_info "未发现 integration/ 目录，跳过集成测试"
+        return
+    fi
     go test -v -race -count=1 -tags=integration ./integration/...
 }
 

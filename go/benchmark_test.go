@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go/config"
 )
 
 func BenchmarkStdoutHandler_JSON(b *testing.B) {

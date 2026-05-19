@@ -5,14 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go/config"
 )
 
 // =============================================================================
@@ -39,6 +41,20 @@ func readLogFile(t *testing.T, path string) []byte {
 	return data
 }
 
+func assertRestrictedLogFileMode(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not meaningful on Windows")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != logFileMode {
+		t.Fatalf("log file mode = %v, want %v", got, logFileMode)
+	}
+}
+
 // =============================================================================
 // 基础功能测试
 // =============================================================================
@@ -63,6 +79,25 @@ func TestFileHandler_JSONFormat(t *testing.T) {
 	}
 	if result["level"] != "INFO" {
 		t.Errorf("level = %v, want INFO", result["level"])
+	}
+}
+
+func TestFileHandler_JSONFormat_NonFiniteFloats(t *testing.T) {
+	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	defer h.Close()
+
+	logger := slog.New(h)
+	logger.Info("floats", "nan", math.NaN(), "pos_inf", math.Inf(1), "neg_inf", math.Inf(-1))
+
+	data := readLogFile(t, path)
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("invalid JSON for non-finite floats: %v, got: %s", err, string(data))
+	}
+	for _, key := range []string{"nan", "pos_inf", "neg_inf"} {
+		if _, ok := result[key]; !ok {
+			t.Fatalf("%s missing from JSON output: %s", key, string(data))
+		}
 	}
 }
 
@@ -96,6 +131,13 @@ func TestFileHandler_DefaultFormat(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("expected JSON output for default format, got: %s", string(data))
 	}
+}
+
+func TestFileHandler_FilePermissionsRestricted(t *testing.T) {
+	h, path := newTestFileHandler(t, config.FileConfig{}, slog.LevelInfo)
+	defer h.Close()
+
+	assertRestrictedLogFileMode(t, path)
 }
 
 // =============================================================================
@@ -269,6 +311,7 @@ func TestFileHandler_SizeRotation(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("new log file should exist: %v", err)
 	}
+	assertRestrictedLogFileMode(t, path)
 }
 
 // =============================================================================

@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go/config"
 )
 
 // =============================================================================

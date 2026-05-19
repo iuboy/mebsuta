@@ -105,7 +105,7 @@ slog.InfoContext(ctx, "处理请求")
 
 ```go
 import (
-    mebmetrics "github.com/iuboy/mebsuta/metrics"
+    mebmetrics "github.com/iuboy/mebsuta/go/metrics"
     "github.com/prometheus/client_golang/prometheus"
 )
 

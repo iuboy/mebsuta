@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	mebmetrics "github.com/iuboy/mebsuta/metrics"
+	mebmetrics "github.com/iuboy/mebsuta/go/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

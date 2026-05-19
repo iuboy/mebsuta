@@ -2,7 +2,6 @@ package mebsuta
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -18,8 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gofrs/flock"
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go/config"
 )
 
 // =============================================================================
@@ -56,7 +54,6 @@ type SyslogHandler struct {
 	cancel       context.CancelFunc
 	closing      atomic.Bool
 	closed       atomic.Bool
-	fileLock     *flock.Flock
 	location     *time.Location
 	errorHandler atomic.Pointer[ErrorHandler]
 }
@@ -104,9 +101,6 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 		}
 	}
 
-	lockKey := fmt.Sprintf("%s-%s", cfg.Address, cfg.Tag)
-	h.fileLock = flock.New(fmt.Sprintf("%x.lock", sha256.Sum256([]byte(lockKey))))
-
 	if err := h.connect(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("mebsuta: syslog initial connection failed: %w", err)
@@ -147,9 +141,6 @@ func (h *SyslogHandler) Close() error {
 	}
 	h.connMu.Unlock()
 
-	if err := h.fileLock.Unlock(); err != nil {
-		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("file unlock: %w", err))
-	}
 	h.closed.Store(true)
 	return nil
 }
@@ -218,10 +209,6 @@ func (h *SyslogHandler) reconnect() {
 	if h.conn != nil {
 		_ = h.conn.Close()
 		h.conn = nil
-	}
-
-	if locked, err := h.fileLock.TryLockContext(h.ctx, 100*time.Millisecond); locked && err == nil {
-		defer func() { _ = h.fileLock.Unlock() }()
 	}
 
 	var conn net.Conn

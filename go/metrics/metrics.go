@@ -306,7 +306,7 @@ func RegisterToRegistry(registry prometheus.Registerer) error {
 //	    "log/slog"
 //	    "github.com/prometheus/client_golang/prometheus"
 //	    "github.com/prometheus/client_golang/prometheus/promhttp"
-//	    mebmetrics "github.com/iuboy/mebsuta/metrics"
+//	    mebmetrics "github.com/iuboy/mebsuta/go/metrics"
 //	)
 //
 //	func main() {

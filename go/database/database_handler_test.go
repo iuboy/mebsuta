@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"testing"
 
-	"github.com/iuboy/mebsuta"
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go"
+	"github.com/iuboy/mebsuta/go/config"
 )
 
 // =============================================================================

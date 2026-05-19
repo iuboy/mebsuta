@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/iuboy/mebsuta"
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/go"
+	"github.com/iuboy/mebsuta/go/config"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
