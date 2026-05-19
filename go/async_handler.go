@@ -193,12 +193,9 @@ func (h *asyncAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *asyncAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
-	merged = append(merged, h.attrs...)
-	merged = append(merged, attrs...)
 	return &asyncAttrsHandler{
 		AsyncHandler: h.AsyncHandler,
-		attrs:        merged,
+		attrs:        MergeAttrs(h.attrs, attrs, ""),
 	}
 }
 
@@ -257,14 +254,9 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *asyncGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
-	copy(merged, h.attrs)
-	for _, a := range attrs {
-		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
-	}
 	return &asyncAttrsHandler{
 		AsyncHandler: h.AsyncHandler,
-		attrs:        merged,
+		attrs:        MergeAttrs(h.attrs, attrs, h.group),
 	}
 }
 

@@ -492,3 +492,27 @@ func TestFileHandler_Enabled(t *testing.T) {
 		t.Error("Error should be enabled at Warn level")
 	}
 }
+
+// =============================================================================
+// SPEC: compressFile nil ErrorHandler 不应阻止压缩
+// =============================================================================
+
+func TestCompressFile_NilErrorHandler(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.txt")
+	content := "test log data\n"
+	if err := os.WriteFile(src, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// nil ErrorHandler 不应阻止压缩
+	compressFile(src, nil)
+
+	gzPath := src + ".gz"
+	if _, err := os.Stat(gzPath); err != nil {
+		t.Errorf("compression should succeed even with nil ErrorHandler: %v", err)
+	}
+	if _, err := os.Stat(src); err == nil {
+		t.Error("original file should be removed after compression with nil ErrorHandler")
+	}
+}

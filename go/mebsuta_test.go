@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -376,7 +377,6 @@ func TestSyslogHandler_WithAttrs(t *testing.T) {
 		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
-		closed:       atomic.Bool{},
 	}
 	eh := DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -419,22 +419,21 @@ func TestSyslogHandler_GroupPrefix(t *testing.T) {
 		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
-		closed:       atomic.Bool{},
 	}
 	eh := DefaultErrorHandler
 	h.errorHandler.Store(&eh)
 
 	grouped := h.WithGroup("req").WithAttrs([]slog.Attr{slog.String("key", "val")})
-	// 类型断言：WithGroup 后 WithAttrs 应返回 syslogAttrsHandler
-	attrsH, ok := grouped.(*syslogAttrsHandler)
+	// 类型断言：WithGroup 后 WithAttrs 应返回 AttrsSub
+	attrsH, ok := grouped.(*AttrsSub[*SyslogHandler])
 	if !ok {
-		t.Fatalf("expected syslogAttrsHandler, got %T", grouped)
+		t.Fatalf("expected *AttrsSub[*SyslogHandler], got %T", grouped)
 	}
-	if len(attrsH.attrs) != 1 {
-		t.Fatalf("expected 1 attr, got %d", len(attrsH.attrs))
+	if len(attrsH.Attrs) != 1 {
+		t.Fatalf("expected 1 attr, got %d", len(attrsH.Attrs))
 	}
-	if attrsH.attrs[0].Key != "req.key" {
-		t.Errorf("attr key = %q, want %q", attrsH.attrs[0].Key, "req.key")
+	if attrsH.Attrs[0].Key != "req.key" {
+		t.Errorf("attr key = %q, want %q", attrsH.Attrs[0].Key, "req.key")
 	}
 }
 
@@ -465,25 +464,24 @@ func TestSyslogHandler_AttrsSurviveGroup(t *testing.T) {
 		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
-		closed:       atomic.Bool{},
 	}
 	eh := DefaultErrorHandler
 	h.errorHandler.Store(&eh)
 
 	chain := h.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
-	attrsH, ok := chain.(*syslogAttrsHandler)
+	attrsH, ok := chain.(*AttrsSub[*SyslogHandler])
 	if !ok {
-		t.Fatalf("expected syslogAttrsHandler, got %T", chain)
+		t.Fatalf("expected *AttrsSub[*SyslogHandler], got %T", chain)
 	}
 	// 应有 2 个属性: service=api 和 req.id=1
-	if len(attrsH.attrs) != 2 {
-		t.Fatalf("expected 2 attrs, got %d", len(attrsH.attrs))
+	if len(attrsH.Attrs) != 2 {
+		t.Fatalf("expected 2 attrs, got %d", len(attrsH.Attrs))
 	}
-	if attrsH.attrs[0].Key != "service" {
-		t.Errorf("first attr key = %q, want %q", attrsH.attrs[0].Key, "service")
+	if attrsH.Attrs[0].Key != "service" {
+		t.Errorf("first attr key = %q, want %q", attrsH.Attrs[0].Key, "service")
 	}
-	if attrsH.attrs[1].Key != "req.id" {
-		t.Errorf("second attr key = %q, want %q", attrsH.attrs[1].Key, "req.id")
+	if attrsH.Attrs[1].Key != "req.id" {
+		t.Errorf("second attr key = %q, want %q", attrsH.Attrs[1].Key, "req.id")
 	}
 }
 
@@ -554,5 +552,62 @@ func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	// fh 的 errorHandler 应该是 nil（被传播了 nil），不会写到 stderr
 	if buf.Len() > 0 {
 		t.Errorf("nil errorHandler should be propagated, but got stderr output: %s", buf.String())
+	}
+}
+
+// =============================================================================
+// SPEC: LevelAudit — 审计级别测试
+// =============================================================================
+
+func TestLevelAudit_Value(t *testing.T) {
+	if LevelAudit < slog.LevelError {
+		t.Errorf("LevelAudit = %d, must be >= LevelError (%d)", LevelAudit, slog.LevelError)
+	}
+}
+
+func TestLevelAudit_EnabledAtError(t *testing.T) {
+	h := LevelHandler{Level: slog.LevelError}
+	if !h.Enabled(context.Background(), LevelAudit) {
+		t.Error("SPEC: Audit must pass through Error-level handler")
+	}
+}
+
+// =============================================================================
+// SPEC: Multi Handler — 并发写无竞态
+// =============================================================================
+
+func TestSafeMulti_ConcurrentNoRace(t *testing.T) {
+	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
+	h2 := NewStdoutHandler(slog.LevelInfo, JSON)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	logger := slog.New(multi)
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.Info("race test", "ts", time.Now().UnixNano())
+		}()
+	}
+	wg.Wait()
+}
+
+// =============================================================================
+// SPEC: Syslog — priority = facility * 8 + severity
+// =============================================================================
+
+func TestSyslogHandler_PriorityCalculation(t *testing.T) {
+	loc, _ := time.LoadLocation("UTC")
+	h := &SyslogHandler{
+		LevelHandler: LevelHandler{Level: slog.LevelDebug},
+		cfg:          config.SyslogConfig{Facility: 1, Tag: "test"},
+		location:     loc,
+	}
+	entry := LogEntry{Time: time.Now().In(loc), Level: slog.LevelError, Message: "test"}
+	msg := h.formatMessage(entry)
+	// Facility=1, Error severity=3 => priority = 1*8 + 3 = 11
+	if !strings.HasPrefix(msg, "<11>") {
+		t.Errorf("expected priority <11>, got prefix: %q", msg[:min(len(msg), 10)])
 	}
 }

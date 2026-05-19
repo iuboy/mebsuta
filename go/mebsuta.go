@@ -55,6 +55,17 @@ func Warn(msg string, args ...any) { slog.Warn(msg, args...) }
 // Error 记录错误级别日志。
 func Error(msg string, args ...any) { slog.Error(msg, args...) }
 
+// Audit 记录审计级别日志（合规日志）。
+// Audit 级别高于 Error，不受采样限制。
+func Audit(msg string, args ...any) {
+	slog.Log(context.Background(), LevelAudit, msg, args...)
+}
+
+// AuditContext 记录带 context 的审计级别日志。
+func AuditContext(ctx context.Context, msg string, args ...any) {
+	slog.Log(ctx, LevelAudit, msg, args...)
+}
+
 // DebugContext 记录带 context 的调试级别日志。
 func DebugContext(ctx context.Context, msg string, args ...any) {
 	slog.DebugContext(ctx, msg, args...)
@@ -81,6 +92,9 @@ func ErrorContext(ctx context.Context, msg string, args ...any) {
 
 // LogEntry 是从 slog.Record 提取的结构化日志条目。
 // DatabaseHandler 和 SyslogHandler 共享此 schema。
+//
+// NOTE: 此类型因 database 子包跨包引用而导出，非面向终端用户。
+// 应用代码应直接使用 slog.Record。
 type LogEntry struct {
 	Time    time.Time
 	Level   slog.Level
@@ -89,6 +103,8 @@ type LogEntry struct {
 }
 
 // RecordToLogEntry 从 slog.Record 提取 LogEntry。
+//
+// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
 func RecordToLogEntry(r slog.Record) LogEntry {
 	e := LogEntry{
 		Time:    r.Time,

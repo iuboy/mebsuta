@@ -17,6 +17,14 @@ import (
 	"gorm.io/gorm"
 )
 
+func loadDBErrorHandler(p *atomic.Pointer[mebsuta.ErrorHandler]) mebsuta.ErrorHandler {
+	v := p.Load()
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
 // =============================================================================
 // DatabaseHandler — 数据库输出 slog.Handler
 // =============================================================================
@@ -122,7 +130,7 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 	defer func() {
 		if r := recover(); r != nil {
 			h.errCount.Add(1)
-			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("send on closed channel, log dropped"))
+			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("send on closed channel, log dropped"))
 		}
 	}()
 
@@ -131,7 +139,7 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("buffer full, log dropped"))
+		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("buffer full, log dropped"))
 		return nil
 	}
 }
@@ -139,104 +147,12 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs 返回带有预置属性的新 DatabaseHandler。
 // 预置属性会在 Handle 中序列化到 JSON Fields。
 func (h *DatabaseHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &dbAttrsHandler{
-		DatabaseHandler: h,
-		attrs:           attrs,
-	}
+	return &mebsuta.AttrsSub[*DatabaseHandler]{Parent: h, Attrs: attrs}
 }
 
 // WithGroup 返回带有分组前缀的新 DatabaseHandler。
 func (h *DatabaseHandler) WithGroup(name string) slog.Handler {
-	return &dbGroupHandler{
-		DatabaseHandler: h,
-		group:           name,
-	}
-}
-
-// dbAttrsHandler 在 Handle 时注入预置属性。
-type dbAttrsHandler struct {
-	*DatabaseHandler
-	attrs []slog.Attr
-	group string
-}
-
-func (h *dbAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
-	if h.group != "" {
-		newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
-		r.Attrs(func(attr slog.Attr) bool {
-			newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
-			return true
-		})
-		newR.AddAttrs(h.attrs...)
-		return h.DatabaseHandler.Handle(ctx, newR)
-	}
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.DatabaseHandler.Handle(ctx, r)
-}
-
-func (h *dbAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
-	merged = append(merged, h.attrs...)
-	if h.group != "" {
-		for _, a := range attrs {
-			merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
-		}
-	} else {
-		merged = append(merged, attrs...)
-	}
-	return &dbAttrsHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		attrs:           merged,
-		group:           h.group,
-	}
-}
-
-func (h *dbAttrsHandler) WithGroup(name string) slog.Handler {
-	return &dbGroupHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		group:           name,
-		attrs:           h.attrs,
-	}
-}
-
-// dbGroupHandler 在 Handle 时将属性归组。
-type dbGroupHandler struct {
-	*DatabaseHandler
-	group string
-	attrs []slog.Attr
-}
-
-func (h *dbGroupHandler) Handle(ctx context.Context, r slog.Record) error {
-	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
-	r.Attrs(func(attr slog.Attr) bool {
-		newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
-		return true
-	})
-	newR.AddAttrs(h.attrs...)
-	return h.DatabaseHandler.Handle(ctx, newR)
-}
-
-func (h *dbGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
-	copy(merged, h.attrs)
-	for _, a := range attrs {
-		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
-	}
-	return &dbAttrsHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		attrs:           merged,
-		group:           h.group,
-	}
-}
-
-func (h *dbGroupHandler) WithGroup(name string) slog.Handler {
-	return &dbGroupHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		group:           h.group + "." + name,
-		attrs:           h.attrs,
-	}
+	return &mebsuta.GroupSub[*DatabaseHandler]{Parent: h, Group: name}
 }
 
 // Close 关闭数据库连接。先 flush 缓冲区中的日志。
@@ -308,7 +224,7 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			return
 		}
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
+		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}

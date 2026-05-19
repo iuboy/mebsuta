@@ -70,11 +70,6 @@ func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
 	return *v
 }
 
-// LoadErrorHandler 导出版本，供子包（如 database）使用。
-func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
-	return loadErrorHandler(p)
-}
-
 // buildHandler 从选项构建 slog.Handler。
 // 0 个 handler 返回 error。1 个直接返回。多个用 safeMultiHandler（带 panic recovery）。
 func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
@@ -253,4 +248,116 @@ func CloseAll(handler slog.Handler) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// =============================================================================
+// WithAttrs/WithGroup 共享辅助函数与泛型子 Handler
+// =============================================================================
+
+// prefixAttrs 给 attrs 的 key 添加 "group." 前缀。group 为空时原样返回。
+func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
+	if group == "" {
+		return attrs
+	}
+	out := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		out[i] = slog.Attr{Key: group + "." + a.Key, Value: a.Value}
+	}
+	return out
+}
+
+// MergeAttrs 合并 existing 和 newAttrs。newAttrs 按 group 前缀化。
+//
+// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
+func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
+	merged := make([]slog.Attr, len(existing), len(existing)+len(newAttrs))
+	copy(merged, existing)
+	merged = append(merged, prefixAttrs(group, newAttrs)...)
+	return merged
+}
+
+// RecordWithGroupAttrs 创建新 slog.Record，原 record 的 attrs 加 group 前缀，再追加 extraAttrs。
+//
+// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
+func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
+	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(attr slog.Attr) bool {
+		newR.AddAttrs(slog.Attr{Key: group + "." + attr.Key, Value: attr.Value})
+		return true
+	})
+	newR.AddAttrs(extraAttrs...)
+	return newR
+}
+
+// AttrsSub 是 slog.Handler WithAttrs/WithGroup 链的通用子 Handler。
+// 参数 H 为父 handler 的具体类型（如 *SyslogHandler、*DatabaseHandler）。
+// 消除各 handler 重复定义 attrsHandler/groupHandler 子类型。
+//
+// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接使用。
+type AttrsSub[H slog.Handler] struct {
+	Parent H
+	Attrs  []slog.Attr
+	Group  string
+}
+
+func (h *AttrsSub[H]) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.Parent.Enabled(ctx, level)
+}
+
+func (h *AttrsSub[H]) Handle(ctx context.Context, r slog.Record) error {
+	if h.Group != "" {
+		return h.Parent.Handle(ctx, RecordWithGroupAttrs(r, h.Group, h.Attrs))
+	}
+	r.AddAttrs(h.Attrs...)
+	return h.Parent.Handle(ctx, r)
+}
+
+func (h *AttrsSub[H]) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &AttrsSub[H]{
+		Parent: h.Parent,
+		Attrs:  MergeAttrs(h.Attrs, attrs, h.Group),
+		Group:  h.Group,
+	}
+}
+
+func (h *AttrsSub[H]) WithGroup(name string) slog.Handler {
+	return &GroupSub[H]{
+		Parent: h.Parent,
+		Group:  name,
+		Attrs:  h.Attrs,
+	}
+}
+
+// GroupSub 是 slog.Handler WithGroup 链的通用子 Handler。
+// 所有 record attrs 加 group 前缀后传递给父 handler。
+//
+// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接使用。
+type GroupSub[H slog.Handler] struct {
+	Parent H
+	Group  string
+	Attrs  []slog.Attr
+}
+
+func (h *GroupSub[H]) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.Parent.Enabled(ctx, level)
+}
+
+func (h *GroupSub[H]) Handle(ctx context.Context, r slog.Record) error {
+	return h.Parent.Handle(ctx, RecordWithGroupAttrs(r, h.Group, h.Attrs))
+}
+
+func (h *GroupSub[H]) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &AttrsSub[H]{
+		Parent: h.Parent,
+		Attrs:  MergeAttrs(h.Attrs, attrs, h.Group),
+		Group:  h.Group,
+	}
+}
+
+func (h *GroupSub[H]) WithGroup(name string) slog.Handler {
+	return &GroupSub[H]{
+		Parent: h.Parent,
+		Group:  h.Group + "." + name,
+		Attrs:  h.Attrs,
+	}
 }

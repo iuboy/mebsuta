@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"math/rand/v2"
 	"net"
 	"os"
@@ -33,6 +32,7 @@ const (
 	maxSyslogBufferSize     = 10000
 	maxSyslogMsgSize        = 4 * 1024
 	maxReconnectDelay       = 5 * time.Minute
+	maxBackoffExponent      = 20
 )
 
 var spaceRe = regexp.MustCompile(`\s+`)
@@ -53,7 +53,6 @@ type SyslogHandler struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
 	closing      atomic.Bool
-	closed       atomic.Bool
 	location     *time.Location
 	errorHandler atomic.Pointer[ErrorHandler]
 }
@@ -114,7 +113,7 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 
 // Handle 处理一条日志记录，格式化为 syslog 消息并发送到缓冲通道。
 func (h *SyslogHandler) Handle(ctx context.Context, r slog.Record) error {
-	if h.closing.Load() || h.closed.Load() {
+	if h.closing.Load() {
 		return nil
 	}
 
@@ -141,24 +140,17 @@ func (h *SyslogHandler) Close() error {
 	}
 	h.connMu.Unlock()
 
-	h.closed.Store(true)
 	return nil
 }
 
 // WithAttrs 返回带有预置属性的新 SyslogHandler。
 func (h *SyslogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &syslogAttrsHandler{
-		SyslogHandler: h,
-		attrs:         attrs,
-	}
+	return &AttrsSub[*SyslogHandler]{Parent: h, Attrs: attrs}
 }
 
 // WithGroup 返回带有分组前缀的新 SyslogHandler。
 func (h *SyslogHandler) WithGroup(name string) slog.Handler {
-	return &syslogGroupHandler{
-		SyslogHandler: h,
-		group:         name,
-	}
+	return &GroupSub[*SyslogHandler]{Parent: h, Group: name}
 }
 
 // setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
@@ -166,9 +158,24 @@ func (h *SyslogHandler) setErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-// =============================================================================
-// 连接管理
-// =============================================================================
+// dialLocked 拨号建立新连接。调用方必须持有 connMu。
+func (h *SyslogHandler) dialLocked() (net.Conn, error) {
+	var conn net.Conn
+	var err error
+	if h.tlsCfg != nil {
+		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network, h.cfg.Address, h.tlsCfg)
+	} else {
+		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(3 * time.Minute)
+	}
+	return conn, nil
+}
 
 func (h *SyslogHandler) connect() error {
 	h.connMu.Lock()
@@ -179,22 +186,10 @@ func (h *SyslogHandler) connect() error {
 		h.conn = nil
 	}
 
-	var conn net.Conn
-	var err error
-	if h.tlsCfg != nil {
-		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network, h.cfg.Address, h.tlsCfg)
-	} else {
-		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
-	}
+	conn, err := h.dialLocked()
 	if err != nil {
 		return err
 	}
-
-	if tc, ok := conn.(*net.TCPConn); ok {
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(3 * time.Minute)
-	}
-
 	h.conn = conn
 	return nil
 }
@@ -211,13 +206,7 @@ func (h *SyslogHandler) reconnect() {
 		h.conn = nil
 	}
 
-	var conn net.Conn
-	var err error
-	if h.tlsCfg != nil {
-		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network, h.cfg.Address, h.tlsCfg)
-	} else {
-		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
-	}
+	conn, err := h.dialLocked()
 	if err != nil {
 		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("reconnect failed: %w", err))
 		return
@@ -271,13 +260,25 @@ func (h *SyslogHandler) disconnect() {
 	}
 }
 
+// backoffDelay 计算指数退避延迟（带抖动）。
+func backoffDelay(retries int32) time.Duration {
+	r := retries
+	if r > maxBackoffExponent {
+		r = maxBackoffExponent
+	}
+	base := time.Second << min(r, 30)
+	base = min(base, maxReconnectDelay)
+	jitter := time.Duration(rand.Int64N(int64(base) / 2))
+	return base/2 + jitter
+}
+
 func (h *SyslogHandler) processQueue() {
 	defer h.wg.Done()
 
 	reconnector := time.NewTicker(h.cfg.RetryDelay)
 	defer reconnector.Stop()
 
-	retryCount := int32(0)
+	var retryCount atomic.Int32
 
 	for {
 		select {
@@ -289,14 +290,7 @@ func (h *SyslogHandler) processQueue() {
 
 		case <-reconnector.C:
 			if !h.isConnected() {
-				rc := atomic.LoadInt32(&retryCount)
-				if rc > 20 {
-					rc = 20 // 防止 math.Pow 溢出
-				}
-				baseDelay := time.Second * time.Duration(math.Pow(2, float64(rc)))
-				baseDelay = min(baseDelay, maxReconnectDelay)
-				jitter := time.Duration(rand.Int64N(int64(baseDelay) / 2))
-				delay := baseDelay/2 + jitter
+				delay := backoffDelay(retryCount.Load())
 				select {
 				case <-time.After(delay):
 				case <-h.ctx.Done():
@@ -309,9 +303,9 @@ func (h *SyslogHandler) processQueue() {
 					continue
 				}
 				h.reconnect()
-				retryCount++
+				retryCount.Add(1)
 			} else {
-				retryCount = 0
+				retryCount.Store(0)
 			}
 
 		case <-h.ctx.Done():
@@ -385,7 +379,6 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 	}
 
 	if h.cfg.RFC5424 {
-		// 构建 SD-ELEMENT 从 Attrs
 		var sd strings.Builder
 		sd.WriteByte('[')
 		for i, attr := range entry.Attrs {
@@ -414,6 +407,8 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 
 func (h *SyslogHandler) levelToSeverity(level slog.Level) int {
 	switch {
+	case level >= LevelAudit:
+		return 2 // CRITICAL — audit/compliance records
 	case level >= slog.LevelError:
 		return 3
 	case level >= slog.LevelWarn:
@@ -476,7 +471,6 @@ func cleanHostname(hostname string) string {
 }
 
 // escapeSDValue 转义 RFC5424 SD-ELEMENT PARAM-VALUE 中的特殊字符。
-// 需要转义: " → \", \ → \\, ] → \]
 func escapeSDValue(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -503,94 +497,6 @@ func safeMessageForLog(msg string) string {
 		return r
 	}, msg)
 	return strings.TrimSpace(spaceRe.ReplaceAllString(cleaned, " "))
-}
-
-// =============================================================================
-// 子 Handler 类型（WithAttrs/WithGroup 返回）
-// =============================================================================
-
-type syslogAttrsHandler struct {
-	*SyslogHandler
-	attrs []slog.Attr
-	group string
-}
-
-func (h *syslogAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
-	if h.group != "" {
-		newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
-		r.Attrs(func(attr slog.Attr) bool {
-			newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
-			return true
-		})
-		newR.AddAttrs(h.attrs...)
-		return h.SyslogHandler.Handle(ctx, newR)
-	}
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.SyslogHandler.Handle(ctx, r)
-}
-
-func (h *syslogAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
-	merged = append(merged, h.attrs...)
-	if h.group != "" {
-		for _, a := range attrs {
-			merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
-		}
-	} else {
-		merged = append(merged, attrs...)
-	}
-	return &syslogAttrsHandler{
-		SyslogHandler: h.SyslogHandler,
-		attrs:         merged,
-		group:         h.group,
-	}
-}
-
-func (h *syslogAttrsHandler) WithGroup(name string) slog.Handler {
-	return &syslogGroupHandler{
-		SyslogHandler: h.SyslogHandler,
-		group:         name,
-		attrs:         h.attrs,
-	}
-}
-
-type syslogGroupHandler struct {
-	*SyslogHandler
-	group string
-	attrs []slog.Attr
-}
-
-func (h *syslogGroupHandler) Handle(ctx context.Context, r slog.Record) error {
-	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
-	r.Attrs(func(attr slog.Attr) bool {
-		newR.AddAttrs(slog.Attr{Key: h.group + "." + attr.Key, Value: attr.Value})
-		return true
-	})
-	newR.AddAttrs(h.attrs...)
-	return h.SyslogHandler.Handle(ctx, newR)
-}
-
-func (h *syslogGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
-	copy(merged, h.attrs)
-	for _, a := range attrs {
-		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
-	}
-	return &syslogAttrsHandler{
-		SyslogHandler: h.SyslogHandler,
-		attrs:         merged,
-		group:         h.group,
-	}
-}
-
-func (h *syslogGroupHandler) WithGroup(name string) slog.Handler {
-	return &syslogGroupHandler{
-		SyslogHandler: h.SyslogHandler,
-		group:         h.group + "." + name,
-		attrs:         h.attrs,
-	}
 }
 
 // 编译期断言

@@ -403,6 +403,7 @@ func TestLevelToSeverity(t *testing.T) {
 		{slog.LevelInfo, 6},
 		{slog.LevelWarn, 4},
 		{slog.LevelError, 3},
+		{LevelAudit, 2},
 	}
 
 	for _, tt := range tests {
@@ -485,5 +486,26 @@ func TestStdoutHandler_WithSampling(t *testing.T) {
 	}
 	if lines > 20 {
 		t.Errorf("expected at most 20 lines, got %d", lines)
+	}
+}
+
+// SPEC: "Audit records must not be dropped regardless of sampling state."
+func TestWithSampling_AuditAlwaysRecorded(t *testing.T) {
+	inner := &countHandler{}
+	h := WithSampling(inner, config.SamplingConfig{
+		Enabled:    true,
+		Initial:    1,
+		Thereafter: 100,
+		Window:     time.Second,
+	})
+	defer closeSampling(t, h)
+	logger := slog.New(h)
+
+	for range 10 {
+		logger.Log(context.Background(), LevelAudit, "audit", "i", 0)
+	}
+
+	if inner.Count() != 10 {
+		t.Errorf("all audit records should bypass sampling, got %d/10", inner.Count())
 	}
 }

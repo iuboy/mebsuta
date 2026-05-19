@@ -45,8 +45,8 @@ func TestDatabaseHandler_Enabled(t *testing.T) {
 
 func TestDatabaseHandler_WithAttrs(t *testing.T) {
 	var _ slog.Handler = (*DatabaseHandler)(nil)
-	var _ slog.Handler = (*dbAttrsHandler)(nil)
-	var _ slog.Handler = (*dbGroupHandler)(nil)
+	var _ slog.Handler = (*mebsuta.AttrsSub[*DatabaseHandler])(nil)
+	var _ slog.Handler = (*mebsuta.GroupSub[*DatabaseHandler])(nil)
 }
 
 // Regression: ISSUE-002 — DatabaseHandler 必须实现非导出的 setErrorHandler 方法

@@ -360,24 +360,21 @@ func (h *FileHandler) cleanupBackupsLocked() {
 // gzip 压缩
 // =============================================================================
 
-// compressFile 将文件异步压缩为 .gz（使用临时文件 + 原子 rename）。
+// compressFile 将文件压缩为 .gz（使用临时文件 + 原子 rename）。
 func compressFile(path string, eh ErrorHandler) {
-	if eh == nil {
-		return
-	}
 	gzPath := path + ".gz"
 	tmpPath := gzPath + ".tmp"
 
 	src, err := os.Open(path)
 	if err != nil {
-		eh("file", fmt.Errorf("compress open %s: %w", path, err))
+		ReportError(eh, "file", fmt.Errorf("compress open %s: %w", path, err))
 		return
 	}
 	defer src.Close()
 
 	dst, err := os.Create(tmpPath)
 	if err != nil {
-		eh("file", fmt.Errorf("compress create temp: %w", err))
+		ReportError(eh, "file", fmt.Errorf("compress create temp: %w", err))
 		return
 	}
 
@@ -386,33 +383,31 @@ func compressFile(path string, eh ErrorHandler) {
 	if err != nil {
 		dst.Close()
 		os.Remove(tmpPath)
-		eh("file", fmt.Errorf("compress data: %w", err))
+		ReportError(eh, "file", fmt.Errorf("compress data: %w", err))
 		return
 	}
 
 	if err := gw.Close(); err != nil {
 		dst.Close()
 		os.Remove(tmpPath)
-		eh("file", fmt.Errorf("compress flush: %w", err))
+		ReportError(eh, "file", fmt.Errorf("compress flush: %w", err))
 		return
 	}
 
 	if err := dst.Close(); err != nil {
 		os.Remove(tmpPath)
-		eh("file", fmt.Errorf("compress close temp: %w", err))
+		ReportError(eh, "file", fmt.Errorf("compress close temp: %w", err))
 		return
 	}
 
-	// 原子 rename
 	if err := os.Rename(tmpPath, gzPath); err != nil {
 		os.Remove(tmpPath)
-		eh("file", fmt.Errorf("compress rename: %w", err))
+		ReportError(eh, "file", fmt.Errorf("compress rename: %w", err))
 		return
 	}
 
-	// 删除原文件
 	if err := os.Remove(path); err != nil {
-		eh("file", fmt.Errorf("compress remove original %s: %w", path, err))
+		ReportError(eh, "file", fmt.Errorf("compress remove original %s: %w", path, err))
 	}
 }
 
