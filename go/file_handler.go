@@ -19,12 +19,7 @@ import (
 
 const logFileMode os.FileMode = 0600
 
-// =============================================================================
-// FileHandler — 文件输出 slog.Handler
-// =============================================================================
-
 // FileHandler 将日志记录输出到文件，支持大小+时间轮转和 gzip 压缩。
-// 实现 slog.Handler 和 io.Closer 接口。
 type FileHandler struct {
 	LevelHandler
 	format EncodingType
@@ -33,8 +28,7 @@ type FileHandler struct {
 	cw     *countingWriter
 }
 
-// fileState 保存文件相关的共享可变状态。
-// 同一个文件的所有 FileHandler（通过 WithAttrs/WithGroup 创建的子 Handler）共享同一个 fileState。
+// fileState 保存文件相关的共享可变状态，跨 WithAttrs/WithGroup 子 Handler 共享。
 type fileState struct {
 	mu           sync.RWMutex // 写入 RLock，轮转 Lock
 	file         *os.File
@@ -47,8 +41,7 @@ type fileState struct {
 	compressWg   sync.WaitGroup // 跟踪异步压缩 goroutine
 }
 
-// countingWriter 包装当前文件，同时追踪写入字节数。
-// 作为 io.Writer 传给底层 slog Handler。
+// countingWriter 追踪写入字节数，作为 io.Writer 传给底层 slog Handler。
 type countingWriter struct {
 	state *fileState
 }
@@ -65,8 +58,6 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// NewFileHandler 创建输出到文件的 slog.Handler。
-// level 控制日志级别过滤。cfg 配置文件路径、轮转策略等。
 func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
@@ -120,7 +111,6 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 	return h, nil
 }
 
-// Handle 处理一条日志记录，写入文件。
 func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.state.closed.Load() {
 		return nil
@@ -152,7 +142,6 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs 返回带有预置属性的新 FileHandler。
 func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &FileHandler{
 		LevelHandler: h.LevelHandler,
@@ -163,7 +152,6 @@ func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup 返回带有分组前缀的新 FileHandler。
 func (h *FileHandler) WithGroup(name string) slog.Handler {
 	return &FileHandler{
 		LevelHandler: h.LevelHandler,
@@ -174,7 +162,6 @@ func (h *FileHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// Close 刷新并关闭文件（实现 io.Closer）。
 func (h *FileHandler) Close() error {
 	if !h.state.closed.CompareAndSwap(false, true) {
 		return nil
@@ -194,14 +181,9 @@ func (h *FileHandler) Close() error {
 	return err
 }
 
-// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
 	h.state.errorHandler.Store(&fn)
 }
-
-// =============================================================================
-// 轮转逻辑
-// =============================================================================
 
 // needsRotation 检查是否需要轮转。调用方必须持有 state.mu（至少 RLock）。
 func (h *FileHandler) needsRotation() bool {
@@ -356,10 +338,6 @@ func (h *FileHandler) cleanupBackupsLocked() {
 	}
 }
 
-// =============================================================================
-// gzip 压缩
-// =============================================================================
-
 // compressFile 将文件压缩为 .gz（使用临时文件 + 原子 rename）。
 func compressFile(path string, eh ErrorHandler) {
 	gzPath := path + ".gz"
@@ -447,12 +425,7 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup) {
 	}
 }
 
-// =============================================================================
-// 辅助：备份文件匹配
-// =============================================================================
-
-// matchBackups 返回目录中匹配日志文件前缀的所有备份文件名。
-// 用于测试。
+// matchBackups 返回目录中匹配日志文件前缀的所有备份文件名。用于测试。
 func matchBackups(logPath string) []string {
 	dir := filepath.Dir(logPath)
 	base := filepath.Base(logPath)

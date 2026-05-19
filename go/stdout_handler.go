@@ -9,7 +9,6 @@ import (
 )
 
 // StdoutHandler 将日志记录输出到 stdout。
-// 实现 slog.Handler 和 io.Closer 接口。
 type StdoutHandler struct {
 	LevelHandler
 	format EncodingType
@@ -17,8 +16,6 @@ type StdoutHandler struct {
 	mu     *sync.Mutex
 }
 
-// NewStdoutHandler 创建输出到 stdout 的 slog.Handler。
-// level 控制日志级别过滤，format 控制 JSON 或 Console 输出格式。
 func NewStdoutHandler(level slog.Level, format EncodingType) *StdoutHandler {
 	h := &StdoutHandler{
 		LevelHandler: LevelHandler{Level: level},
@@ -29,7 +26,6 @@ func NewStdoutHandler(level slog.Level, format EncodingType) *StdoutHandler {
 	return h
 }
 
-// newStdoutHandlerWithWriter 创建输出到指定 writer 的 handler（用于测试）。
 func newStdoutHandlerWithWriter(w io.Writer, level slog.Level, format EncodingType) *StdoutHandler {
 	h := &StdoutHandler{
 		LevelHandler: LevelHandler{Level: level},
@@ -52,14 +48,12 @@ func newInnerHandler(w io.Writer, format EncodingType) slog.Handler {
 	}
 }
 
-// Handle 处理一条日志记录，写入 stdout。
 func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.inner.Handle(ctx, r)
 }
 
-// WithAttrs 返回带有预置属性的新 StdoutHandler。
 func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
 		LevelHandler: h.LevelHandler,
@@ -69,7 +63,6 @@ func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup 返回带有分组前缀的新 StdoutHandler。
 func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
 		LevelHandler: h.LevelHandler,
@@ -79,8 +72,7 @@ func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// Close 刷新并关闭 handler（实现 io.Closer）。
-// stdout 不需要关闭，此方法为 nop。
+// Close 是 nop，stdout 不需要关闭。
 func (h *StdoutHandler) Close() error {
 	return nil
 }

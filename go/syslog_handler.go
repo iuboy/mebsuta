@@ -19,10 +19,6 @@ import (
 	"github.com/iuboy/mebsuta/go/config"
 )
 
-// =============================================================================
-// SyslogHandler — syslog 输出 slog.Handler
-// =============================================================================
-
 const (
 	maxSyslogRetries        = 5
 	syslogWriteTimeout      = 3 * time.Second
@@ -37,9 +33,7 @@ const (
 
 var spaceRe = regexp.MustCompile(`\s+`)
 
-// SyslogHandler 将日志记录输出到 syslog 服务器。
-// 实现 slog.Handler 和 io.Closer 接口。
-// 内置缓冲写入、TLS、自动重连。
+// SyslogHandler 将日志记录输出到 syslog 服务器。内置缓冲写入、TLS、自动重连。
 type SyslogHandler struct {
 	LevelHandler
 	cfg          config.SyslogConfig
@@ -57,7 +51,6 @@ type SyslogHandler struct {
 	errorHandler atomic.Pointer[ErrorHandler]
 }
 
-// NewSyslogHandler 创建输出到 syslog 的 slog.Handler。
 func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
@@ -111,7 +104,6 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 	return h, nil
 }
 
-// Handle 处理一条日志记录，格式化为 syslog 消息并发送到缓冲通道。
 func (h *SyslogHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closing.Load() {
 		return nil
@@ -123,7 +115,6 @@ func (h *SyslogHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.safeSend(data)
 }
 
-// Close 关闭 syslog 连接并释放资源。
 func (h *SyslogHandler) Close() error {
 	if !h.closing.CompareAndSwap(false, true) {
 		return nil
@@ -143,22 +134,18 @@ func (h *SyslogHandler) Close() error {
 	return nil
 }
 
-// WithAttrs 返回带有预置属性的新 SyslogHandler。
 func (h *SyslogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &AttrsSub[*SyslogHandler]{Parent: h, Attrs: attrs}
 }
 
-// WithGroup 返回带有分组前缀的新 SyslogHandler。
 func (h *SyslogHandler) WithGroup(name string) slog.Handler {
 	return &GroupSub[*SyslogHandler]{Parent: h, Group: name}
 }
 
-// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *SyslogHandler) setErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-// dialLocked 拨号建立新连接。调用方必须持有 connMu。
 func (h *SyslogHandler) dialLocked() (net.Conn, error) {
 	var conn net.Conn
 	var err error
@@ -328,10 +315,6 @@ func (h *SyslogHandler) safeSend(data []byte) (err error) {
 	}
 }
 
-// =============================================================================
-// 消息格式化
-// =============================================================================
-
 func (h *SyslogHandler) formatMessage(entry LogEntry) string {
 	timestamp := entry.Time.In(h.location)
 	severity := h.levelToSeverity(entry.Level)
@@ -401,10 +384,6 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag, procid, msgContent) + "\n"
 }
 
-// =============================================================================
-// 辅助函数
-// =============================================================================
-
 func (h *SyslogHandler) levelToSeverity(level slog.Level) int {
 	switch {
 	case level >= LevelAudit:
@@ -470,7 +449,6 @@ func cleanHostname(hostname string) string {
 	return clean.String()
 }
 
-// escapeSDValue 转义 RFC5424 SD-ELEMENT PARAM-VALUE 中的特殊字符。
 func escapeSDValue(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -499,7 +477,6 @@ func safeMessageForLog(msg string) string {
 	return strings.TrimSpace(spaceRe.ReplaceAllString(cleaned, " "))
 }
 
-// 编译期断言
 var (
 	_ slog.Handler = (*SyslogHandler)(nil)
 	_ io.Closer    = (*SyslogHandler)(nil)

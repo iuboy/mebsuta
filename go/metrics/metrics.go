@@ -233,29 +233,21 @@ func (m *Metrics) GetGoroutineCount() int64 {
 	return m.goroutineCount.Load()
 }
 
-// =============================================================================
-// HandlerMetrics 接口实现（桥接到 Prometheus 指标）
-// =============================================================================
-
-// ObserveHandle 记录一次 Handle 调用的延迟。
-// 实现 mebsuta.HandlerMetrics 接口。
+// ObserveHandle 实现 mebsuta.HandlerMetrics 接口。
 func (m *Metrics) ObserveHandle(duration time.Duration) {
 	m.writeLatency.Observe(duration.Seconds())
 }
 
-// IncError 增加错误计数。
-// 实现 mebsuta.HandlerMetrics 接口。
+// IncError 实现 mebsuta.HandlerMetrics 接口。
 func (m *Metrics) IncError(handlerName string) {
 	m.logErrors.WithLabelValues("handle", handlerName).Inc()
 }
 
-// IncDropped 增加丢弃计数。
-// 实现 mebsuta.HandlerMetrics 接口。
+// IncDropped 实现 mebsuta.HandlerMetrics 接口。
 func (m *Metrics) IncDropped(handlerName string) {
 	m.logDropped.WithLabelValues("overflow", handlerName).Inc()
 }
 
-// Describe 实现 prometheus.Collector 接口
 func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.logWrites.Describe(ch)
 	m.logDropped.Describe(ch)
@@ -271,7 +263,6 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.writeLatency.Describe(ch)
 }
 
-// Collect 实现 prometheus.Collector 接口
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.logWrites.Collect(ch)
 	m.logDropped.Collect(ch)

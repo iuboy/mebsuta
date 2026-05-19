@@ -25,16 +25,11 @@ func loadDBErrorHandler(p *atomic.Pointer[mebsuta.ErrorHandler]) mebsuta.ErrorHa
 	return *v
 }
 
-// =============================================================================
-// DatabaseHandler — 数据库输出 slog.Handler
-// =============================================================================
-
 const (
 	finalFlushTimeout = 10 * time.Second
 	finalFlushRetries = 3
 )
 
-// dbLogEntry 是写入数据库的日志条目。
 type dbLogEntry struct {
 	Time    time.Time       `gorm:"column:time"`
 	Level   string          `gorm:"column:level"`
@@ -42,14 +37,11 @@ type dbLogEntry struct {
 	Fields  json.RawMessage `gorm:"type:json"`
 }
 
-// TableName 实现 GORM TableName 接口。
 func (dbLogEntry) TableName() string {
 	return "logs"
 }
 
-// DatabaseHandler 将日志记录批量写入 SQL 数据库。
-// 实现 slog.Handler 和 io.Closer 接口。
-// 支持 MySQL 和 Postgres（通过 GORM）。
+// DatabaseHandler 将日志记录批量写入 SQL 数据库（MySQL/Postgres 通过 GORM）。
 type DatabaseHandler struct {
 	mebsuta.LevelHandler
 	cfg          config.DatabaseConfig
@@ -64,7 +56,6 @@ type DatabaseHandler struct {
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
 
-// NewDatabaseHandler 创建输出到数据库的 slog.Handler。
 func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
@@ -118,7 +109,6 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 	return h, nil
 }
 
-// Handle 处理一条日志记录，转换为 dbLogEntry 并发送到缓冲通道。
 func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return nil
@@ -144,18 +134,14 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 	}
 }
 
-// WithAttrs 返回带有预置属性的新 DatabaseHandler。
-// 预置属性会在 Handle 中序列化到 JSON Fields。
 func (h *DatabaseHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &mebsuta.AttrsSub[*DatabaseHandler]{Parent: h, Attrs: attrs}
 }
 
-// WithGroup 返回带有分组前缀的新 DatabaseHandler。
 func (h *DatabaseHandler) WithGroup(name string) slog.Handler {
 	return &mebsuta.GroupSub[*DatabaseHandler]{Parent: h, Group: name}
 }
 
-// Close 关闭数据库连接。先 flush 缓冲区中的日志。
 func (h *DatabaseHandler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
@@ -170,10 +156,6 @@ func (h *DatabaseHandler) Close() error {
 	}
 	return sqlDB.Close()
 }
-
-// =============================================================================
-// 批量写入
-// =============================================================================
 
 func (h *DatabaseHandler) run(batchSize int, batchInterval, retryDelay time.Duration) {
 	defer h.wg.Done()
@@ -231,10 +213,6 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 	}
 }
 
-// =============================================================================
-// 辅助
-// =============================================================================
-
 func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 	entry := dbLogEntry{
 		Time:    r.Time,
@@ -258,7 +236,6 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 	return entry
 }
 
-// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
 func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }

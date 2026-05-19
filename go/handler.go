@@ -10,22 +10,14 @@ import (
 	"sync/atomic"
 )
 
-// LevelHandler 提供所有 adapter Handler 共享的 Enabled 逻辑。
-// 各 Handler 通过嵌入 LevelHandler 获得 level 过滤能力。
 type LevelHandler struct {
 	Level slog.Level
 }
 
-// Enabled 报告给定级别是否应该被记录。
 func (h *LevelHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.Level
 }
 
-// =============================================================================
-// HandlerOption — Handler 构造的函数式选项
-// =============================================================================
-
-// HandlerOption 配置 New() 的 Handler 组装。
 type HandlerOption func(*handlerOptions) error
 
 type handlerOptions struct {
@@ -33,7 +25,6 @@ type handlerOptions struct {
 	errorHandler ErrorHandler
 }
 
-// WithHandler 添加一个 slog.Handler 到 multi-handler。
 func WithHandler(h slog.Handler) HandlerOption {
 	return func(o *handlerOptions) error {
 		if h == nil {
@@ -44,9 +35,8 @@ func WithHandler(h slog.Handler) HandlerOption {
 	}
 }
 
-// WithErrorHandler 设置 Handler 内部错误的处理函数。
-// 默认写入 os.Stderr。设为 nil 则静默丢弃内部错误。
-// nil 会传播到所有子 handler，使其内部错误也被静默丢弃。
+// WithErrorHandler 设置 Handler 内部错误的处理函数。默认写入 os.Stderr。
+// 设为 nil 则静默丢弃内部错误，nil 会传播到所有子 handler。
 func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	return func(o *handlerOptions) error {
 		o.errorHandler = fn
@@ -54,14 +44,12 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	}
 }
 
-// ReportError 安全调用 ErrorHandler，nil 时静默丢弃。
 func ReportError(eh ErrorHandler, component string, err error) {
 	if eh != nil {
 		eh(component, err)
 	}
 }
 
-// loadErrorHandler 从 atomic.Pointer[ErrorHandler] 加载当前值。
 func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
 	v := p.Load()
 	if v == nil {
@@ -70,8 +58,7 @@ func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
 	return *v
 }
 
-// buildHandler 从选项构建 slog.Handler。
-// 0 个 handler 返回 error。1 个直接返回。多个用 safeMultiHandler（带 panic recovery）。
+// buildHandler 从选项构建 slog.Handler。0 个 handler 返回 error，多个用 safeMultiHandler。
 func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	o := &handlerOptions{}
 	for _, opt := range opts {
@@ -83,7 +70,6 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 		return nil, fmt.Errorf("mebsuta: at least one handler is required")
 	}
 
-	// 传播 errorHandler 到所有支持它的 handler（包括 nil，实现全局静默）
 	for _, h := range o.handlers {
 		propagateErrorHandler(h, o.errorHandler)
 	}
@@ -94,8 +80,7 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	return safeMultiHandler(o.handlers, o.errorHandler), nil
 }
 
-// safeMultiHandler 包装多个子 Handler，每个调用时加 panic recover。
-// 防止单个 Handler panic 导致整个日志调用崩溃。(Decision #17)
+// safeMultiHandler 包装多个子 Handler，每个调用加 panic recover。防止单个 Handler panic 导致整个日志调用崩溃。
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 	return &safeMulti{
 		handlers:     handlers,
@@ -108,7 +93,6 @@ type safeMulti struct {
 	errorHandler ErrorHandler
 }
 
-// Close 递归关闭所有子 handler（包括装饰器链内层）。
 func (h *safeMulti) Close() error {
 	var errs []error
 	for _, hh := range h.handlers {
@@ -196,16 +180,12 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 	}
 }
 
-// =============================================================================
-// errorHandlerSetter — ErrorHandler 传播接口
-// =============================================================================
-
 // errorHandlerSetter 是支持自定义错误处理的 Handler 的内部接口。
 type errorHandlerSetter interface {
 	setErrorHandler(fn ErrorHandler)
 }
 
-// propagateErrorHandler 递归解包装饰器链，向所有支持 errorHandlerSetter 的 handler 注入 errorHandler。
+// propagateErrorHandler 递归解包装饰器链，向所有支持 setErrorHandler 的 handler 注入 errorHandler。
 func propagateErrorHandler(h slog.Handler, fn ErrorHandler) {
 	if s, ok := h.(errorHandlerSetter); ok {
 		s.setErrorHandler(fn)
@@ -215,18 +195,12 @@ func propagateErrorHandler(h slog.Handler, fn ErrorHandler) {
 	}
 }
 
-// =============================================================================
-// CloseAll — 递归关闭所有实现 io.Closer 的 Handler
-// =============================================================================
-
 // handlerUnwrapper 是装饰器实现的内部接口，用于 CloseAll 递归解包。
 type handlerUnwrapper interface {
 	unwrapHandler() slog.Handler
 }
 
-// CloseAll 递归关闭 handler 及其子 handler 中所有实现 io.Closer 的资源。
-// 支持装饰器链解包（Sampling、Async、Metrics 等）。
-// 用于进程退出前 flush 缓冲区、关闭文件和网络连接。
+// CloseAll 递归关闭 handler 及装饰器链中所有实现 io.Closer 的资源。
 func CloseAll(handler slog.Handler) error {
 	if handler == nil {
 		return nil
@@ -250,10 +224,6 @@ func CloseAll(handler slog.Handler) error {
 	return errors.Join(errs...)
 }
 
-// =============================================================================
-// WithAttrs/WithGroup 共享辅助函数与泛型子 Handler
-// =============================================================================
-
 // prefixAttrs 给 attrs 的 key 添加 "group." 前缀。group 为空时原样返回。
 func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
 	if group == "" {
@@ -266,8 +236,7 @@ func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
 	return out
 }
 
-// MergeAttrs 合并 existing 和 newAttrs。newAttrs 按 group 前缀化。
-//
+// MergeAttrs 合并 existing 和 newAttrs，newAttrs 按 group 前缀化。
 // NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
 func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 	merged := make([]slog.Attr, len(existing), len(existing)+len(newAttrs))
@@ -276,8 +245,7 @@ func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 	return merged
 }
 
-// RecordWithGroupAttrs 创建新 slog.Record，原 record 的 attrs 加 group 前缀，再追加 extraAttrs。
-//
+// RecordWithGroupAttrs 创建新 slog.Record，原 attrs 加 group 前缀，再追加 extraAttrs。
 // NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
 func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
 	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
@@ -289,10 +257,7 @@ func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) s
 	return newR
 }
 
-// AttrsSub 是 slog.Handler WithAttrs/WithGroup 链的通用子 Handler。
-// 参数 H 为父 handler 的具体类型（如 *SyslogHandler、*DatabaseHandler）。
-// 消除各 handler 重复定义 attrsHandler/groupHandler 子类型。
-//
+// AttrsSub 是 WithAttrs/WithGroup 链的泛型子 Handler。消除各 handler 重复定义子类型。
 // NOTE: 因 database 子包跨包引用而导出，应用代码无需直接使用。
 type AttrsSub[H slog.Handler] struct {
 	Parent H
@@ -328,9 +293,7 @@ func (h *AttrsSub[H]) WithGroup(name string) slog.Handler {
 	}
 }
 
-// GroupSub 是 slog.Handler WithGroup 链的通用子 Handler。
-// 所有 record attrs 加 group 前缀后传递给父 handler。
-//
+// GroupSub 是 WithGroup 链的泛型子 Handler，所有 record attrs 加 group 前缀传递给父 handler。
 // NOTE: 因 database 子包跨包引用而导出，应用代码无需直接使用。
 type GroupSub[H slog.Handler] struct {
 	Parent H

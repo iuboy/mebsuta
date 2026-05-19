@@ -11,17 +11,8 @@ import (
 	"github.com/iuboy/mebsuta/go/config"
 )
 
-// =============================================================================
-// SamplingHandler — 采样装饰器
-// =============================================================================
-
 // SamplingHandler 是 slog.Handler 装饰器，按时间窗口对日志进行采样。
-//
-// 采样规则：
-//   - Error 及以上级别始终记录，不受采样限制。
-//   - 每个时间窗口内，前 Initial 条日志全部记录。
-//   - 超过 Initial 后，每 Thereafter 条记录 1 条。
-//   - 窗口到期后计数器自动重置。
+// Error 及以上级别始终记录。每个窗口前 Initial 条全部记录，之后每 Thereafter 条记录 1 条。
 type SamplingHandler struct {
 	inner   slog.Handler
 	cfg     config.SamplingConfig
@@ -32,7 +23,6 @@ type SamplingHandler struct {
 	stopped *atomic.Bool    // 指针，跨 WithAttrs/WithGroup 共享
 }
 
-// WithSampling 返回一个采样装饰器，包裹给定的 handler。
 func WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner
@@ -61,8 +51,6 @@ func WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler {
 	return h
 }
 
-// Enabled 报告给定级别是否应该被记录。
-// Error 及以上始终通过。
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	if level >= slog.LevelError {
 		return true
@@ -70,7 +58,6 @@ func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-// Handle 处理一条日志记录，按采样规则决定是否传递给内层 handler。
 func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	// Error 及以上始终记录
 	if r.Level >= slog.LevelError {
@@ -91,7 +78,6 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs 返回带有预置属性的新 SamplingHandler，链式传播到内层。
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
 		inner:   h.inner.WithAttrs(attrs),
@@ -104,7 +90,6 @@ func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup 返回带有分组前缀的新 SamplingHandler，链式传播到内层。
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
 		inner:   h.inner.WithGroup(name),
@@ -117,7 +102,6 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// Close 停止采样器，释放资源。
 func (h *SamplingHandler) Close() error {
 	if !h.stopped.CompareAndSwap(false, true) {
 		return nil
@@ -128,12 +112,10 @@ func (h *SamplingHandler) Close() error {
 	return nil
 }
 
-// unwrapHandler 返回内层 handler，供 CloseAll 递归关闭。
 func (h *SamplingHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
-// resetLoop 定期重置采样计数器。
 func (h *SamplingHandler) resetLoop() {
 	defer h.wg.Done()
 	for {
@@ -146,7 +128,6 @@ func (h *SamplingHandler) resetLoop() {
 	}
 }
 
-// 编译期断言
 var (
 	_ slog.Handler = (*SamplingHandler)(nil)
 	_ io.Closer    = (*SamplingHandler)(nil)
