@@ -51,6 +51,7 @@ temp/
 docker-volumes/
 
 /target
+/rust/target
 
 # Testcontainers lock files
 integration/*.lock

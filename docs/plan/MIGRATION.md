@@ -2,6 +2,43 @@
 
 v0.2 从 zap 封装全面转向 `log/slog` Handler 插件架构。
 
+## v0.3.x → Monorepo Split
+
+仓库从单语言 Go 项目拆分为双语言 monorepo（`go/` + `rust/`）。
+
+### Import Path 变更
+
+```go
+// before
+import "github.com/iuboy/mebsuta"
+import "github.com/iuboy/mebsuta/config"
+import "github.com/iuboy/mebsuta/metrics"
+
+// after
+import "github.com/iuboy/mebsuta/go"
+import "github.com/iuboy/mebsuta/go/config"
+import "github.com/iuboy/mebsuta/go/metrics"
+```
+
+### Install 命令变更
+
+```bash
+# before
+go get github.com/iuboy/mebsuta@v0.3.4
+
+# after
+go get github.com/iuboy/mebsuta/go@go/v0.4.0
+```
+
+### Tag Scheme 变更
+
+| Period | Go Tag Format | Example |
+|--------|---------------|---------|
+| Before monorepo split | `vX.Y.Z` (root) | `v0.3.4` |
+| After monorepo split | `go/vX.Y.Z` | `go/v0.4.0` |
+
+Root tags (`v0.1.0` through `v0.3.4`) remain available as legacy Go-only releases.
+
 ## 核心变化
 
 - `mebsuta.New()` 返回 `*slog.Logger`（不再是自定义 Logger 类型）

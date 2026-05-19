@@ -6,7 +6,8 @@
 
 ### 前置要求
 
-- Go 1.22 或更高版本
+- Go 版本以 `go/go.mod` 为准
+- Rust stable toolchain
 - Docker (用于运行集成测试)
 - Git
 
@@ -25,10 +26,21 @@
 
 3. 安装依赖
    ```bash
-   go mod download
+   cd go && go mod download
+   cd ../rust && cargo fetch
    ```
 
 ## 开发流程
+
+### 仓库结构
+
+本仓库是双语言 monorepo：
+
+- `go/`: Go module
+- `rust/`: Rust workspace
+- 根目录: 共享规范、版本策略、贡献指南、安全策略和 CI
+
+跨语言行为以 `SPEC.md` 为准。新增或修改 Go/Rust 共享行为时，必须同步更新 `SPEC.md` 和 `TESTING.md`。
 
 ### 代码规范
 
@@ -36,25 +48,44 @@
 - 遵循 [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments)
 - 使用 `gofmt` 格式化代码
    ```bash
+   cd go
    gofmt -s -w .
+   ```
+- Rust 代码使用 `rustfmt` 和 `clippy`
+   ```bash
+   cd rust
+   cargo fmt --all
+   cargo clippy --workspace -- -D warnings
    ```
 
 ### 提交前检查
 
 运行测试确保代码质量：
 ```bash
-# 运行所有测试
-./test.sh unit
+# Go
+cd go
+go test -race -count=1 ./...
+go vet ./...
+gofmt -s -l .
 
-# 运行格式检查
-./test.sh fmt
-
-# 运行 go vet
-./test.sh vet
-
-# 运行基准测试
-./test.sh benchmark
+# Rust
+cd ../rust
+cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace -- -D warnings
 ```
+
+依赖漏洞扫描：
+
+```bash
+cd go
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+cd ../rust
+cargo audit
+```
+
+`cargo audit` 和 `govulncheck` 需要联网更新漏洞数据。
 
 ### 提交规范
 
@@ -93,25 +124,34 @@ feat(logger): 添加动态采样支持
 5. 根据反馈进行修改
 6. 合并后可删除功能分支
 
+如果 PR 改变 Go/Rust 共享行为：
+
+1. 更新 `SPEC.md`
+2. 更新 `TESTING.md`
+3. 为受影响语言补测试
+4. 在 `CHANGELOG.md` 的 Go、Rust 或 Repository 区域记录变更
+
 ## 测试指南
 
 ### 单元测试
 
 ```bash
-# 运行所有单元测试
+cd go
 go test -v ./...
 
-# 运行特定包的测试
 go test -v ./config/...
 
-# 运行带覆盖率的测试
 go test -cover ./...
+
+cd ../rust
+cargo test --workspace
 ```
 
 ### 集成测试
 
 ```bash
 # 运行集成测试（需要Docker）
+cd go
 ./test.sh integration
 
 # 或直接使用go test
@@ -122,10 +162,14 @@ go test -tags=integration ./...
 
 ```bash
 # 运行基准测试
+cd go
 ./test.sh benchmark
 
 # 或直接使用go test
 go test -bench=. -benchmem ./...
+
+cd ../rust
+cargo bench --workspace
 ```
 
 ## 代码审查要点
@@ -149,17 +193,20 @@ go test -bench=. -benchmem ./...
 
 ## 发布流程
 
-1. 更新 CHANGELOG.md
-2. 更新版本号（如有必要）
-3. 创建 Git 标签
-4. 创建 GitHub Release
+发布规则详见 `VERSIONING.md`。
+
+- Go 发布使用 `go/vX.Y.Z` 标签
+- Rust 发布使用 `rust/vX.Y.Z` 标签
+- 整仓发布保留 `vX.Y.Z` 标签
+
+发布前必须更新 `CHANGELOG.md`，并确认对应语言的测试和漏洞扫描通过。
 
 ## 获取帮助
 
 如有任何问题，请：
 
 - 提交 [Issue](https://github.com/iuboy/mebsuta/issues)
-- 查看 [文档](https://github.com/iuboy/mebsuta/blob/main/docs/)
+- 查看根目录 `README.md`、`SPEC.md`、`TESTING.md` 和语言目录 README
 - 加入 [讨论](https://github.com/iuboy/mebsuta/discussions)
 
 ---

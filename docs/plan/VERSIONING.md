@@ -1,154 +1,154 @@
-# 版本规范
+# Versioning
 
-本项目遵循 [语义化版本 2.0.0](https://semver.org/lang/zh-CN/) 规范。
+Mebsuta follows Semantic Versioning 2.0.0, with language-specific release streams inside one repository.
 
-## 版本格式
+## Repository Model
 
-版本号格式：`v主版本号.次版本号.修订号`
+This repository is a dual-language monorepo:
 
-- **主版本号 (MAJOR)**：不兼容的API变更
-- **次版本号 (MINOR)**：向下兼容的功能新增
-- **修订号 (PATCH)**：向下兼容的问题修复
+- Go module: `go/`
+- Rust workspace: `rust/`
+- Shared governance: repository root
 
-## 版本策略
+The Go and Rust implementations share the behavior contract in `SPEC.md`, but they may release on different schedules.
 
-### 稳定版本 (v1.0.0+)
+## Version Streams
 
-- 主版本 `v1.x.x` 表示稳定的公共API
-- 承诺在主版本内保持向后兼容
-- 不会引入破坏性变更
+### Legacy Tags
 
-### 预发布版本
+Tags `v0.1.0` through `v0.3.4` are Go-only releases created before the monorepo split. They use root-level `v*` tags and the import path `github.com/iuboy/mebsuta` (without the `/go` suffix).
 
-- `v0.x.x` 表示开发中的版本
-- API可能随时变化
-- 不保证向后兼容性
+Starting from the monorepo split, Go releases use `go/vX.Y.Z` tags and the import path `github.com/iuboy/mebsuta/go`.
 
-### 预发布标识符
+### Go
 
-- `v1.0.0-alpha`：Alpha版本，功能开发中
-- `v1.0.0-beta`：Beta版本，功能基本完成，测试中
-- `v1.0.0-rc.1`：Release Candidate，候选发布版本
+Go releases use tags under the `go/` namespace:
 
-## 版本标签
-
-### 创建版本标签
-
-```bash
-# 创建补丁版本
-git tag -a v1.0.1 -m "修复日志同步问题"
-
-# 创建次版本
-git tag -a v1.1.0 -m "添加Syslog输出支持"
-
-# 创建主版本
-git tag -a v2.0.0 -m "重构配置API，不兼容v1.x"
-
-# 推送标签
-git push origin v1.0.1
+```text
+go/v0.1.0
+go/v0.1.1
+go/v1.0.0
 ```
 
-### 标签命名规范
+This matches the Go module living in the `go/` subdirectory. The module path is `github.com/iuboy/mebsuta/go`.
 
-- 使用 `v` 前缀
-- 使用 `-` 分隔预发布标识符
-- 使用 `+` 分离构建元数据（可选）
+### Rust
 
-```
-v1.0.0
-v1.0.0-alpha
-v1.0.0-beta.1
-v1.0.0-rc.1
-v1.0.0+build.123
+Rust releases use tags under the `rust/` namespace:
+
+```text
+rust/v0.1.0
+rust/v0.1.1
+rust/v1.0.0
 ```
 
-## 发布清单
+The Cargo package versions in `rust/Cargo.toml` and member crates must match the release being validated.
 
-在发布新版本前，请确认：
+### Umbrella Releases
 
-- [ ] 所有测试通过
-- [ ] 更新 CHANGELOG.md
-- [ ] 更新模块版本号（go.mod不需要显式版本）
-- [ ] 创建版本标签
-- [ ] 推送标签到远程仓库
-- [ ] 创建GitHub Release
+Root tags such as `v0.1.0` are reserved for optional whole-repository releases. They should only be used when Go and Rust are intentionally released together.
 
-## API 兼容性承诺
+## Semantic Versioning
 
-### v1.x.x 承诺
+Version format:
 
-以下变更被视为破坏性变更，需要主版本号升级：
+```text
+vMAJOR.MINOR.PATCH
+```
 
-1. 删除或重命名导出的类型、函数、常量
-2. 修改导出类型的签名
-3. 修改函数签名的参数类型或返回值类型
-4. 移除支持的配置选项
+- `MAJOR`: incompatible API or behavior changes
+- `MINOR`: backward-compatible features
+- `PATCH`: backward-compatible fixes
 
-以下变更**不是**破坏性变更：
+Pre-release examples:
 
-1. 添加新的导出类型、函数、常量
-2. 扩展现有类型（添加新字段）
-3. 添加新的配置选项
-4. 性能优化（不改变API）
-5. Bug修复
+```text
+go/v1.0.0-rc.1
+rust/v1.0.0-beta.1
+```
 
-### 弃用策略
+## Breaking Changes
 
-当一个API需要被弃用时：
+The following require a major version bump for the affected language stream:
 
-1. 在文档中标记为 `Deprecated`
-2. 在注释中说明替代方案
-3. 保留至少一个次版本周期
-4. 在下一个主版本中移除
+1. Removing or renaming exported public APIs
+2. Changing public function, method, trait, interface, or type signatures
+3. Removing supported configuration fields
+4. Changing `SPEC.md` behavior in a backward-incompatible way
+5. Changing serialized output in a way consumers cannot tolerate
+
+The following are not breaking changes:
+
+1. Adding new exported APIs
+2. Adding optional configuration fields
+3. Adding new handlers or decorators
+4. Improving performance without changing behavior
+5. Fixing bugs to match documented behavior
+6. Tightening unsafe defaults when the old behavior was a security bug
+
+## Release Checklist
+
+For a Go release:
+
+- [ ] Update `CHANGELOG.md` under the Go section
+- [ ] Confirm `go/go.mod` module path is correct
+- [ ] Run Go tests, vet, formatting, and `govulncheck`
+- [ ] Create tag `go/vX.Y.Z`
+- [ ] Push the tag and confirm release validation passes
+
+For a Rust release:
+
+- [ ] Update `CHANGELOG.md` under the Rust section
+- [ ] Update Cargo package versions
+- [ ] Run Rust tests, fmt, clippy, and `cargo audit`
+- [ ] Confirm Cargo package validation passes
+- [ ] Create tag `rust/vX.Y.Z`
+- [ ] Push the tag and confirm release validation passes
+
+For an umbrella release:
+
+- [ ] Confirm both language implementations are intended to ship together
+- [ ] Run full repository validation
+- [ ] Create tag `vX.Y.Z`
+- [ ] Publish GitHub release notes that clearly identify Go and Rust versions
+
+## Deprecation Policy
+
+When an API needs to be deprecated:
+
+1. Mark it as deprecated in language-native documentation.
+2. Explain the replacement.
+3. Keep it for at least one minor release after deprecation when practical.
+4. Remove it in the next major release.
+
+Go example:
 
 ```go
-// Deprecated: 使用 NewLoggerConfigBuilder 替代，将在 v2.0.0 移除
+// Deprecated: use NewLoggerConfigBuilder instead. This will be removed in v2.0.0.
 func NewSimpleConfig(name string) *LoggerConfig {
     // ...
 }
 ```
 
-## 模块版本要求
+Rust example:
 
-本项目最低需要 Go 1.22 版本。
-
-```go
-// go.mod
-module github.com/iuboy/mebsuta
-
-go 1.22
+```rust
+#[deprecated(note = "use LoggerConfigBuilder instead; this will be removed in v2.0.0")]
+pub fn new_simple_config(name: &str) -> LoggerConfig {
+    // ...
+}
 ```
 
-## 依赖管理
+## Dependency Management
 
-### 直接依赖
+Dependencies should be updated regularly for security fixes.
 
-生产依赖应保持稳定版本：
-- 优先使用稳定的 release 版本
-- 避免使用 pre-release 版本
-- 定期更新依赖以获取安全修复
+- Go dependencies are managed in `go/go.mod`.
+- Rust dependencies are managed in `rust/Cargo.toml` and `rust/Cargo.lock`.
+- GitHub Actions dependencies are managed at the repository root.
 
-### 开发依赖
+Security scanning:
 
-开发依赖（如测试工具）版本要求较宽松：
-- testcontainers-go 需要 Go 1.21+
-- 可以使用较新的版本获取新功能
-
-### 更新依赖
-
-```bash
-# 更新所有直接依赖到最新版本
-go get -u ./...
-
-# 更新特定依赖
-go get -u github.com/influxdata/influxdb-client-go/v2
-
-# 清理未使用的依赖
-go mod tidy
-```
-
-## 发布历史
-
-| 版本 | 日期 | 说明 |
-|------|------|------|
-| v0.1.0 | 2024-12-XX | 初始版本 |
+- Go: `govulncheck`
+- Rust: `cargo audit`
+- GitHub Actions: Dependabot

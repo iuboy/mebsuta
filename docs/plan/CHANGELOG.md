@@ -5,6 +5,36 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 维护规则
+
+本仓库包含 Go 和 Rust 两个实现。新条目应按影响范围归类：
+
+- `Go`: 仅影响 `go/` 模块
+- `Rust`: 仅影响 `rust/` workspace
+- `Repository`: 影响仓库治理、CI、文档、发布策略或共享规范
+
+发布标签遵循 `VERSIONING.md`：
+
+- Go: `go/vX.Y.Z`
+- Rust: `rust/vX.Y.Z`
+- 整仓发布: `vX.Y.Z`
+
+## Unreleased
+
+### Repository
+
+- 明确双语言 monorepo 管理方式，新增共享行为规范 `SPEC.md` 和测试矩阵 `TESTING.md`
+- 更新 CI/release 策略，准备按 Go/Rust 路径和 tag 独立验证
+
+### Go
+
+- 限制文件日志权限为 Unix `0600`，并补充权限测试
+- 移除 Syslog handler 中未真正约束重连行为的跨进程文件锁依赖
+
+### Rust
+
+- 暂无
+
 ## [0.3.3] - 2026-04-16
 
 ### 修复
