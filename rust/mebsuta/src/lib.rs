@@ -28,6 +28,9 @@ mod syslog;
 mod time;
 mod value;
 
+#[cfg(test)]
+mod testing;
+
 pub use async_handler::Async;
 pub use config::{
     AsyncConfig, DatabaseConfig as ConfigDatabaseConfig, FileConfig as ConfigFileConfig,

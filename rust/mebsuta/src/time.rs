@@ -1,12 +1,14 @@
 use std::time::SystemTime;
 
+pub(crate) const SECS_PER_DAY: u64 = 86_400;
+
 /// Convert SystemTime to RFC3339 UTC string (no chrono dependency).
 pub(crate) fn system_time_to_rfc3339(t: SystemTime) -> String {
     let duration = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs();
     let nsecs = duration.subsec_nanos();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
+    let days = secs / SECS_PER_DAY;
+    let time_of_day = secs % SECS_PER_DAY;
     let (year, month, day) = days_to_ymd(days);
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
@@ -54,11 +56,40 @@ pub(crate) fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// RFC3164 "Mmm dd hh:mm:ss" timestamp (e.g., "Jan 01 12:30:45").
+pub(crate) fn rfc3164_timestamp() -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let secs = now_secs();
+    let days = secs / SECS_PER_DAY;
+    let time_of_day = secs % SECS_PER_DAY;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+    let (_year, month, day) = days_to_ymd(days);
+    format!(
+        "{} {:02} {:02}:{:02}:{:02}",
+        MONTHS[month as usize - 1],
+        day,
+        hours,
+        minutes,
+        seconds
+    )
+}
+
+/// Sanitize hostname: keep only alphanumeric, dash, dot.
+pub(crate) fn sanitize_hostname(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.')
+        .collect()
+}
+
 /// YYYYMMDD-HHMMSS timestamp for file backup names.
 pub(crate) fn backup_timestamp() -> String {
     let secs = now_secs();
-    let days = secs / 86400;
-    let time_of_day = secs % 86400;
+    let days = secs / SECS_PER_DAY;
+    let time_of_day = secs % SECS_PER_DAY;
     let hours = time_of_day / 3600;
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;

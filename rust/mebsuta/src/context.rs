@@ -82,48 +82,10 @@ impl<H: Handler + Clone + 'static> Middleware<H> for WithContext<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
     use crate::arc_record;
     use crate::level::Level;
-
-    #[derive(Clone)]
-    struct Mock {
-        count: Arc<AtomicUsize>,
-        last_attrs: std::sync::Arc<std::sync::Mutex<Vec<(Key, Value)>>>,
-    }
-
-    impl Mock {
-        fn new() -> Self {
-            Mock {
-                count: Arc::new(AtomicUsize::new(0)),
-                last_attrs: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-        fn count(&self) -> usize {
-            self.count.load(Ordering::Relaxed)
-        }
-        fn last_attrs(&self) -> Vec<(Key, Value)> {
-            self.last_attrs.lock().unwrap().clone()
-        }
-    }
-
-    impl Handler for Mock {
-        fn enabled(&self, _ctx: &Context<'_>) -> bool {
-            true
-        }
-        fn handle(&self, record: &Arc<OwnedRecord>) -> Result<(), Error> {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            *self.last_attrs.lock().unwrap() = record.attrs.clone();
-            Ok(())
-        }
-        fn clone_box(&self) -> Box<dyn Handler> {
-            Box::new(self.clone())
-        }
-        fn set_error_handler(&self, _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
-    }
+    use crate::testing::Mock;
 
     #[test]
     fn extracts_and_merges_attrs() {

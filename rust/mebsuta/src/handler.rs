@@ -8,6 +8,20 @@ use crate::value::{Key, Value};
 pub(crate) type ErrorHandler =
     Arc<std::sync::Mutex<Option<Box<dyn Fn(&str, &Error) + Send + Sync>>>>;
 
+/// Invoke the error handler callback if one is set.
+pub(crate) fn call_error_handler(eh: &ErrorHandler, component: &str, err: &Error) {
+    if let Some(ref handler) = *recover_lock(eh) {
+        handler(component, err);
+    }
+}
+
+/// Recover from Mutex poisoning by accessing the inner value regardless.
+/// For a logging library, continuing with potentially stale state is better
+/// than panicking the host process.
+pub(crate) fn recover_lock<T>(lock: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Core log processing trait.
 ///
 /// All output handlers and decorators implement this trait.
@@ -195,46 +209,7 @@ mod tests {
     use super::*;
     use crate::arc_record;
     use crate::level::Level;
-    use crate::record::Context;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    #[derive(Clone)]
-    struct Mock {
-        count: Arc<AtomicUsize>,
-        last_attrs: Arc<std::sync::Mutex<Vec<(Key, Value)>>>,
-    }
-
-    impl Mock {
-        fn new() -> Self {
-            Mock {
-                count: Arc::new(AtomicUsize::new(0)),
-                last_attrs: Arc::new(std::sync::Mutex::new(Vec::new())),
-            }
-        }
-        #[expect(dead_code)]
-        fn count(&self) -> usize {
-            self.count.load(Ordering::Relaxed)
-        }
-        fn last_attrs(&self) -> Vec<(Key, Value)> {
-            self.last_attrs.lock().unwrap().clone()
-        }
-    }
-
-    impl Handler for Mock {
-        fn enabled(&self, _ctx: &Context<'_>) -> bool {
-            true
-        }
-        fn handle(&self, record: &std::sync::Arc<crate::record::OwnedRecord>) -> Result<(), Error> {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            *self.last_attrs.lock().unwrap() = record.attrs.clone();
-            Ok(())
-        }
-        fn clone_box(&self) -> Box<dyn Handler> {
-            Box::new(self.clone())
-        }
-        fn set_error_handler(&self, _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
-    }
+    use crate::testing::Mock;
 
     #[test]
     fn group_handler_prefixes_keys() {

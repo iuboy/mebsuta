@@ -7,5 +7,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-mebsuta = { path = "../mebsuta" }
+mebsuta = { path = "../mebsuta", version = "0.1" }
 prometheus = "0.14"

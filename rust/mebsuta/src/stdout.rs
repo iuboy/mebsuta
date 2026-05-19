@@ -89,7 +89,7 @@ pub(crate) fn format_text(r: &OwnedRecord) -> String {
     let mut base = format!(
         "{} {} {}",
         level,
-        r.time.elapsed().unwrap_or_default().as_secs(),
+        crate::time::system_time_to_rfc3339(r.time),
         r.message
     );
     if let crate::level::Level::Audit(ref et) = r.level {

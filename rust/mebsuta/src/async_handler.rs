@@ -3,14 +3,19 @@ use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::error::Error;
-use crate::handler::{Handler, Middleware};
+use crate::handler::{Handler, Middleware, recover_lock};
 use crate::record::{Context, OwnedRecord};
 
 const DEFAULT_BUFFER_SIZE: usize = 256;
 
+enum AsyncMessage {
+    Record(Arc<OwnedRecord>),
+    Flush(std::sync::mpsc::Sender<()>),
+}
+
 struct AsyncInner<H: Handler + Clone + 'static> {
     inner: H,
-    tx: Mutex<Option<SyncSender<Arc<OwnedRecord>>>>,
+    tx: Mutex<Option<SyncSender<AsyncMessage>>>,
     closed: AtomicBool,
     dropped: AtomicI64,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
@@ -20,6 +25,8 @@ struct AsyncInner<H: Handler + Clone + 'static> {
 ///
 /// Uses an mpsc sync channel. When the buffer is full, records are dropped
 /// and counted via `dropped()`. Call `close()` (or drop) to drain gracefully.
+/// `flush()` sends a barrier through the channel and waits for the worker to
+/// process all pending records before returning.
 ///
 /// Clones share the same channel and worker thread via `Arc`.
 pub struct Async<H: Handler + Clone + 'static> {
@@ -38,8 +45,16 @@ impl<H: Handler + Clone + 'static> Async<H> {
         let handle = std::thread::Builder::new()
             .name("mebsuta-async-worker".to_owned())
             .spawn(move || {
-                for record in rx.iter() {
-                    let _ = inner_clone.handle(&record);
+                for msg in rx.iter() {
+                    match msg {
+                        AsyncMessage::Record(record) => {
+                            let _ = inner_clone.handle(&record);
+                        }
+                        AsyncMessage::Flush(ack) => {
+                            inner_clone.flush();
+                            let _ = ack.send(());
+                        }
+                    }
                 }
             })
             .expect("failed to spawn async worker thread");
@@ -70,12 +85,12 @@ impl<H: Handler + Clone + 'static> Handler for Async<H> {
             return Ok(());
         }
 
-        let tx = self.shared.tx.lock().expect("async tx lock poisoned");
+        let tx = recover_lock(&self.shared.tx);
         let Some(tx) = tx.as_ref() else {
             return Ok(());
         };
 
-        match tx.try_send(Arc::clone(record)) {
+        match tx.try_send(AsyncMessage::Record(Arc::clone(record))) {
             Ok(()) => Ok(()),
             Err(mpsc::TrySendError::Full(_)) => {
                 self.shared.dropped.fetch_add(1, Ordering::Relaxed);
@@ -99,8 +114,26 @@ impl<H: Handler + Clone + 'static> Handler for Async<H> {
     }
 
     fn flush(&self) {
-        std::thread::yield_now();
-        self.shared.inner.flush();
+        if self.shared.closed.load(Ordering::Relaxed) {
+            return;
+        }
+        let (ack_tx, ack_rx) = mpsc::channel();
+        let tx = recover_lock(&self.shared.tx);
+        let Some(tx) = tx.as_ref() else {
+            return;
+        };
+        // Best-effort: if channel is full, yield and let worker drain naturally
+        match tx.try_send(AsyncMessage::Flush(ack_tx)) {
+            Ok(()) => {
+                let _ = tx;
+                let _ = ack_rx.recv();
+            }
+            Err(_) => {
+                let _ = tx;
+                std::thread::yield_now();
+                self.shared.inner.flush();
+            }
+        }
     }
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
@@ -117,19 +150,9 @@ impl<H: Handler + Clone + 'static> Handler for Async<H> {
             return Some(Ok(()));
         }
 
-        self.shared
-            .tx
-            .lock()
-            .expect("async tx lock poisoned")
-            .take();
+        recover_lock(&self.shared.tx).take();
 
-        if let Some(handle) = self
-            .shared
-            .worker
-            .lock()
-            .expect("async worker lock poisoned")
-            .take()
-        {
+        if let Some(handle) = recover_lock(&self.shared.worker).take() {
             let _ = handle.join();
         }
 
@@ -142,22 +165,8 @@ impl<H: Handler + Clone + 'static> Drop for Async<H> {
         if Arc::strong_count(&self.shared) > 1 {
             return;
         }
-        if !self.shared.closed.load(Ordering::Relaxed) {
-            self.shared.closed.store(true, Ordering::Relaxed);
-        }
-        self.shared
-            .tx
-            .lock()
-            .expect("async tx lock poisoned")
-            .take();
-        if let Some(handle) = self
-            .shared
-            .worker
-            .lock()
-            .expect("async worker lock poisoned")
-            .take()
-        {
-            let _ = handle.join();
+        if let Some(result) = self.close_if_needed() {
+            let _ = result;
         }
     }
 }
@@ -170,41 +179,10 @@ impl<H: Handler + Clone + 'static> Middleware<H> for Async<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
     use super::*;
     use crate::arc_record;
     use crate::level::Level;
-
-    #[derive(Clone)]
-    struct Mock {
-        count: Arc<AtomicUsize>,
-    }
-
-    impl Mock {
-        fn new() -> Self {
-            Mock {
-                count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-        fn count(&self) -> usize {
-            self.count.load(AtomicOrdering::Relaxed)
-        }
-    }
-
-    impl Handler for Mock {
-        fn enabled(&self, _ctx: &crate::record::Context<'_>) -> bool {
-            true
-        }
-        fn handle(&self, _record: &Arc<OwnedRecord>) -> Result<(), Error> {
-            self.count.fetch_add(1, AtomicOrdering::Relaxed);
-            Ok(())
-        }
-        fn clone_box(&self) -> Box<dyn Handler> {
-            Box::new(self.clone())
-        }
-        fn set_error_handler(&self, _: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
-    }
+    use crate::testing::Mock;
 
     #[test]
     fn async_writes_all_records() {
@@ -259,10 +237,32 @@ mod tests {
         let mut h1 = Async::new(mock.clone());
         let h2 = h1.clone_box();
         drop(h2);
-        // h1 should still work after clone is dropped
         let r = arc_record(Level::Info, "after clone drop");
         h1.handle(&r).unwrap();
         h1.close_if_needed();
         assert_eq!(mock.count(), 1);
+    }
+
+    #[test]
+    fn async_flush_drains_channel() {
+        let mock = Mock::new();
+        let mut h = Async::new(mock.clone());
+        for i in 0..10 {
+            let r = arc_record(Level::Info, format!("msg {i}"));
+            h.handle(&r).unwrap();
+        }
+        h.flush();
+        assert_eq!(mock.count(), 10);
+        h.close_if_needed();
+    }
+
+    #[test]
+    fn async_closed_ignores_writes() {
+        let mock = Mock::new();
+        let mut h = Async::new(mock.clone());
+        h.close_if_needed();
+        let r = arc_record(Level::Info, "after close");
+        h.handle(&r).unwrap();
+        assert_eq!(mock.count(), 0);
     }
 }

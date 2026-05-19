@@ -4,7 +4,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::error::Error;
-use crate::handler::{Close, ErrorHandler, Handler, Terminal};
+use crate::handler::{Close, ErrorHandler, Handler, Terminal, call_error_handler, recover_lock};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 use crate::time::system_time_to_rfc3339;
@@ -50,7 +50,6 @@ struct DatabaseShared {
     closed: AtomicBool,
     dropped: AtomicI64,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
-    conn: Mutex<Option<rusqlite::Connection>>,
 }
 
 /// Handler that writes log records to a SQLite database in batches.
@@ -65,21 +64,6 @@ impl DatabaseHandler {
     pub fn new(level: Level, config: DatabaseConfig) -> Result<Self, Error> {
         crate::config::validate_table_name(&config.table)?;
 
-        let conn = rusqlite::Connection::open(&config.path)?;
-        let table = &config.table;
-        conn.execute_batch(&format!(
-            "CREATE TABLE IF NOT EXISTS {table} (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                time TEXT NOT NULL,
-                level TEXT NOT NULL,
-                event_type TEXT,
-                actor TEXT,
-                success INTEGER,
-                message TEXT NOT NULL,
-                fields TEXT NOT NULL DEFAULT '{{}}'
-            )"
-        ))?;
-
         let batch_size = config.batch_size;
         let batch_interval = config.batch_interval_secs;
         let retry_delay = config.retry_delay_ms;
@@ -89,6 +73,8 @@ impl DatabaseHandler {
             mpsc::sync_channel(batch_size * 10);
 
         let db_path = config.path.clone();
+        let error_handler: ErrorHandler = Arc::new(Mutex::new(None));
+        let worker_eh = error_handler.clone();
         let worker = std::thread::Builder::new()
             .name("mebsuta-db-worker".to_owned())
             .spawn(move || {
@@ -99,6 +85,7 @@ impl DatabaseHandler {
                     batch_size,
                     batch_interval,
                     retry_delay,
+                    &worker_eh,
                 );
             })
             .expect("failed to spawn database worker thread");
@@ -107,13 +94,12 @@ impl DatabaseHandler {
             level,
             config,
             shared: Arc::new(DatabaseShared {
-                conn: Mutex::new(Some(conn)),
                 tx: Mutex::new(Some(tx)),
                 closed: AtomicBool::new(false),
                 dropped: AtomicI64::new(0),
                 worker: Mutex::new(Some(worker)),
             }),
-            error_handler: Arc::new(Mutex::new(None)),
+            error_handler,
         })
     }
 
@@ -143,17 +129,6 @@ impl DatabaseHandler {
             fields,
         }
     }
-
-    #[expect(dead_code)]
-    fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self
-            .error_handler
-            .lock()
-            .expect("db error handler lock poisoned")
-        {
-            eh(component, err);
-        }
-    }
 }
 
 fn run_worker(
@@ -163,11 +138,31 @@ fn run_worker(
     batch_size: usize,
     batch_interval_secs: u64,
     retry_delay_ms: u64,
+    error_handler: &ErrorHandler,
 ) {
     let conn = match rusqlite::Connection::open(db_path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            call_error_handler(error_handler, "database", &Error::from(e));
+            return;
+        }
     };
+
+    if let Err(e) = conn.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS {table} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            time TEXT NOT NULL,
+            level TEXT NOT NULL,
+            event_type TEXT,
+            actor TEXT,
+            success INTEGER,
+            message TEXT NOT NULL,
+            fields TEXT NOT NULL DEFAULT '{{}}'
+        )"
+    )) {
+        call_error_handler(error_handler, "database", &Error::from(e));
+        return;
+    }
 
     let mut batch: Vec<LogEntry> = Vec::with_capacity(batch_size);
 
@@ -178,19 +173,19 @@ fn run_worker(
             Ok(entry) => {
                 batch.push(entry);
                 if batch.len() >= batch_size {
-                    flush_batch(&conn, table, &batch, retry_delay_ms);
+                    flush_batch(&conn, table, &batch, retry_delay_ms, error_handler);
                     batch.clear();
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if !batch.is_empty() {
-                    flush_batch(&conn, table, &batch, retry_delay_ms);
+                    flush_batch(&conn, table, &batch, retry_delay_ms, error_handler);
                     batch.clear();
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 if !batch.is_empty() {
-                    flush_batch(&conn, table, &batch, retry_delay_ms);
+                    flush_batch(&conn, table, &batch, retry_delay_ms, error_handler);
                 }
                 return;
             }
@@ -198,14 +193,23 @@ fn run_worker(
     }
 }
 
-fn flush_batch(conn: &rusqlite::Connection, table: &str, batch: &[LogEntry], retry_delay_ms: u64) {
+fn flush_batch(
+    conn: &rusqlite::Connection,
+    table: &str,
+    batch: &[LogEntry],
+    retry_delay_ms: u64,
+    error_handler: &ErrorHandler,
+) {
     for attempt in 0..FLUSH_RETRIES {
         match insert_batch(conn, table, batch) {
             Ok(()) => return,
-            Err(_) if attempt < FLUSH_RETRIES - 1 => {
+            Err(e) if attempt < FLUSH_RETRIES - 1 => {
+                call_error_handler(error_handler, "database", &e);
                 std::thread::sleep(std::time::Duration::from_millis(retry_delay_ms));
             }
-            Err(_) => return,
+            Err(e) => {
+                call_error_handler(error_handler, "database", &e);
+            }
         }
     }
 }
@@ -243,7 +247,7 @@ impl Handler for DatabaseHandler {
             return Ok(());
         }
 
-        let tx = self.shared.tx.lock().expect("db tx lock poisoned");
+        let tx = recover_lock(&self.shared.tx);
         let Some(tx) = tx.as_ref() else {
             return Ok(());
         };
@@ -268,14 +272,22 @@ impl Handler for DatabaseHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self
-            .error_handler
-            .lock()
-            .expect("db error handler lock poisoned") = handler;
+        *recover_lock(&self.error_handler) = handler;
     }
 
+    /// Hint to the worker that pending records should be written soon.
+    ///
+    /// This is **best-effort**: it yields the current thread to give the worker
+    /// a chance to drain the channel, but does NOT guarantee all pending records
+    /// have been committed to the database when it returns.
+    ///
+    /// For guaranteed persistence (e.g. at shutdown), call [`Close::close()`]
+    /// which drops the sender and joins the worker thread, ensuring all queued
+    /// records are flushed before returning.
     fn flush(&self) {
-        std::thread::yield_now();
+        if !self.shared.closed.load(Ordering::Relaxed) {
+            std::thread::yield_now();
+        }
     }
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
@@ -297,27 +309,12 @@ impl Close for DatabaseHandler {
             return Ok(());
         }
 
-        self.shared.tx.lock().expect("db tx lock poisoned").take();
+        recover_lock(&self.shared.tx).take();
 
-        if let Some(handle) = self
-            .shared
-            .worker
-            .lock()
-            .expect("db worker lock poisoned")
-            .take()
-        {
+        if let Some(handle) = recover_lock(&self.shared.worker).take() {
             let _ = handle.join();
         }
 
-        if let Some(conn) = self
-            .shared
-            .conn
-            .lock()
-            .expect("db conn lock poisoned")
-            .take()
-        {
-            let _ = conn.close();
-        }
         Ok(())
     }
 }
@@ -327,28 +324,7 @@ impl Drop for DatabaseHandler {
         if Arc::strong_count(&self.shared) > 1 {
             return;
         }
-        if !self.shared.closed.load(Ordering::Relaxed) {
-            self.shared.closed.store(true, Ordering::Relaxed);
-        }
-        self.shared.tx.lock().expect("db tx lock poisoned").take();
-        if let Some(handle) = self
-            .shared
-            .worker
-            .lock()
-            .expect("db worker lock poisoned")
-            .take()
-        {
-            let _ = handle.join();
-        }
-        if let Some(conn) = self
-            .shared
-            .conn
-            .lock()
-            .expect("db conn lock poisoned")
-            .take()
-        {
-            let _ = conn.close();
-        }
+        let _ = self.close();
     }
 }
 

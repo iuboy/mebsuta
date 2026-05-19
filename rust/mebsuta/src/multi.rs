@@ -130,46 +130,10 @@ impl Handler for MultiHandler {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-
     use super::*;
     use crate::arc_record;
     use crate::level::Level;
-
-    /// Mock handler that counts handle() calls.
-    #[derive(Clone)]
-    struct Mock {
-        count: Arc<AtomicUsize>,
-    }
-
-    impl Mock {
-        fn new() -> Self {
-            Mock {
-                count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-
-        fn count(&self) -> usize {
-            self.count.load(AtomicOrdering::Relaxed)
-        }
-    }
-
-    impl Handler for Mock {
-        fn enabled(&self, _ctx: &Context<'_>) -> bool {
-            true
-        }
-
-        fn handle(&self, _record: &Arc<OwnedRecord>) -> Result<(), Error> {
-            self.count.fetch_add(1, AtomicOrdering::Relaxed);
-            Ok(())
-        }
-
-        fn clone_box(&self) -> Box<dyn Handler> {
-            Box::new(self.clone())
-        }
-
-        fn set_error_handler(&self, _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
-    }
+    use crate::testing::Mock;
 
     #[test]
     fn fan_out_two_handlers() {

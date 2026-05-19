@@ -8,11 +8,13 @@ use std::sync::{Arc, Mutex};
 use std::os::unix::fs::PermissionsExt;
 
 use crate::error::Error;
-use crate::handler::{Close, ErrorHandler, Handler, Terminal};
+use crate::handler::{Close, ErrorHandler, Handler, Terminal, call_error_handler, recover_lock};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 use crate::stdout::{Format, format_json, format_text};
 use crate::time::{backup_timestamp, now_secs};
+
+pub(crate) const DEFAULT_MAX_FILE_SIZE_BYTES: u64 = 100 * 1024 * 1024;
 
 /// File rotation configuration.
 #[derive(Debug, Clone)]
@@ -27,7 +29,7 @@ pub struct RotationConfig {
 impl Default for RotationConfig {
     fn default() -> Self {
         RotationConfig {
-            max_size_bytes: 100 * 1024 * 1024,
+            max_size_bytes: DEFAULT_MAX_FILE_SIZE_BYTES,
             rotate_interval_secs: 0,
             max_backups: 0,
             max_age_days: 0,
@@ -63,7 +65,7 @@ struct FileState {
     rotated_at: AtomicU64,
     closed: AtomicBool,
     rotation: RotationConfig,
-    compress_wg: Mutex<Option<std::thread::JoinHandle<()>>>,
+    compress_wg: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl FileHandler {
@@ -97,7 +99,7 @@ impl FileHandler {
             rotated_at: AtomicU64::new(now_secs()),
             closed: AtomicBool::new(false),
             rotation,
-            compress_wg: Mutex::new(None),
+            compress_wg: Mutex::new(Vec::new()),
         });
 
         Ok(FileHandler {
@@ -114,32 +116,27 @@ impl FileHandler {
             Format::Text => format_text(record),
         };
 
-        let mut writer = self.state.writer.lock().expect("file writer lock poisoned");
+        let mut writer = recover_lock(&self.state.writer);
         let bytes = output.as_bytes();
         if let Err(e) = writer.write_all(bytes) {
-            self.call_error_handler("file_handler", &Error::Io(e));
+            if matches!(record.level, Level::Error | Level::Audit(_)) {
+                eprintln!(
+                    "mebsuta: file write failed for {:?} record: {}",
+                    record.level, e
+                );
+            }
+            call_error_handler(&self.error_handler, "file", &Error::Io(e));
             return Ok(());
         }
         if let Err(e) = writer.write_all(b"\n") {
-            self.call_error_handler("file_handler", &Error::Io(e));
+            call_error_handler(&self.error_handler, "file", &Error::Io(e));
             return Ok(());
         }
-        let _ = writer.flush();
         self.state
             .size
             .fetch_add(bytes.len() as i64 + 1, Ordering::Relaxed);
 
         Ok(())
-    }
-
-    fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self
-            .error_handler
-            .lock()
-            .expect("file error handler lock poisoned")
-        {
-            eh(component, err);
-        }
     }
 
     fn needs_rotation(&self) -> bool {
@@ -159,7 +156,7 @@ impl FileHandler {
     }
 
     fn do_rotate(&self) {
-        let mut writer = self.state.writer.lock().expect("file writer lock poisoned");
+        let mut writer = recover_lock(&self.state.writer);
         if self.state.closed.load(Ordering::Relaxed) {
             return;
         }
@@ -171,31 +168,32 @@ impl FileHandler {
         let path = &self.state.path;
 
         if let Err(e) = writer.get_mut().flush() {
-            self.call_error_handler("file", &Error::Io(e));
+            call_error_handler(&self.error_handler, "file", &Error::Io(e));
         }
 
-        let file = writer.get_mut();
-        if let Err(e) = file.sync_all() {
-            self.call_error_handler("file", &Error::Io(e));
+        if let Err(e) = writer.get_mut().sync_all() {
+            call_error_handler(&self.error_handler, "file", &Error::Io(e));
         }
-        drop(writer);
 
         if let Err(e) = fs::rename(path, &backup) {
-            self.call_error_handler("file", &Error::from(e));
+            call_error_handler(&self.error_handler, "file", &Error::from(e));
             return;
         }
 
         match OpenOptions::new().create(true).append(true).open(path) {
             Ok(new_file) => {
                 restrict_file_permissions(&new_file);
-                *self.state.writer.lock().expect("file writer lock poisoned") =
-                    BufWriter::new(new_file);
+                *writer = BufWriter::new(new_file);
                 self.state.size.store(0, Ordering::Relaxed);
                 self.state.rotated_at.store(now_secs(), Ordering::Relaxed);
             }
             Err(e) => {
-                self.call_error_handler("file", &Error::from(e));
-                self.state.closed.store(true, Ordering::Relaxed);
+                call_error_handler(&self.error_handler, "file", &Error::from(e));
+                if let Ok(fallback) = OpenOptions::new().create(true).append(true).open(path) {
+                    restrict_file_permissions(&fallback);
+                    *writer = BufWriter::new(fallback);
+                }
+                self.state.rotated_at.store(now_secs(), Ordering::Relaxed);
             }
         }
 
@@ -204,18 +202,13 @@ impl FileHandler {
             let eh = self.error_handler.clone();
             let handle = std::thread::spawn(move || {
                 compress_file(&backup_path, move |e: &Error| {
-                    if let Some(ref handler) =
-                        *eh.lock().expect("compress error handler lock poisoned")
-                    {
-                        handler("file", e);
-                    }
+                    call_error_handler(&eh, "file", e);
                 });
             });
-            *self
-                .state
-                .compress_wg
-                .lock()
-                .expect("compress wg lock poisoned") = Some(handle);
+            let mut wg = recover_lock(&self.state.compress_wg);
+            // Reap finished handles to prevent unbounded growth
+            wg.retain(|h| !h.is_finished());
+            wg.push(handle);
         }
 
         self.cleanup_backups();
@@ -257,35 +250,47 @@ impl FileHandler {
         };
 
         let prefix = format!("{base}.");
-        let mut backups: Vec<(String, std::time::SystemTime)> = Vec::new();
+        let mut backups: Vec<String> = Vec::new();
 
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
             if name == base || !name.starts_with(&prefix) {
                 continue;
             }
-            if let Ok(meta) = entry.metadata()
-                && let Ok(modified) = meta.modified()
-            {
-                backups.push((name, modified));
-            }
+            backups.push(name);
         }
 
-        backups.sort_by_key(|b| std::cmp::Reverse(b.1));
+        // Sort by filename (contains embedded timestamp) descending
+        backups.sort_by(|a, b| b.cmp(a));
 
         if cfg.max_backups > 0 && backups.len() > cfg.max_backups {
-            for b in &backups[cfg.max_backups..] {
-                let _ = fs::remove_file(dir.join(&b.0));
+            for name in &backups[cfg.max_backups..] {
+                let _ = fs::remove_file(dir.join(name));
             }
             backups.truncate(cfg.max_backups);
         }
 
         if cfg.max_age_days > 0 {
-            let cutoff = std::time::SystemTime::now()
-                - std::time::Duration::from_secs(cfg.max_age_days as u64 * 86400);
-            for b in &backups {
-                if b.1 < cutoff {
-                    let _ = fs::remove_file(dir.join(&b.0));
+            let cutoff_secs =
+                now_secs().saturating_sub(cfg.max_age_days as u64 * crate::time::SECS_PER_DAY);
+            let cutoff_ts = {
+                let days = cutoff_secs / crate::time::SECS_PER_DAY;
+                let time_of_day = cutoff_secs % crate::time::SECS_PER_DAY;
+                let (y, m, d) = crate::time::days_to_ymd(days);
+                let h = time_of_day / 3600;
+                let min = (time_of_day % 3600) / 60;
+                let sec = time_of_day % 60;
+                format!("{y:04}{m:02}{d:02}-{h:02}{min:02}{sec:02}")
+            };
+            for name in &backups {
+                // Extract timestamp from filename: basename.YYYYMMDD-HHMMSS[.N]
+                let suffix = &name[prefix.len()..];
+                let ts_part: String = suffix
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '-')
+                    .collect();
+                if ts_part < cutoff_ts {
+                    let _ = fs::remove_file(dir.join(name));
                 }
             }
         }
@@ -323,16 +328,12 @@ impl Handler for FileHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self
-            .error_handler
-            .lock()
-            .expect("file error handler lock poisoned") = handler;
+        *recover_lock(&self.error_handler) = handler;
     }
 
     fn flush(&self) {
-        if let Ok(mut w) = self.state.writer.lock() {
-            let _ = w.flush();
-        }
+        let mut w = recover_lock(&self.state.writer);
+        let _ = w.flush();
     }
 
     fn close_if_needed(&mut self) -> Option<Result<(), Error>> {
@@ -351,23 +352,26 @@ impl Close for FileHandler {
             return Ok(());
         }
 
-        if let Some(handle) = self
-            .state
-            .compress_wg
-            .lock()
-            .expect("compress wg lock poisoned")
-            .take()
-        {
+        for handle in recover_lock(&self.state.compress_wg).drain(..) {
             let _ = handle.join();
         }
 
-        let mut writer = self.state.writer.lock().expect("file writer lock poisoned");
+        let mut writer = recover_lock(&self.state.writer);
         let _ = writer.flush();
         Ok(())
     }
 }
 
 impl Terminal for FileHandler {}
+
+impl Drop for FileHandler {
+    fn drop(&mut self) {
+        if Arc::strong_count(&self.state) > 1 {
+            return;
+        }
+        let _ = self.close();
+    }
+}
 
 fn compress_file(backup_path: &Path, on_error: impl Fn(&Error) + Send) {
     use std::io::{Read, Write};
@@ -587,6 +591,54 @@ mod tests {
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "log file should have 0600 permissions");
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn concurrent_writes_no_loss() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let path = temp_log_path("concurrent");
+        let _ = fs::remove_file(&path);
+        let h = Arc::new(std::sync::Mutex::new(
+            FileHandler::new(&path, Level::Info, Format::Json).unwrap(),
+        ));
+
+        let n_threads = 4;
+        let n_records = 50;
+        let mut handles = Vec::new();
+
+        for i in 0..n_threads {
+            let h = Arc::clone(&h);
+            handles.push(thread::spawn(move || {
+                for j in 0..n_records {
+                    let r = arc_record(Level::Info, &format!("t{}-r{}", i, j));
+                    let h = h.lock().unwrap();
+                    h.handle(&r).unwrap();
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        {
+            let mut h = h.lock().unwrap();
+            h.close().unwrap();
+        }
+
+        let content = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            n_threads * n_records,
+            "expected {} records, got {}",
+            n_threads * n_records,
+            lines.len()
+        );
 
         cleanup(&path);
     }

@@ -50,17 +50,21 @@ impl<H: Handler + Clone + 'static> Handler for Sampling<H> {
 
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
         let window_start = self.window_start.load(Ordering::Relaxed);
-        if count > 0 && count - window_start >= self.window_ticks {
+        let local_count = count.saturating_sub(window_start);
+
+        if local_count >= self.window_ticks && count > 0 {
             self.counter.store(1, Ordering::Relaxed);
             self.window_start.store(count, Ordering::Relaxed);
             return self.inner.handle(record);
         }
 
-        let local_count = count - window_start;
         if local_count < self.initial {
             return self.inner.handle(record);
         }
-        if (local_count - self.initial).is_multiple_of(self.thereafter) {
+        if local_count
+            .saturating_sub(self.initial)
+            .is_multiple_of(self.thereafter)
+        {
             return self.inner.handle(record);
         }
 
@@ -99,47 +103,9 @@ impl<H: Handler + Clone + 'static> Middleware<H> for Sampling<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::*;
     use crate::arc_record;
-    use crate::record::Context;
-
-    /// Mock handler that counts handle() calls.
-    #[derive(Clone)]
-    struct Mock {
-        count: Arc<AtomicUsize>,
-    }
-
-    impl Mock {
-        fn new() -> Self {
-            Mock {
-                count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-
-        fn count(&self) -> usize {
-            self.count.load(Ordering::Relaxed)
-        }
-    }
-
-    impl Handler for Mock {
-        fn enabled(&self, _ctx: &Context<'_>) -> bool {
-            true
-        }
-
-        fn handle(&self, _record: &std::sync::Arc<OwnedRecord>) -> Result<(), Error> {
-            self.count.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        }
-
-        fn clone_box(&self) -> Box<dyn Handler> {
-            Box::new(self.clone())
-        }
-
-        fn set_error_handler(&self, _handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {}
-    }
+    use crate::testing::Mock;
 
     #[test]
     fn initial_passes_all() {

@@ -315,4 +315,17 @@ mod tests {
         assert_eq!(r.actor.as_deref(), Some("admin"));
         assert_eq!(r.success, Some(false));
     }
+
+    #[test]
+    fn to_json_nonfinite_floats_valid() {
+        let r = RecordBuilder::new(Level::Info, "float test")
+            .attr("nan", Value::Float(f64::NAN))
+            .attr("inf", Value::Float(f64::INFINITY))
+            .attr("neg_inf", Value::Float(f64::NEG_INFINITY))
+            .build();
+        let json = r.to_json_string().unwrap();
+        // Output must be valid JSON (serde_json replaces non-finite with null or errors)
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["message"].is_string());
+    }
 }

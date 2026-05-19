@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::error::Error;
-use crate::handler::{Close, ErrorHandler, Handler, Terminal};
+use crate::handler::{Close, ErrorHandler, Handler, Terminal, call_error_handler, recover_lock};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 
@@ -53,9 +53,15 @@ impl Default for SyslogConfig {
 }
 
 fn hostname() -> String {
-    std::env::var("HOSTNAME")
+    let raw = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("hostname"))
-        .unwrap_or_else(|_| "localhost".to_owned())
+        .unwrap_or_else(|_| "localhost".to_owned());
+    let sanitized = crate::time::sanitize_hostname(&raw);
+    if sanitized.is_empty() {
+        "localhost".to_owned()
+    } else {
+        sanitized
+    }
 }
 
 enum SyslogConn {
@@ -106,11 +112,14 @@ impl SyslogHandler {
         let host = &self.config.hostname;
         let tag = &self.config.tag;
         let pid = std::process::id();
-        let msg = truncate(&record.message, MAX_SYSLOG_MSG_SIZE);
 
         match self.config.format {
             SyslogFormat::RFC3164 => {
-                format!("<{priority}>{host} {tag}[{pid}]: {msg}\n")
+                let ts = crate::time::rfc3164_timestamp();
+                let header_len = format!("<{priority}>{ts} {host} {tag}[{pid}]: ").len();
+                let msg_budget = MAX_SYSLOG_MSG_SIZE.saturating_sub(header_len + 1);
+                let msg = truncate(&record.message, msg_budget);
+                format!("<{priority}>{ts} {host} {tag}[{pid}]: {msg}\n")
             }
             SyslogFormat::RFC5424 => {
                 let mut sd = String::from("[");
@@ -118,23 +127,43 @@ impl SyslogHandler {
                     if sd.len() > 1 {
                         sd.push(' ');
                     }
-                    sd.push_str(&format!("{}=\"{}\"", k, escape_sd(&v.to_string())));
+                    sd.push_str(&format!(
+                        "{}=\"{}\"",
+                        escape_sd(k.as_str()),
+                        escape_sd(&v.to_string())
+                    ));
                 }
                 sd.push(']');
                 let sd_field = if sd == "[]" { "-".to_owned() } else { sd };
+                let header_len = format!("<{priority}>1 - {host} {tag} {pid} - {sd_field} ").len();
+                let msg_budget = MAX_SYSLOG_MSG_SIZE.saturating_sub(header_len + 1);
+                let msg = truncate(&record.message, msg_budget);
                 format!("<{priority}>1 - {host} {tag} {pid} - {sd_field} {msg}\n")
             }
         }
     }
 
     fn send(&self, data: &[u8]) -> Result<(), Error> {
-        let mut guard = self.shared.conn.lock().expect("syslog conn lock poisoned");
+        let mut guard = recover_lock(&self.shared.conn);
         match guard.as_mut() {
             Some(SyslogConn::Udp(socket)) => {
                 socket.send_to(data, &self.config.address)?;
             }
             Some(SyslogConn::Tcp(stream)) => {
-                stream.write_all(data)?;
+                if stream.write_all(data).is_err() {
+                    // Attempt reconnect once
+                    match TcpStream::connect(&self.config.address) {
+                        Ok(new_stream) => {
+                            *guard = Some(SyslogConn::Tcp(new_stream));
+                            if let Some(SyslogConn::Tcp(s)) = guard.as_mut() {
+                                s.write_all(data)?;
+                            }
+                        }
+                        Err(reconnect_err) => {
+                            return Err(Error::Io(reconnect_err));
+                        }
+                    }
+                }
             }
             None => {
                 return Err(Error::Io(std::io::Error::new(
@@ -144,16 +173,6 @@ impl SyslogHandler {
             }
         }
         Ok(())
-    }
-
-    fn call_error_handler(&self, component: &str, err: &Error) {
-        if let Some(ref eh) = *self
-            .error_handler
-            .lock()
-            .expect("syslog error handler lock poisoned")
-        {
-            eh(component, err);
-        }
     }
 }
 
@@ -226,7 +245,13 @@ impl Handler for SyslogHandler {
         match self.send(msg.as_bytes()) {
             Ok(()) => Ok(()),
             Err(e) => {
-                self.call_error_handler("syslog", &e);
+                call_error_handler(&self.error_handler, "syslog", &e);
+                if matches!(record.level, Level::Error | Level::Audit(_)) {
+                    eprintln!(
+                        "mebsuta: syslog send failed for {:?} record: {}",
+                        record.level, e
+                    );
+                }
                 Ok(())
             }
         }
@@ -242,14 +267,11 @@ impl Handler for SyslogHandler {
     }
 
     fn set_error_handler(&self, handler: Option<Box<dyn Fn(&str, &Error) + Send + Sync>>) {
-        *self
-            .error_handler
-            .lock()
-            .expect("syslog error handler lock poisoned") = handler;
+        *recover_lock(&self.error_handler) = handler;
     }
 
     fn flush(&self) {
-        let mut guard = self.shared.conn.lock().expect("syslog conn lock poisoned");
+        let mut guard = recover_lock(&self.shared.conn);
         if let Some(SyslogConn::Tcp(stream)) = guard.as_mut() {
             let _ = stream.flush();
         }
@@ -274,7 +296,7 @@ impl Close for SyslogHandler {
             return Ok(());
         }
         self.flush();
-        *self.shared.conn.lock().expect("syslog conn lock poisoned") = None;
+        *recover_lock(&self.shared.conn) = None;
         Ok(())
     }
 }
@@ -284,11 +306,7 @@ impl Drop for SyslogHandler {
         if Arc::strong_count(&self.shared) > 1 {
             return;
         }
-        if !self.shared.closed.load(Ordering::Relaxed) {
-            self.shared.closed.store(true, Ordering::Relaxed);
-        }
-        self.flush();
-        *self.shared.conn.lock().expect("syslog conn lock poisoned") = None;
+        let _ = self.close();
     }
 }
 

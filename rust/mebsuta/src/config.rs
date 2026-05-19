@@ -127,7 +127,7 @@ impl Default for FileConfig {
         FileConfig {
             enabled: false,
             path: String::new(),
-            max_size_bytes: 100 * 1024 * 1024,
+            max_size_bytes: crate::file::DEFAULT_MAX_FILE_SIZE_BYTES,
             rotate_interval_secs: 0,
             max_backups: 5,
             max_age_days: 180,
@@ -151,7 +151,7 @@ impl FileConfig {
             )));
         }
         if self.max_size_bytes == 0 {
-            self.max_size_bytes = 100 * 1024 * 1024;
+            self.max_size_bytes = crate::file::DEFAULT_MAX_FILE_SIZE_BYTES;
         }
         Ok(())
     }
