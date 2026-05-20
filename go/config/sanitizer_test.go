@@ -114,16 +114,15 @@ func TestSanitizeForLog(t *testing.T) {
 }
 
 func TestMaskPasswordInDSN_UnknownFormat(t *testing.T) {
-	// Short unknown DSN
+	// Unknown formats must not leak any original content
 	got := maskPasswordInDSN("short")
-	if got != "(hidden)" {
-		t.Errorf("short unknown DSN should be fully hidden, got %q", got)
+	if got != "(redacted)" {
+		t.Errorf("short unknown DSN should be (redacted), got %q", got)
 	}
 
-	// Long unknown DSN
 	longDSN := "some_long_connection_string_that_exceeds_20_chars_easily"
 	got = maskPasswordInDSN(longDSN)
-	if !strings.Contains(got, "...(hidden)") {
-		t.Errorf("long unknown DSN should be truncated, got %q", got)
+	if got != "(redacted)" {
+		t.Errorf("long unknown DSN should be (redacted), got %q", got)
 	}
 }

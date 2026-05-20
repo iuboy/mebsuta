@@ -350,7 +350,7 @@ func compressFile(path string, eh ErrorHandler) {
 	}
 	defer src.Close()
 
-	dst, err := os.Create(tmpPath)
+	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		ReportError(eh, "file", fmt.Errorf("compress create temp: %w", err))
 		return

@@ -79,6 +79,14 @@ func (sc *SyslogConfig) Validate() error {
 	if sc.Tag == "" {
 		sc.Tag = DefaultSyslogTag
 	}
+	if len(sc.Tag) > 48 {
+		return fmt.Errorf("syslog tag too long: %d chars (max 48)", len(sc.Tag))
+	}
+	for _, r := range sc.Tag {
+		if r < 33 || r > 126 {
+			return fmt.Errorf("syslog tag contains non-printable character: %q", r)
+		}
+	}
 	if sc.RetryDelay <= 0 {
 		sc.RetryDelay = DefaultRetryDelay
 	}

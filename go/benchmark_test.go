@@ -170,3 +170,79 @@ type nopMetrics struct{}
 func (nopMetrics) ObserveHandle(_ time.Duration) {}
 func (nopMetrics) IncError(_ string)             {}
 func (nopMetrics) IncDropped(_ string)           {}
+
+// Parallel benchmarks quantify goroutine contention overhead.
+
+func BenchmarkStdoutHandler_JSON_Parallel(b *testing.B) {
+	var buf bytes.Buffer
+	h := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
+	logger := slog.New(h)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			logger.Info("benchmark", "key", "value", "n", 42)
+		}
+	})
+}
+
+func BenchmarkSafeMultiHandler_2Handlers_Parallel(b *testing.B) {
+	var buf1, buf2 bytes.Buffer
+	h1 := newStdoutHandlerWithWriter(&buf1, slog.LevelInfo, JSON)
+	h2 := newStdoutHandlerWithWriter(&buf2, slog.LevelInfo, JSON)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	logger := slog.New(multi)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			logger.Info("benchmark", "key", "value", "n", 42)
+		}
+	})
+}
+
+// Handler chain: Sampling → Async → Stdout (common production config).
+
+func BenchmarkHandlerChain_SamplingAsyncStdout(b *testing.B) {
+	var buf bytes.Buffer
+	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
+	async := WithAsync(stdout, AsyncConfig{BufferSize: 4096})
+	sampled := WithSampling(async, config.SamplingConfig{
+		Enabled:    true,
+		Initial:    b.N + 100,
+		Thereafter: 1,
+		Window:     10 * time.Second,
+	})
+	logger := slog.New(sampled)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		logger.Info("benchmark", "key", "value", "n", 42)
+	}
+
+	if closer, ok := sampled.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+}
+
+// AsyncHandler with larger buffer to avoid drops under benchmark load.
+
+func BenchmarkAsyncHandler_LargeBuffer(b *testing.B) {
+	var buf bytes.Buffer
+	inner := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
+	h := WithAsync(inner, AsyncConfig{BufferSize: 65536})
+	logger := slog.New(h)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for range b.N {
+		logger.Info("benchmark", "key", "value", "n", 42)
+	}
+
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+}

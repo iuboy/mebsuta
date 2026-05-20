@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,6 +46,18 @@ func (h *countHandler) Levels() []slog.Level {
 	cp := make([]slog.Level, len(h.levels))
 	copy(cp, h.levels)
 	return cp
+}
+
+func (h *countHandler) ErrorLevelCount() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var n int64
+	for _, l := range h.levels {
+		if l >= slog.LevelError {
+			n++
+		}
+	}
+	return n
 }
 
 func closeSampling(t *testing.T, h slog.Handler) {
@@ -508,4 +521,91 @@ func TestWithSampling_AuditAlwaysRecorded(t *testing.T) {
 	if inner.Count() != 10 {
 		t.Errorf("all audit records should bypass sampling, got %d/10", inner.Count())
 	}
+}
+
+// =============================================================================
+// RFC5424 structured data value escaping
+// =============================================================================
+
+func TestEscapeSDValue(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"plain", "plain"},
+		{`with"quote`, `with\"quote`},
+		{`back\slash`, `back\\slash`},
+		{`bracket]end`, `bracket\]end`},
+		{`all"three\here]`, `all\"three\\here\]`},
+		{"", ""},
+		{`noescape`, `noescape`},
+		{`"start`, `\"start`},
+		{`end"`, `end\"`},
+	}
+
+	for _, tt := range tests {
+		got := escapeSDValue(tt.input)
+		if got != tt.expected {
+			t.Errorf("escapeSDValue(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+// =============================================================================
+// generateHostname 边界测试
+// =============================================================================
+
+func TestGenerateHostname(t *testing.T) {
+	t.Run("static valid", func(t *testing.T) {
+		got, err := generateHostname("my-server.local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "my-server.local" {
+			t.Errorf("got %q, want %q", got, "my-server.local")
+		}
+	})
+
+	t.Run("static with special chars cleaned", func(t *testing.T) {
+		got, err := generateHostname("my server!")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// cleanHostname replaces spaces and ! with hyphens
+		if got != "my-server-" {
+			t.Errorf("got %q, want %q", got, "my-server-")
+		}
+	})
+
+	t.Run("static all special chars returns error", func(t *testing.T) {
+		// "   " trims to "" then cleanHostname("") returns ""
+		_, err := generateHostname("   ")
+		if err == nil {
+			t.Error("expected error for hostname that cleans to empty")
+		}
+	})
+
+	t.Run("static too long truncated", func(t *testing.T) {
+		long := strings.Repeat("a", 300)
+		got, err := generateHostname(long)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) > 255 {
+			t.Errorf("hostname length %d exceeds 255", len(got))
+		}
+	})
+
+	t.Run("empty static falls back to system hostname", func(t *testing.T) {
+		got, err := generateHostname("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == "" {
+			t.Error("fallback hostname should not be empty")
+		}
+		if got == "unknown" || got == "localhost" {
+			// Acceptable fallbacks when system hostname fails
+		}
+	})
 }

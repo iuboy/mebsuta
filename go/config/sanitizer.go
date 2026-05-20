@@ -95,11 +95,8 @@ func maskPasswordInDSN(dsn string) string {
 		}
 	}
 
-	// 如果无法识别格式，返回完全脱敏版本
-	if len(dsn) > 20 {
-		return dsn[:20] + "...(hidden)"
-	}
-	return "(hidden)"
+	// 如果无法识别格式，返回完全脱敏版本（不泄露任何原始内容）
+	return "(redacted)"
 }
 
 // SanitizeForLog 对任意配置进行脱敏（通用方法）

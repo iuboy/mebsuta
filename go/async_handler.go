@@ -93,6 +93,20 @@ func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()))
 		}
 	}()
+
+	// Error and Audit records block until sent or timeout (5s).
+	// Other levels use non-blocking send and drop on buffer full.
+	if ar.Level >= slog.LevelError {
+		select {
+		case h.ch <- ar:
+			return nil
+		case <-time.After(5 * time.Second):
+			h.dropped.Add(1)
+			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load()))
+			return nil
+		}
+	}
+
 	select {
 	case h.ch <- ar:
 		return nil

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +53,7 @@ type DatabaseHandler struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	closed       atomic.Bool
+	sendMu       sync.Mutex
 	errCount     atomic.Int64
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
@@ -116,18 +118,40 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	entry := h.recordToDBEntry(r)
 
-	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
-	defer func() {
-		if r := recover(); r != nil {
-			h.errCount.Add(1)
-			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("send on closed channel, log dropped"))
+	// Error and Audit records: retry loop to avoid dropping.
+	if r.Level >= slog.LevelError {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			h.sendMu.Lock()
+			if h.closed.Load() {
+				h.sendMu.Unlock()
+				return nil
+			}
+			select {
+			case h.entries <- entry:
+				h.sendMu.Unlock()
+				return nil
+			default:
+				h.sendMu.Unlock()
+				runtime.Gosched()
+			}
 		}
-	}()
+		h.errCount.Add(1)
+		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("buffer full timeout for %v record, dropped", r.Level))
+		return nil
+	}
 
+	h.sendMu.Lock()
+	if h.closed.Load() {
+		h.sendMu.Unlock()
+		return nil
+	}
 	select {
 	case h.entries <- entry:
+		h.sendMu.Unlock()
 		return nil
 	default:
+		h.sendMu.Unlock()
 		h.errCount.Add(1)
 		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("buffer full, log dropped"))
 		return nil
@@ -146,7 +170,9 @@ func (h *DatabaseHandler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	h.sendMu.Lock()
 	close(h.entries)
+	h.sendMu.Unlock()
 	h.wg.Wait()
 	h.cancel()
 

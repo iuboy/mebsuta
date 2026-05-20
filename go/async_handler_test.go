@@ -169,6 +169,51 @@ func TestAsyncDropped_NonAsync(t *testing.T) {
 	}
 }
 
+func TestAsyncHandler_AuditNotDropped(t *testing.T) {
+	// SPEC P0: Error and Audit records must not be dropped by buffer full.
+	inner := &countHandler{}
+	h := WithAsync(inner, AsyncConfig{BufferSize: 1}) // tiny buffer
+
+	// Fill the buffer with normal records
+	h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0))
+
+	// Error/Audit should still be delivered (blocking path retries)
+	r := slog.NewRecord(time.Now(), slog.LevelError, "error record", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+
+	errorCount := inner.ErrorLevelCount()
+	if errorCount < 1 {
+		t.Errorf("expected at least 1 error-level record, got %d", errorCount)
+	}
+}
+
+func TestAsyncHandler_AuditLevelNotDropped(t *testing.T) {
+	inner := &countHandler{}
+	h := WithAsync(inner, AsyncConfig{BufferSize: 1})
+
+	h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0))
+
+	r := slog.NewRecord(time.Now(), LevelAudit, "audit record", 0)
+	if err := h.Handle(context.Background(), r); err != nil {
+		t.Fatalf("Handle audit: %v", err)
+	}
+
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+
+	errorCount := inner.ErrorLevelCount()
+	if errorCount < 1 {
+		t.Errorf("expected at least 1 audit-level record, got %d", errorCount)
+	}
+}
+
 // =============================================================================
 // MetricsHandler 测试
 // =============================================================================
