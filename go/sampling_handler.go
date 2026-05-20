@@ -11,8 +11,8 @@ import (
 	"github.com/iuboy/mebsuta/go/config"
 )
 
-// SamplingHandler 是 slog.Handler 装饰器，按时间窗口对日志进行采样。
-// Error 及以上级别始终记录。每个窗口前 Initial 条全部记录，之后每 Thereafter 条记录 1 条。
+// SamplingHandler is a slog.Handler decorator that samples log records within a time window.
+// Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
 type SamplingHandler struct {
 	inner   slog.Handler
 	cfg     config.SamplingConfig
@@ -23,6 +23,7 @@ type SamplingHandler struct {
 	stopped *atomic.Bool    // 指针，跨 WithAttrs/WithGroup 共享
 }
 
+// WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
 func WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner

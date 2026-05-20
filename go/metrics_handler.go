@@ -6,25 +6,26 @@ import (
 	"time"
 )
 
-// HandlerMetrics 定义日志 Handler 的指标收集接口，用户可注入 Prometheus 等后端。
+// HandlerMetrics defines the interface for collecting handler-level metrics such as latency, errors, and drops.
 type HandlerMetrics interface {
-	// ObserveHandle 记录一次 Handle 调用的延迟。
+	// ObserveHandle records the latency of a single Handle call.
 	ObserveHandle(duration time.Duration)
 
-	// IncError 增加错误计数。
+	// IncError increments the error counter.
 	IncError(handlerName string)
 
-	// IncDropped 增加丢弃计数。
+	// IncDropped increments the dropped-record counter.
 	IncDropped(handlerName string)
 }
 
-// MetricsHandler 是 slog.Handler 装饰器，记录写入延迟和错误。
+// MetricsHandler is a slog.Handler decorator that records write latency and error counts via the HandlerMetrics interface.
 type MetricsHandler struct {
 	inner       slog.Handler
 	metrics     HandlerMetrics
 	handlerName string
 }
 
+// WithMetrics wraps inner in a MetricsHandler that observes latency and errors for the named handler.
 func WithMetrics(inner slog.Handler, m HandlerMetrics, handlerName string) slog.Handler {
 	if inner == nil || m == nil {
 		return inner

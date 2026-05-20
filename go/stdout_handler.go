@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// StdoutHandler 将日志记录输出到 stdout。
+// StdoutHandler writes log records to stdout.
 type StdoutHandler struct {
 	LevelHandler
 	format EncodingType
@@ -16,6 +16,7 @@ type StdoutHandler struct {
 	mu     *sync.Mutex
 }
 
+// NewStdoutHandler creates a StdoutHandler that writes to stdout at the given level in the specified format.
 func NewStdoutHandler(level slog.Level, format EncodingType) *StdoutHandler {
 	h := &StdoutHandler{
 		LevelHandler: LevelHandler{Level: level},
@@ -72,7 +73,7 @@ func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// Close 是 nop，stdout 不需要关闭。
+// Close is a no-op because stdout does not need to be closed.
 func (h *StdoutHandler) Close() error {
 	return nil
 }

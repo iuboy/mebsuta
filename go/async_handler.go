@@ -9,8 +9,9 @@ import (
 	"time"
 )
 
+// AsyncConfig holds configuration for the AsyncHandler.
 type AsyncConfig struct {
-	// BufferSize 缓冲通道大小。默认 256。
+	// BufferSize is the buffered channel size. Defaults to 256.
 	BufferSize int
 }
 
@@ -27,8 +28,8 @@ type asyncRecord struct {
 	inner   slog.Handler
 }
 
-// AsyncHandler 将日志写入委托给后台 goroutine。
-// 注意：不要套在 SyslogHandler 或 DatabaseHandler 上，它们内部已有异步机制。
+// AsyncHandler delegates log writes to a background goroutine.
+// Do not wrap SyslogHandler or DatabaseHandler — they have built-in async mechanisms.
 type AsyncHandler struct {
 	inner        slog.Handler
 	ch           chan asyncRecord
@@ -40,6 +41,7 @@ type AsyncHandler struct {
 	errorHandler atomic.Pointer[ErrorHandler]
 }
 
+// WithAsync wraps inner in an AsyncHandler that buffers records and writes them from a background goroutine.
 func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	if inner == nil {
 		return inner
@@ -233,7 +235,7 @@ func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// AsyncDropped 从 handler 链中提取 AsyncHandler 并返回丢弃数量。
+// AsyncDropped extracts the total number of dropped records from an AsyncHandler in the handler chain.
 func AsyncDropped(h slog.Handler) int64 {
 	switch v := h.(type) {
 	case *AsyncHandler:

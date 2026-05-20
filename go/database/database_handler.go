@@ -42,7 +42,7 @@ func (dbLogEntry) TableName() string {
 	return "logs"
 }
 
-// DatabaseHandler 将日志记录批量写入 SQL 数据库（MySQL/Postgres 通过 GORM）。
+// DatabaseHandler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
 type DatabaseHandler struct {
 	mebsuta.LevelHandler
 	cfg          config.DatabaseConfig
@@ -58,6 +58,7 @@ type DatabaseHandler struct {
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
 
+// NewDatabaseHandler creates a DatabaseHandler that connects to the database specified in cfg at the given log level.
 func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)

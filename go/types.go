@@ -2,7 +2,7 @@ package mebsuta
 
 import "log/slog"
 
-// EncodingType 定义日志输出编码格式。
+// EncodingType defines the log output encoding format.
 type EncodingType string
 
 const (

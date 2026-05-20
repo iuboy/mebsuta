@@ -33,7 +33,7 @@ const (
 
 var spaceRe = regexp.MustCompile(`\s+`)
 
-// SyslogHandler 将日志记录输出到 syslog 服务器。内置缓冲写入、TLS、自动重连。
+// SyslogHandler writes log records to a syslog server with built-in buffering, TLS support, and automatic reconnection.
 type SyslogHandler struct {
 	LevelHandler
 	cfg          config.SyslogConfig
@@ -51,6 +51,7 @@ type SyslogHandler struct {
 	errorHandler atomic.Pointer[ErrorHandler]
 }
 
+// NewSyslogHandler creates a SyslogHandler that connects to the syslog server specified in cfg at the given log level.
 func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
@@ -344,7 +345,7 @@ func (h *SyslogHandler) formatJSONMessage(entry LogEntry, ts time.Time, priority
 	}
 	cleaned := string(jsonBytes)
 	if len(cleaned) > maxSyslogMsgSize {
-		cleaned = cleaned[:maxSyslogMsgSize-4] + "..."
+		cleaned = truncateUTF8(cleaned, maxSyslogMsgSize)
 	}
 
 	if h.cfg.RFC5424 {
@@ -358,7 +359,7 @@ func (h *SyslogHandler) formatJSONMessage(entry LogEntry, ts time.Time, priority
 func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, priority int, host string, procid int) string {
 	msgContent := safeMessageForLog(entry.Message)
 	if len(msgContent) > maxSyslogMsgSize {
-		msgContent = msgContent[:maxSyslogMsgSize-3] + "..."
+		msgContent = truncateUTF8(msgContent, maxSyslogMsgSize)
 	}
 
 	if h.cfg.RFC5424 {
@@ -475,6 +476,42 @@ func safeMessageForLog(msg string) string {
 		return r
 	}, msg)
 	return strings.TrimSpace(spaceRe.ReplaceAllString(cleaned, " "))
+}
+
+// truncateUTF8 safely truncates s to at most maxBytes bytes, never splitting
+// a multi-byte UTF-8 sequence. If truncation occurs, "..." is appended
+// (within the maxBytes budget). If maxBytes < 4, no ellipsis is added.
+// The result is guaranteed to be valid UTF-8.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	if maxBytes < 4 {
+		// Not enough room for ellipsis; truncate to the last valid rune boundary.
+		return s[:lastRuneBoundary(s, maxBytes)]
+	}
+	limit := maxBytes - 3
+	return s[:lastRuneBoundary(s, limit)] + "..."
+}
+
+// lastRuneBoundary returns the largest byte index <= n that falls on a UTF-8
+// rune boundary, ensuring s[:result] is valid UTF-8.
+func lastRuneBoundary(s string, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n >= len(s) {
+		return len(s)
+	}
+	// Walk backward from n to find a valid rune start.
+	// A valid start byte has the two high bits not equal to 0b10 (continuation).
+	for n > 0 && (s[n]&0xC0) == 0x80 {
+		n--
+	}
+	return n
 }
 
 var (

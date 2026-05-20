@@ -151,6 +151,8 @@ Messages must:
 
 Go currently supports TLS transport and network delivery. Rust currently focuses on formatting and send behavior. Rust TLS transport is a planned feature.
 
+Go uses UTF-8 rune-boundary-safe truncation (`truncateUTF8`); Rust uses grapheme-cluster-safe truncation (`unicode_segmentation`). Both guarantee no partial multi-byte sequences in output. Rust provides stronger guarantees for combining characters and ZWJ sequences.
+
 **Pass/fail criteria:**
 - Truncated output must be valid UTF-8 (no partial multi-byte sequences).
 - Priority value must equal `facility * 8 + severity` for the configured facility and record level.
@@ -235,6 +237,76 @@ Multi-output handlers must:
 - Each child handler receives the same record content.
 - A panic in one child handler must not prevent other children from receiving the record.
 - Concurrent writes through a multi-handler must not cause data races (verified by race detector).
+
+## Handler Chain Composition
+
+`Required`
+
+When multiple handler decorators are combined, their ordering determines correctness of buffering, sampling, and delivery guarantees.
+
+### Recommended Chain Order
+
+Standard chain (File/Stdout destination):
+
+```
+safeMulti → Metrics → Sampling → Async → File|Stdout
+```
+
+Syslog/Database destination (no Async wrapping):
+
+```
+safeMulti → Metrics → Sampling → Syslog|Database
+```
+
+Each decorator wraps the next as its inner handler. Records flow outward-in through `Handle()`; `Close()` propagates inward-out via `CloseAll`.
+
+### Prohibited Combinations
+
+`Required`
+
+The following decorator combinations are prohibited and must be documented with a runtime warning or build-time check where practical:
+
+1. **Async wrapping Syslog (`Async → Syslog`)**: Syslog handlers maintain their own internal network buffer and delivery queue. Wrapping Syslog in Async creates double-buffering. On `Close()`, Async drains its channel into Syslog, but if Syslog's own buffer is also flushing, records can be lost in the gap between Async channel drain and Syslog network flush. The Async handler has no visibility into Syslog's internal delivery state.
+
+2. **Async wrapping Database (`Async → Database`)**: Database handlers maintain their own batch buffer and flush on close. Wrapping Database in Async creates double-buffering with the same loss scenario: Async drains its channel into Database's `Handle()`, but Database may batch and not persist until its own `Close()`. If the process exits between Async drain and Database flush, queued records are lost.
+
+Both cases share the same root cause: the inner handler already provides asynchronous buffering, so an outer Async layer adds latency without adding reliability.
+
+### Audit Level Semantics in Chains
+
+`Required`
+
+Audit-level records (`LevelAudit = Error + 4`) receive special treatment at each decorator:
+
+| Decorator | Audit Behavior | Mechanism |
+|-----------|---------------|-----------|
+| Sampling | Always recorded, never sampled | `r.Level >= slog.LevelError` bypasses counter check |
+| Async | Blocking send with 5s timeout, never dropped | `ar.Level >= slog.LevelError` uses blocking channel send; non-audit records use non-blocking send and drop on buffer full |
+| Metrics | Recorded like any other record | No level-based special case |
+| safeMulti | Fanned out to all children like any other record | No level-based special case |
+
+Audit records do **not** bypass the Async buffer entirely — they are enqueued into the same channel but use a blocking send strategy rather than the non-blocking drop strategy used for lower severity levels.
+
+### Close() Propagation
+
+`Required`
+
+`CloseAll` recursively unwraps decorator chains via the `handlerUnwrapper` interface and calls `Close()` on each layer that implements `io.Closer`, from outermost to innermost:
+
+1. **Async**: Sets closed flag, cancels background context, closes the channel, waits for background goroutine to drain remaining records, then propagates to inner handler.
+2. **Sampling**: Stops the reset ticker, signals the background reset goroutine to exit, waits for goroutine completion. Does not propagate to inner handler (no `Close()` on inner).
+3. **Metrics**: No `Close()` implementation. Transparent to close propagation.
+4. **safeMulti**: Calls `CloseAll()` on each child handler individually, aggregates errors.
+
+`CloseAll` visits each decorator's own `Close()` before recursing into the unwrapped inner handler. This ensures outer layers (Async drain) complete before inner layers (File/Database flush) are closed.
+
+**Pass/fail criteria:**
+- Records written before `CloseAll()` must be delivered to the final destination handler.
+- `Async → Syslog` and `Async → Database` combinations must produce a warning or be rejected.
+- Audit-level records must not be dropped by Sampling regardless of sampling state.
+- Audit-level records sent through Async must be delivered (blocking send), not silently dropped.
+- `CloseAll()` on a chain must return the first error encountered without skipping remaining closes.
+- Each decorator's `Close()` must be idempotent (second call returns nil).
 
 ## Error Handling
 

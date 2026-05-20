@@ -1,4 +1,4 @@
-// Package metrics 提供日志系统的指标监控功能
+// Package metrics provides Prometheus-based metrics collection for the mebsuta logging system.
 package metrics
 
 import (
@@ -9,7 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics 收集日志系统的所有指标
+// Metrics collects all observability metrics for the mebsuta logging system.
 type Metrics struct {
 	// 日志写入计数器（按级别）
 	logWrites  *prometheus.CounterVec
@@ -46,7 +46,7 @@ var (
 	registerErr   error     // 保存首次注册错误
 )
 
-// NewMetrics 创建新的metrics收集器（不自动注册）
+// NewMetrics creates a new Metrics collector without registering it with Prometheus.
 func NewMetrics() *Metrics {
 	return &Metrics{
 		logWrites: prometheus.NewCounterVec(
@@ -148,7 +148,7 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// GetMetrics 获取全局metrics实例
+// GetMetrics returns the singleton Metrics instance, creating it on first call.
 func GetMetrics() *Metrics {
 	once.Do(func() {
 		globalMetrics = NewMetrics()
@@ -156,94 +156,94 @@ func GetMetrics() *Metrics {
 	return globalMetrics
 }
 
-// IncLogWrite 增加日志写入计数
+// IncLogWrite increments the log write counter for the given level and output.
 func (m *Metrics) IncLogWrite(level, output string) {
 	m.logWrites.WithLabelValues(level, output).Inc()
 }
 
-// IncLogDropped 增加日志丢弃计数
+// IncLogDropped increments the log dropped counter for the given reason and output.
 func (m *Metrics) IncLogDropped(reason, output string) {
 	m.logDropped.WithLabelValues(reason, output).Inc()
 }
 
-// IncLogError 增加日志错误计数
+// IncLogError increments the log error counter for the given error type and output.
 func (m *Metrics) IncLogError(errorType, output string) {
 	m.logErrors.WithLabelValues(errorType, output).Inc()
 }
 
-// IncBatchWrite 增加批量写入计数
+// IncBatchWrite increments the batch write counter.
 func (m *Metrics) IncBatchWrite() {
 	m.batchWrites.Inc()
 }
 
-// ObserveBatchSize 观察批量写入大小
+// ObserveBatchSize observes the batch write size distribution.
 func (m *Metrics) ObserveBatchSize(size float64) {
 	m.batchSize.Observe(size)
 }
 
-// ObserveBatchLatency 观察批量写入延迟（秒）
+// ObserveBatchLatency observes the batch write latency in seconds.
 func (m *Metrics) ObserveBatchLatency(seconds float64) {
 	m.batchLatency.Observe(seconds)
 }
 
-// IncBatchFailure 增加批量写入失败计数
+// IncBatchFailure increments the batch write failure counter.
 func (m *Metrics) IncBatchFailure() {
 	m.batchFailures.Inc()
 }
 
-// SetBufferUsage 设置缓冲区使用率（0-1）
+// SetBufferUsage sets the buffer usage gauge (0 to 1).
 func (m *Metrics) SetBufferUsage(ratio float64) {
 	m.bufferUsage.Set(ratio)
 }
 
-// IncBufferFull 增加缓冲区满事件计数
+// IncBufferFull increments the buffer-full event counter.
 func (m *Metrics) IncBufferFull() {
 	m.bufferFull.Inc()
 }
 
-// SetActiveConns 设置活跃连接数
+// SetActiveConns sets the active connection count gauge.
 func (m *Metrics) SetActiveConns(count float64) {
 	m.activeConns.Set(count)
 }
 
-// SetIdleConns 设置空闲连接数
+// SetIdleConns sets the idle connection count gauge.
 func (m *Metrics) SetIdleConns(count float64) {
 	m.idleConns.Set(count)
 }
 
-// ObserveWriteLatency 观察写入延迟（秒）
+// ObserveWriteLatency observes a write latency in seconds.
 func (m *Metrics) ObserveWriteLatency(seconds float64) {
 	m.writeLatency.Observe(seconds)
 }
 
-// IncGoroutine 增加活跃goroutine计数
+// IncGoroutine increments the active goroutine counter.
 func (m *Metrics) IncGoroutine() {
 	m.goroutineCount.Add(1)
 	m.activeGoroutines.Inc()
 }
 
-// DecGoroutine 减少活跃goroutine计数
+// DecGoroutine decrements the active goroutine counter.
 func (m *Metrics) DecGoroutine() {
 	m.goroutineCount.Add(-1)
 	m.activeGoroutines.Dec()
 }
 
-// GetGoroutineCount 获取活跃goroutine计数
+// GetGoroutineCount returns the current active goroutine count.
 func (m *Metrics) GetGoroutineCount() int64 {
 	return m.goroutineCount.Load()
 }
 
-// ObserveHandle 实现 mebsuta.HandlerMetrics 接口。
+// ObserveHandle records handle call latency, implementing the mebsuta.HandlerMetrics interface.
 func (m *Metrics) ObserveHandle(duration time.Duration) {
 	m.writeLatency.Observe(duration.Seconds())
 }
 
-// IncError 实现 mebsuta.HandlerMetrics 接口。
+// IncError increments the error counter for the named handler, implementing the mebsuta.HandlerMetrics interface.
 func (m *Metrics) IncError(handlerName string) {
 	m.logErrors.WithLabelValues("handle", handlerName).Inc()
 }
 
-// IncDropped 实现 mebsuta.HandlerMetrics 接口。
+// IncDropped increments the dropped counter for the named handler, implementing the mebsuta.HandlerMetrics interface.
 func (m *Metrics) IncDropped(handlerName string) {
 	m.logDropped.WithLabelValues("overflow", handlerName).Inc()
 }
@@ -278,43 +278,17 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.writeLatency.Collect(ch)
 }
 
-// Register 注册所有指标到自定义的 Prometheus 注册表
-// 用法示例：
-//
-//	registry := prometheus.NewRegistry()
-//	registry.MustRegister(mebsuta.GetMetricsAsCollector())
-//	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+// RegisterToRegistry registers all metrics with a custom Prometheus registerer.
 func RegisterToRegistry(registry prometheus.Registerer) error {
 	return registry.Register(GetMetrics())
 }
 
-// GetMetricsAsCollector 获取指标作为 prometheus.Collector
-// 用于注册到自定义的 Prometheus 注册表
-//
-// 用法示例：
-//
-//	import (
-//	    "log/slog"
-//	    "github.com/prometheus/client_golang/prometheus"
-//	    "github.com/prometheus/client_golang/prometheus/promhttp"
-//	    mebmetrics "github.com/iuboy/mebsuta/go/metrics"
-//	)
-//
-//	func main() {
-//	    // 创建自定义注册表
-//	    registry := prometheus.NewRegistry()
-//	    registry.MustRegister(mebmetrics.GetMetricsAsCollector())
-//
-//	    // 暴露指标端点
-//	    http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-//	    http.ListenAndServe(":2112", nil)
-//	}
+// GetMetricsAsCollector returns the global Metrics as a prometheus.Collector for custom registration.
 func GetMetricsAsCollector() prometheus.Collector {
 	return GetMetrics()
 }
 
-// Register 注册到默认的 Prometheus 注册表（幂等，可安全多次调用）。
-// 如果首次注册失败，后续调用始终返回该错误。
+// Register registers all metrics with the default Prometheus registry. It is idempotent; repeated calls return the first error.
 func Register() error {
 	registryOnce.Do(func() {
 		registerErr = RegisterToRegistry(prometheus.DefaultRegisterer)

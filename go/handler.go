@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 )
 
+// LevelHandler is a minimal slog.Handler that filters log records by level.
 type LevelHandler struct {
 	Level slog.Level
 }
@@ -18,6 +19,7 @@ func (h *LevelHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.Level
 }
 
+// HandlerOption is a functional option for configuring the handler chain built by New.
 type HandlerOption func(*handlerOptions) error
 
 type handlerOptions struct {
@@ -25,6 +27,7 @@ type handlerOptions struct {
 	errorHandler ErrorHandler
 }
 
+// WithHandler adds a slog.Handler to the multi-handler chain.
 func WithHandler(h slog.Handler) HandlerOption {
 	return func(o *handlerOptions) error {
 		if h == nil {
@@ -44,6 +47,7 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	}
 }
 
+// ReportError invokes the ErrorHandler if non-nil, used by handlers to report internal errors.
 func ReportError(eh ErrorHandler, component string, err error) {
 	if eh != nil {
 		eh(component, err)
@@ -236,8 +240,8 @@ func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
 	return out
 }
 
-// MergeAttrs 合并 existing 和 newAttrs，newAttrs 按 group 前缀化。
-// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
+// MergeAttrs merges existing and newAttrs, prefixing newAttrs keys with the given group.
+// NOTE: Exported for the database sub-package; application code does not need to call this directly.
 func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 	merged := make([]slog.Attr, len(existing), len(existing)+len(newAttrs))
 	copy(merged, existing)
@@ -245,8 +249,8 @@ func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 	return merged
 }
 
-// RecordWithGroupAttrs 创建新 slog.Record，原 attrs 加 group 前缀，再追加 extraAttrs。
-// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
+// RecordWithGroupAttrs creates a new slog.Record with group-prefixed attrs from the original record plus extraAttrs.
+// NOTE: Exported for the database sub-package; application code does not need to call this directly.
 func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
 	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
 	r.Attrs(func(attr slog.Attr) bool {
@@ -257,8 +261,8 @@ func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) s
 	return newR
 }
 
-// AttrsSub 是 WithAttrs/WithGroup 链的泛型子 Handler。消除各 handler 重复定义子类型。
-// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接使用。
+// AttrsSub is a generic sub-handler for WithAttrs/WithGroup chains, eliminating duplicate sub-types across handlers.
+// NOTE: Exported for the database sub-package; application code does not need to use this directly.
 type AttrsSub[H slog.Handler] struct {
 	Parent H
 	Attrs  []slog.Attr
@@ -293,8 +297,8 @@ func (h *AttrsSub[H]) WithGroup(name string) slog.Handler {
 	}
 }
 
-// GroupSub 是 WithGroup 链的泛型子 Handler，所有 record attrs 加 group 前缀传递给父 handler。
-// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接使用。
+// GroupSub is a generic sub-handler for WithGroup chains, prefixing all record attrs with the group name before forwarding to the parent.
+// NOTE: Exported for the database sub-package; application code does not need to use this directly.
 type GroupSub[H slog.Handler] struct {
 	Parent H
 	Group  string

@@ -1,262 +1,243 @@
-<!-- /autoplan restore point: /Users/ycq/.gstack/projects/go/dev-autoplan-restore-20260520-155018.md -->
-# Plan: 继续打磨 Go 版本（调整后）
+<!-- /autoplan restore point: /Users/ycq/.gstack/projects/mebsuta/dev-autoplan-restore-20260520-200031.md -->
+# Plan: Go 采用就绪打磨 — 第二轮
 
-> 经 CEO 双声音审查，用户确认方向：聚焦 SPEC P0 + benchmark + 审计合规，跳过低杠杆工作。
+> 上一轮（commit 82d81c0）已完成：SPEC P0 覆盖 100%、benchmark 基线、审计保护、安全修复。
+> 本轮聚焦：**采用就绪** — examples、godoc、集成测试、SPEC 对齐。覆盖率作为副产品报告，不作为阶段门控。
 
 ## Goals
 
-- SPEC P0 行为覆盖率 100%
-- 建立性能基准线（benchmark）
-- 强化审计合规功能（LevelAudit 是独特卖点）
-- 统一代码质量（godoc、错误处理、命名）
+- 新用户可从克隆到运行示例 < 5 分钟
+- 所有导出标识符有英文 godoc
+- 4+ 条核心 handler 链有集成测试
+- SPEC.md 含 handler 链组合规范
+- Go/Rust SPEC P0/P1 行为完全对齐（差异 = 修代码）
+- TESTING.md 含当前覆盖率数值
 
 ## Non-Goals
 
-- 不改变公共 API 的函数签名（向后兼容）
-- 不添加新功能特性（仅在已有功能上打磨）
-- 不涉及 Rust 实现的修改
-- 不追求统一的行覆盖率数字（按 SPEC 优先级分层）
+- 不改变公共 API 签名（向后兼容）
+- 不添加新功能特性
+- 不涉及 Rust 代码修改
+- 覆盖率不作为阶段门控（完成后报告数值即可）
 
 ## NOT in scope（有意排除）
 
 | 排除项 | 原因 |
 | --- | --- |
-| doRotate() 大规模拆分 | 两个模型都认为风险 > 收益，58 行线性逻辑可接受 |
-| grapheme 级 UTF-8 截断 | Go 版本是字节级截断，改 grapheme 需引入新依赖，超出打磨范围 |
-| 产品定位/差异化策略 | 超出「打磨」范围，留作独立任务 |
-| database 模块拆分为独立 Go module | 评估后记录为 follow-up，不在此计划执行 |
+| Syslog TLS 传输测试 | 需要 TLS 证书基础设施，超出打磨范围 |
+| Database 独立 Go module 拆分 | 上轮评估为 follow-up，仍不在执行范围 |
+| grapheme 级 UTF-8 截断 | Go 版本字节级截断，不改 |
+| SafeMulti goroutine-per-record 重构 | 高风险架构变更，需独立设计 |
+| Prometheus metrics 测试修复 | 已有问题是全局注册器状态泄漏，需要上游重构 |
+| AsyncHandler sendMu 保护 | Eng 评估为 LOW/MED，记录为 follow-up |
+| NewStdoutHandler 签名统一 | 破坏性 API 变更，超出本轮范围 |
 
-## What already exists
+## Phase 0: Go 示例程序 + README 修复
 
-| 子问题 | 已有代码 | 可复用度 |
-| --- | --- | --- |
-| AsyncHandler channel 发送 | `sendRecord()` 已提取（未提交） | 100% — 直接提交 |
-| MetricsHandler/safeMulti 测试 | `mebsuta_test.go` 已写（未提交） | 100% — 直接提交 |
-| Sanitizer 测试 | `config/sanitizer_test.go` 已写（未提交） | 100% — 直接提交 |
-| Syslog 截断 + UTF-8 消毒 | `safeMessageForLog()`, `cleanHostname()` 已有 | 高 — 只需补 `escapeSDValue` 测试 |
-| Benchmark 框架 | `benchmark_test.go` 已存在 | 高 — 需要扩展和记录基线 |
-| 审计 Level | `LevelAudit` 已实现 | 需验证在所有 handler 链中正确传递 |
-
-## Phase 1: 提交未提交的改动
+### 背景
+Rust 有 5 个可运行示例（`rust/mebsuta/examples/`），Go 零个。这是采用就绪的最大障碍。同时 `go/README.md:31` 的 `NewFileHandler(cfg)` 签名错误，新用户复制粘贴会编译失败。
 
 ### Tasks
-1. 提交 `async_handler.go` DRY 重构（sendRecord 提取）
-2. 提交 `mebsuta_test.go` 新增测试（MetricsHandler、safeMulti、RecordWithGroupAttrs）
-3. 提交 `config/sanitizer_test.go`（新增 sanitizer 测试文件）
-4. 验证所有测试通过
+1. 创建 `go/examples/` 目录结构
+2. `basic/main.go` — 最简 stdout JSON 输出
+3. `file/main.go` — 文件输出 + 轮转配置
+4. `sampling/main.go` — 采样装饰器用法
+5. `async/main.go` — 异步写入用法
+6. `chain/main.go` — 完整生产配置链（Sampling → Async → Multi([File, Stdout])）
+7. 修复 `go/README.md` 所有代码签名（`NewFileHandler(cfg)` → `NewFileHandler(cfg, slog.LevelInfo)` 等）
+8. README 添加 examples 链接
 
 ### Exit Criteria
-- `go test -race -count=1 ./...` 全部通过
-- 改动已提交
+- 5 个示例 `go run ./examples/<name>` 全部通过
+- README 代码可复制粘贴编译
+- `go vet ./examples/...` 无警告
 
 ### 前置条件：无
 
-## Phase 2: Database Handler SPEC P0 测试
+## Phase 1: 英文 Godoc 全覆盖
 
 ### 背景
-DatabaseHandler 覆盖率仅 3.1%，但 SPEC 对其有明确的 P0 要求。代码使用 GORM，需要先验证 mock 策略可行。
+Eng+DX 审查确认 40+ 导出符号缺 godoc 或仅有中文注释。pkg.go.dev 需要 English godoc。PLAN.md 原仅列 6 个函数，实际范围远大。
 
 ### Tasks
-1. **Spike（30 分钟）**：验证 `gorm.io/driver/sqlite` 内存模式能否跑通 `NewDatabaseHandler → Handle → Close` 全路径。如果不行，尝试 `DATA-DOG/go-sqlmock` + GORM `DB()` 注入
-2. 测试 SPEC P0 行为：table name 验证、并发 close/write 安全、幂等 Close、writes after close no panic
-3. 测试 SPEC P1 行为：批量写入、flush on close
-4. 测试错误路径：error handler 上报
-
-### Exit Criteria
-- SPEC Database Handler P0 行为覆盖率 100%
-- spike 结果记录在案
-- `go test -race ./database/` 通过
-
-### 前置条件：GORM mock 策略 spike 通过
-
-## Phase 3: Syslog Handler 补全
-
-### 背景
-`escapeSDValue()` 覆盖率 0%，`generateHostname()` 仅 41.2%。Go 版本的截断是字节级，不是 grapheme 级。在 SPEC 中记录此差异。
-
-### Tasks
-1. 为 `escapeSDValue()` 添加单元测试（RFC5424 特殊字符转义）
-2. 为 `generateHostname()` 添加边界测试（空值、超长、特殊字符）
-3. 补充 RFC5424 格式化集成测试（含 structured data）
-4. 验证截断后输出是合法 UTF-8（不是 grapheme 级，SPEC 记录差异）
-
-### Exit Criteria
-- `escapeSDValue()` 覆盖率 100%
-- `generateHostname()` 覆盖率 ≥ 80%
-- SPEC.md Syslog 部分增加 Language-specific 说明：Go 使用字节级截断
-- 所有 P0 syslog 测试在 TESTING.md 标记为 covered
-
-### 前置条件：无
-
-## Phase 4: 性能基准线建立
-
-### 背景
-日志库的核心竞争力是性能。没有 benchmark 基线，无法评估任何优化效果。`benchmark_test.go` 已存在但需要扩展。
-
-### Tasks
-1. 运行现有 `benchmark_test.go`，记录 ns/op 和 allocs/op 基线
-2. 补充关键路径 benchmark：StdoutHandler JSON/Text、FileHandler 写入、AsyncHandler channel 吞吐、SamplingHandler 采样开销
-3. 记录结果到 `BENCHMARKS.md`（新建，含硬件/Go 版本信息）
-4. 识别明显的性能瓶颈（如有）
-
-### Exit Criteria
-- 关键 handler 路径有 benchmark 数据
-- `BENCHMARKS.md` 包含可复现的基线数据
-- 无明显性能问题（如 > 1μs/op alloc-free 的基本路径）
-
-### 前置条件：Phase 1 完成
-
-## Phase 5: 审计合规功能加固
-
-### 背景
-LevelAudit 是 Mebsuta 的独特卖点。需要确保它在所有 handler 链中正确工作：
-- SamplingHandler 不应丢弃 Error/Audit 级别记录
-- AsyncHandler 不应因 buffer full 而丢弃 Audit 记录
-- MultiHandler 正确 fanout Audit 记录
-- FileHandler/StdoutHandler 正确输出 audit 元数据
-
-### Tasks
-1. 验证 SamplingHandler 在采样时保留 Audit 级别（SPEC P0：Error and Audit records must not be dropped）
-2. 为 AsyncHandler 添加 Audit 保护：`sendRecord` 中 Error/Audit 级别使用阻塞等待（带超时），非 Error/Audit 继续非阻塞丢弃
-3. 审查 DatabaseHandler 同样需要 Audit 保护（同上策略）
-4. 测试 MultiHandler 对 Audit 记录的 fanout 行为
-5. 添加 AsyncHandler 并发 Close/Write 测试（`go test -race`）
-6. 验证所有 handler 输出中 audit 元数据（event_type、actor、success）正确
-7. 在 `types.go` 添加编译期断言：`LevelAudit >= slog.LevelError`
-
-### Exit Criteria
-- SPEC Sampling P0 确认：Audit 级别不被采样丢弃
-- AsyncHandler/DatabaseHandler Error/Audit 级别不会被 buffer full 丢弃（阻塞等待或超时）
-- `go test -race ./...` 无竞态
-- TESTING.md 更新 audit 相关测试覆盖
-
-### 前置条件：Phase 1 完成
-
-## Phase 6: 代码质量统一
-
-### 背景
-各 handler 的错误处理模式和命名风格不统一。部分导出函数缺少 godoc。
-
-### Tasks
-1. 统一错误前缀格式：所有 `ReportError` 调用使用一致的 handler name 标识
-2. 为所有导出函数/类型补充 godoc（英文，以函数名开头的一句话描述）
-3. 清理 `stdout_handler.go` 中 `newStdoutHandlerWithWriter` 的可见性
-4. 审查 `handler.go` 中 `prefixAttrs` 是否应为内部函数
-5. 提取 `listBackups()` 辅助函数（doRotate 的小范围改进，不做大拆分）
-6. **安全修复**：`maskPasswordInDSN` 对未知 DSN 格式改为返回 `"(redacted)"` 而非前缀
-7. **安全修复**：`compressFile` 临时文件权限改为 0600（`os.OpenFile` 替代 `os.Create`）
-8. **安全修复**：`SyslogConfig.Validate()` 添加 Tag 长度限制（≤48 字符）+ 非打印字符过滤
-9. **文档化**：AsyncHandler godoc 说明不保留原始 context（使用 `context.Background()`）
+1. 所有导出函数补充英文 godoc（一句话，以函数名开头）
+2. 构造函数优先：`New`, `NewFileHandler`, `NewSyslogHandler`, `NewStdoutHandler`, `NewDatabaseHandler`
+3. 装饰器次优先：`WithAsync`, `WithSampling`, `WithMetrics`, `WithContextExtractor`
+4. 便捷函数：`Debug`, `Info`, `Warn`, `Error`, `Audit`, `*Context` 变体
+5. 类型：`LevelHandler`, `HandlerOption`, `AsyncConfig`, `ErrorHandler`, `LogEntry`, `ContextExtractor`
+6. 辅助函数：`RecordToLogEntry`, `AsyncDropped`, `CloseAll`, `MergeAttrs`, `ReportError`
+7. 验证 `go doc` 输出可读性
 
 ### Exit Criteria
 - `go vet ./...` 无警告
 - 所有导出标识符有英文 godoc
-- 错误消息格式统一
-- `maskPasswordInDSN` 对未知格式不泄露任何原始内容
-- 压缩文件权限 0600
-- SyslogTag 验证生效
+- `go doc mebsuta.NewFileHandler` 等关键函数输出有意义
 
-### 前置条件：Phase 2-5 完成
+### 前置条件：无（可与 Phase 0 并行）
 
-## Phase 7: 覆盖率扫尾 + TESTING.md 更新
+## Phase 2: SPEC Handler 链组合规范
+
+### 背景
+SPEC.md 描述了每个独立 handler 的行为，但没有定义装饰器链的组合语义。DX 审查确认这是 WARN 级缺失。
 
 ### Tasks
-1. 运行完整覆盖率报告，识别 SPEC P0 行为的覆盖缺口
-2. 为 handler 链（Sampling → Async → File）添加集成测试
-3. 更新 TESTING.md 所有 Go Coverage 列
-4. Follow-up issue：评估是否将 `database/` 子包拆分为独立 Go module
+1. 在 SPEC.md 添加 "Handler Chain Composition" 章节
+2. 定义推荐链顺序：`safeMulti → Metrics → Sampling → Async → 实际 Handler`
+3. 记录禁止组合：`Async → Syslog`、`Async → Database`（已有注释警告）
+4. 定义链中 Audit 级别语义（不丢弃、不采样）
+5. 记录 `Close()` 传播规则（装饰器从外向内 Close）
 
 ### Exit Criteria
-- SPEC P0 行为覆盖率 100%（Go 所有 handler）
-- TESTING.md 更新完整
-- 所有包测试通过 `go test -race -count=1 ./...`
+- SPEC.md 含完整链组合规范
+- 推荐/禁止组合有明确列表
+- Audit 级别行为有 pass/fail criteria
 
-### 前置条件：Phase 6 完成
+### 前置条件：无（可与 Phase 0/1 并行）
+
+## Phase 3: Handler 链集成测试
+
+### 背景
+上一轮 PLAN 标记了此任务但未执行。Eng 审查建议扩展：覆盖不同顺序、加入 DatabaseHandler、使用 fake HandlerMetrics。
+
+### Tasks
+1. Sampling → Async → Stdout 链：验证采样 + 异步写入
+2. Sampling → Async → File 链：验证文件写入 + 采样旁路
+3. Metrics → Sampling → Async 链：验证 metrics 正确记录（使用 fake HandlerMetrics）
+4. Multi([Stdout, File]) 链：验证 fanout
+5. Async → Sampling 链（反向顺序）：验证行为差异
+6. Database 加入链测试：Metrics → Async → Database
+7. Error/Audit 级别穿透所有链的验证
+8. CloseAll 在完整链上的正确传播
+
+### Exit Criteria
+- 6+ 条 handler 链有集成测试
+- Audit 级别在所有链中不被丢弃
+- `go test -race ./...` 通过
+
+### 前置条件：Phase 0 完成
+
+## Phase 4: Syslog Mock Server + 网络路径测试
+
+### 背景
+Syslog handler 的 `Handle`、`Close`、`write`、`reconnect`、`processQueue`、`safeSend` 全部 0% 覆盖。
+
+### Tasks
+1. 创建 `syslog_mock_test.go`，TCP mock server（`net.Listen("tcp", ...)`）
+2. 测试 `Handle()` → 完整写入路径
+3. 测试 `Close()` → 优雅关闭（验证排空逻辑）
+4. 测试 `formatJSONMessage()` 和 `formatStructuredMessage()`
+5. 测试 `reconnect()` → 断连后重连
+6. 测试 `backoffDelay()` → 注入 rand 源避免 jitter 陷阱
+
+### Exit Criteria
+- Handle/Close 覆盖率 ≥ 70%
+- `go test -race ./...` 通过
+
+### 前置条件：Phase 3 完成
+
+## Phase 5: Database 错误路径测试
+
+### 背景
+DatabaseHandler.Handle 仅 31%，NewDatabaseHandler 仅 7.7%。
+
+### Tasks
+1. batch retry 耗尽场景（3 次重试后 error handler 上报）
+2. error handler 回调被正确调用
+3. `WithAttrs`/`WithGroup` 返回正确类型
+4. `recordToDBEntry` 字段映射完整性
+
+### Exit Criteria
+- Database 包覆盖率 ≥ 60%
+- `go test -race ./database/` 通过
+
+### 前置条件：无（可与 Phase 4 并行）
+
+## Phase 6: Go/Rust SPEC 对齐验证
+
+### 背景
+Eng 审查确认：P0/P1 差异应默认修复代码，而非仅记录。
+
+### Tasks
+1. 逐条对比 SPEC.md 每个 P0/P1 要求
+2. 优先级计算（facility * 8 + severity）一致性验证
+3. 截断行为差异确认已在 SPEC 记录
+4. LevelAudit 行为一致性验证
+5. **发现的 P0/P1 差异直接修代码**，P2 差异记录到 SPEC.md
+
+### Exit Criteria
+- SPEC.md 所有 P0/P1 项 Go+Rust 双通过
+- P0/P1 差异已修复（不是仅记录）
+- `go test -race ./...` 通过
+
+### 前置条件：Phase 3-5 完成
+
+## Phase 7: TESTING.md 更新 + 最终覆盖率报告
+
+### 背景
+TESTING.md 缺少覆盖率数值。所有测试完成后更新。
+
+### Tasks
+1. 运行 `go test -coverprofile=coverage.out ./...`
+2. 在 TESTING.md 添加覆盖率数值表格（package / coverage / date）
+3. 验证 TESTING.md 与实际测试一致
+
+### Exit Criteria
+- TESTING.md 含覆盖率数值
+- 数据与 `go test -cover` 一致
+
+### 前置条件：Phase 0-6 全部完成
 
 ## Dream State Delta
 
 ```
 CURRENT STATE                  THIS PLAN                   12-MONTH IDEAL
 ─────────────────────────────────────────────────────────────────────────
-覆盖率 62.9%          ──→     SPEC P0 覆盖 100%      ──→  Go/Rust 行为完全对齐
-Database 3.1%          ──→     SPEC P0 测试完成       ──→  可选的独立 module
-无 benchmark           ──→     关键路径基线数据        ──→  vs slog/zap/zerolog 对比
-Audit 未加固           ──→     全链路审计保护          ──→  合规认证就绪
-godoc 不完整           ──→     英文 godoc 全覆盖       ──→  pkg.go.dev 就绪
+0 个 Go 示例           ──→     5 个可运行示例           ──→  pkg.go.dev 就绪
+README 签名错误        ──→     代码可复制粘贴编译       ──→  新用户 5 分钟上手
+40+ 符号缺 godoc       ──→     英文 godoc 全覆盖       ──→  pkg.go.dev 就绪
+无链组合规范           ──→     SPEC 链组合章节          ──→  双语言互操作性
+无链集成测试           ──→     6+ 条链集成测试          ──→  生产配置验证
 ```
 
 ## Risk Register
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| GORM mock 策略不可行 | Phase 2 阻塞 | Phase 2 开头做 spike，不可行则降级为 sqlmock |
-| AsyncHandler Audit 保护需要改逻辑 | drop-on-full 语义变化 | 如果需要改，保持向后兼容（新配置项） |
-| 覆盖率扫尾发现深层问题 | 延迟 | SPEC P0 优先，P2 问题记录为 follow-up |
+| SPEC P0/P1 差异需大量修复 | Phase 6 延迟 | 先验证再评估，大改动可拆 follow-up |
+| Examples 数量不足 | DX 改善有限 | 与 Rust 5 个对齐，覆盖核心场景 |
+| backoffDelay jitter 测试不稳定 | Syslog 测试 flaky | 注入固定 rand 源 |
+
+## Eng Review Consensus
+
+| # | Finding | Claude | Codex | Consensus | Action |
+|---|---------|--------|-------|-----------|--------|
+| E1 | Go 无可运行示例程序（Rust 有 5 个） | HIGH | HIGH | **必须添加** | Phase 0 |
+| E2 | 计划仍读起来像覆盖率项目 | HIGH | HIGH | **重写计划** | 已重写 |
+| E3 | Godoc 范围低估（40+ 符号，非 6 个） | MED | MED | **扩大范围** | Phase 1 |
+| E4 | SPEC 对齐应默认修复代码 | MED | HIGH | **修复优先** | Phase 6 |
+| E5 | SyslogHandler.Close() 排空竞争 | MED | MED | **验证** | Phase 4 |
+| E6 | AsyncHandler 缺 sendMu | LOW | MED | **follow-up** | 不在本轮 |
+| E7 | Metrics 链测试需 fake HandlerMetrics | MED | MED | **使用 fake** | Phase 3 |
+| E8 | backoffDelay() jitter 测试陷阱 | LOW | LOW | **注入 rand** | Phase 4 |
+| E9 | 链测试应覆盖不同顺序 | MED | MED | **采纳** | Phase 3 |
+| E10 | DatabaseHandler 应加入链测试 | MED | MED | **采纳** | Phase 3 |
+
+## DX Review Consensus
+
+| # | Finding | Claude | Codex | Consensus | Action |
+|---|---------|--------|-------|-----------|--------|
+| D1 | Go 无示例程序 | FAIL | — | **FAIL** | Phase 0 |
+| D2 | README NewFileHandler 签名错误 | FAIL | FAIL | **FAIL** | Phase 0 |
+| D3 | 7 构造函数+8 便捷函数缺 godoc | WARN | PASS* | **WARN** | Phase 1 |
+| D4 | TESTING.md 缺覆盖率数值 | WARN | — | **WARN** | Phase 7 |
+| D5 | SPEC 缺链组合规范 | WARN | — | **WARN** | Phase 2 |
+
+*Codex scope limited to README/types.go; did not review full godoc surface.
 
 ## Decision Audit Trail
 
 | # | Phase | Decision | Classification | Principle | Rationale | Rejected |
 |---|-------|----------|-----------|-----------|----------|----------|
-| 1 | CEO | 前提确认：调整优先级 | User Decision | P1+P3 | 用户选择 SPEC P0 + benchmark + 审计合规方向 | 按原计划执行、重新定义方向 |
-| 2 | CEO | 删除 doRotate 大拆分 | Auto-decided | P3+P5 | 两个模型都认为风险>收益，58行线性逻辑可接受 | 5 子方法拆分 |
-| 3 | CEO | 修正 grapheme 测试为 UTF-8 合法性验证 | Auto-decided | P5+P1 | Go 版本字节级截断，测试 grapheme 会失败 | grapheme 级截断测试 |
-| 4 | CEO | 新增 Benchmark Phase | Auto-decided | P1+P2 | 日志库核心竞争力是性能，无基线无法优化 | 无 benchmark |
-| 5 | CEO | 新增审计合规加固 Phase | Auto-decided | P1+P2 | LevelAudit 是独特卖点，需确保全链路正确 | 仅做覆盖率 |
-| 6 | CEO | Godoc 改为英文 | Auto-decided | P1+P6 | pkg.go.dev 国际用户，SPEC.md 已是英文 | 保持中文 |
-| 7 | CEO | 保留 Database 测试但降级为 SPEC P0 聚焦 | Auto-decided | P3+P1 | 两个模型质疑 ROI，但 SPEC P0 仍需覆盖 | 跳过或全覆盖 |
-| 8 | CEO | FileHandler 仅提取 listBackups | Auto-decided | P5+P3 | 小范围改进，不做大拆分 | 完整 doRotate 重构 |
-| 9 | Eng | AsyncHandler/DB 缺 Audit 保护 | Auto-decided | P1+P2 | 两个模型一致标记为高，Phase 5 已覆盖 | 保持 drop-on-full |
-| 10 | Eng | maskPasswordInDSN 可能泄露密码 | Auto-decided | P1+P5 | 未知 DSN 格式返回前缀可能暴露密码，改为返回 "(redacted)" | 保持当前行为 |
-| 11 | Eng | compressFile 临时文件权限 | Auto-decided | P1+P5 | 日志文件要求 0600，压缩文件也应一致 | 使用 os.OpenFile 0600 |
-| 12 | Eng | SyslogTag 无长度/内容验证 | Auto-decided | P1+P5 | 防止 syslog 协议注入，限制 Tag 长度 + 过滤非打印字符 | 不验证 |
-| 13 | Eng | AsyncHandler 缺并发 Close 测试 | Auto-decided | P1+P2 | SPEC P0 要求 concurrent close/write 无 panic | 不测试 |
-| 14 | Eng | Benchmark 补充 RunParallel | Auto-decided | P1+P2 | safeMulti goroutine-per-record 需要在真正并行下量化开销 | 仅单线程 |
-| 15 | Eng | LevelAudit 添加编译期断言 | Auto-decided | P5+P1 | 防止 LevelAudit 值意外低于 Error | 不加断言 |
-
-## Eng Review Findings
-
-### Architecture (Section 1)
-Handler 装饰器链设计合理：safeMulti → Sampling → Async → Metrics → 实际 handler。
-泛型子处理程序 `AttrsSub[H]`/`GroupSub[H]` 消除了各 handler 的重复 WithAttrs/WithGroup 定义。
-SamplingHandler 共享状态（count/ticker/wg）通过指针跨 WithAttrs/WithGroup 实例正确共享。
-safeMulti 多 handler 路径使用 goroutine-per-record，高并发下需 benchmark 量化。
-
-### Error & Rescue Registry (Section 2)
-| 方法/路径 | 可能的失败 | 异常类 | 救援? | 用户看到 |
-|---|---|---|---|---|
-| AsyncHandler.sendRecord | buffer full | dropped count | Y | error handler 报告 |
-| AsyncHandler.sendRecord | channel closed (panic) | panic | Y (recover) | error handler 报告 |
-| DatabaseHandler.Handle | buffer full | dropped count | Y | error handler 报告 |
-| DatabaseHandler.flush | batch insert fail | GORM error | Y (3x retry) | error handler 报告 |
-| SamplingHandler.Handle | count overflow | incorrect sampling | N | 短暂不一致（SPEC 允许） |
-| SyslogHandler.writeWithRetry | network fail | reconnect loop | Y (backoff) | 自动重连 |
-
-**关键 GAP**：AsyncHandler 和 DatabaseHandler 对 Audit 级别无保护 — buffer full 时 Audit 记录会被丢弃。
-
-### Security (Section 3)
-| 威胁 | 可能性 | 影响 | 计划是否缓解 |
-|---|---|---|---|
-| maskPasswordInDSN 未知格式泄露 | 中 | 中 | Phase 6 修复 |
-| SyslogTag 注入 | 低 | 中 | Phase 6 添加验证 |
-| compressFile 权限过宽 | 低 | 低 | Phase 6 修复 |
-| DatabaseHandler table name SQL 注入 | 低 | 高 | 已有正则验证 |
-
-### Failure Modes Registry (Section 4)
-| 失败模式 | 严重性 | 处理 | 测试覆盖 |
-|---|---|---|---|
-| AsyncHandler buffer full 丢弃 Audit | 高 | Phase 5 添加 Audit 保护 | 待补 |
-| DatabaseHandler batch retry 耗尽 | 中 | 3 次重试 + error handler | 待补 |
-| SamplingHandler 窗口边界不一致 | 低 | atomic 操作，SPEC 允许 | 已覆盖 |
-| SyslogHandler 网络断连 | 中 | 自动重连 + backoff | 待补 |
-
-### Test Diagram (Section 5)
-```
-Handler 链测试覆盖:
-  Sampling → inner          ✅ TestWithSampling_*
-  Async → inner              ✅ TestAsyncHandler_*
-  Multi → [h1, h2]          ✅ TestSafeMultiHandler_*
-  Sampling → Async → File   ❌ 无集成测试（Phase 7）
-  Async 并发 Close/Write    ❌ 无测试（Phase 2/5）
-  Database full lifecycle   ❌ 3.1% 覆盖（Phase 2）
-  Syslog reconnect          ❌ 无测试（Phase 3 补充）
-```
+| 1 | CEO | 前提确认：调整为采用就绪方向 | User Decision | P1+P6 | 覆盖率不是正确北极星，godoc/examples/集成测试优先 | 保持覆盖率优先 |
+| 2 | Eng | 重写计划为采用就绪优先 | Consensus | P1+P6 | E1-E2: 两个模型一致认为 examples/godoc 优先于覆盖率 | 保持覆盖率阶段门控 |
+| 3 | DX | README 签名错误为 BLOCKER | Consensus | P5 | 两个模型一致确认 NewFileHandler(cfg) 无法编译 | 仅更新文档 |

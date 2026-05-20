@@ -19,7 +19,7 @@ import (
 
 const logFileMode os.FileMode = 0600
 
-// FileHandler 将日志记录输出到文件，支持大小+时间轮转和 gzip 压缩。
+// FileHandler writes log records to a file with size and time-based rotation and optional gzip compression.
 type FileHandler struct {
 	LevelHandler
 	format EncodingType
@@ -58,6 +58,7 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// NewFileHandler creates a FileHandler that writes to the file specified in cfg at the given log level.
 func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)

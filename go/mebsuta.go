@@ -1,9 +1,9 @@
-// Package mebsuta 提供基于 slog 的生产级结构化日志库。
+// Package mebsuta provides a production-grade structured logging library built on slog.
 //
-// 提供 slog.Handler 插件: stdout/file/syslog/database 输出、日志采样、
-// 异步写入、Prometheus 指标等能力。
+// It offers slog.Handler plugins: stdout/file/syslog/database output, log sampling,
+// async writing, Prometheus metrics, and more.
 //
-// 使用方式:
+// Usage:
 //
 //	logger, err := mebsuta.New(
 //	    mebsuta.WithHandler(mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)),
@@ -25,7 +25,7 @@ import (
 	"time"
 )
 
-// New 使用 HandlerOption 创建 *slog.Logger，返回标准 slog.Logger。
+// New creates a *slog.Logger from the given HandlerOption list.
 func New(opts ...HandlerOption) (*slog.Logger, error) {
 	handler, err := buildHandler(opts...)
 	if err != nil {
@@ -34,42 +34,51 @@ func New(opts ...HandlerOption) (*slog.Logger, error) {
 	return slog.New(handler), nil
 }
 
+// Debug logs at Debug level using the default logger.
 func Debug(msg string, args ...any) { slog.Debug(msg, args...) }
-func Info(msg string, args ...any)  { slog.Info(msg, args...) }
-func Warn(msg string, args ...any)  { slog.Warn(msg, args...) }
+
+// Info logs at Info level using the default logger.
+func Info(msg string, args ...any) { slog.Info(msg, args...) }
+
+// Warn logs at Warn level using the default logger.
+func Warn(msg string, args ...any) { slog.Warn(msg, args...) }
+
+// Error logs at Error level using the default logger.
 func Error(msg string, args ...any) { slog.Error(msg, args...) }
 
-// Audit 记录审计级别日志（合规日志）。级别高于 Error，不受采样限制。
+// Audit logs at the Audit level for compliance records. The level is above Error and is never sampled out.
 func Audit(msg string, args ...any) {
 	slog.Log(context.Background(), LevelAudit, msg, args...)
 }
 
-// AuditContext 记录带 context 的审计级别日志。
+// AuditContext logs at the Audit level with the given context.
 func AuditContext(ctx context.Context, msg string, args ...any) {
 	slog.Log(ctx, LevelAudit, msg, args...)
 }
 
+// DebugContext logs at Debug level with the given context.
 func DebugContext(ctx context.Context, msg string, args ...any) {
 	slog.DebugContext(ctx, msg, args...)
 }
 
+// InfoContext logs at Info level with the given context.
 func InfoContext(ctx context.Context, msg string, args ...any) {
 	slog.InfoContext(ctx, msg, args...)
 }
 
+// WarnContext logs at Warn level with the given context.
 func WarnContext(ctx context.Context, msg string, args ...any) {
 	slog.WarnContext(ctx, msg, args...)
 }
 
+// ErrorContext logs at Error level with the given context.
 func ErrorContext(ctx context.Context, msg string, args ...any) {
 	slog.ErrorContext(ctx, msg, args...)
 }
 
-// LogEntry 是从 slog.Record 提取的结构化日志条目。
-// DatabaseHandler 和 SyslogHandler 共享此 schema。
+// LogEntry is a structured log entry extracted from a slog.Record, shared by DatabaseHandler and SyslogHandler.
 //
-// NOTE: 此类型因 database 子包跨包引用而导出，非面向终端用户。
-// 应用代码应直接使用 slog.Record。
+// NOTE: This type is exported for cross-package use by the database sub-package; application code should use slog.Record directly.
 type LogEntry struct {
 	Time    time.Time
 	Level   slog.Level
@@ -77,8 +86,8 @@ type LogEntry struct {
 	Attrs   []slog.Attr
 }
 
-// RecordToLogEntry 从 slog.Record 提取 LogEntry。
-// NOTE: 因 database 子包跨包引用而导出，应用代码无需直接调用。
+// RecordToLogEntry extracts a LogEntry from a slog.Record.
+// NOTE: Exported for the database sub-package; application code does not need to call this directly.
 func RecordToLogEntry(r slog.Record) LogEntry {
 	e := LogEntry{
 		Time:    r.Time,
@@ -92,13 +101,13 @@ func RecordToLogEntry(r slog.Record) LogEntry {
 	return e
 }
 
-// ErrorHandler 处理 Handler 内部错误（如文件轮转失败、数据库写入失败等）。
-// slog.Logger 静默吞掉 Handle 返回的 error，Handler 需要通过此机制报告内部错误。
-// 默认写入 os.Stderr。用户可通过 WithErrorHandler 自定义。
+// ErrorHandler is a function that handles internal Handler errors (e.g., file rotation failure, database write failure).
+// Since slog.Logger silently ignores errors returned from Handle, handlers use this mechanism to report errors.
+// The default writes to os.Stderr; customize via WithErrorHandler.
 type ErrorHandler func(component string, err error)
 
-// DefaultErrorHandler 是默认的内部错误处理函数，写入 os.Stderr。
-// Handler 构造时值拷贝，运行时修改不影响已创建的实例。
+// DefaultErrorHandler is the default error handler that writes to os.Stderr.
+// It is value-copied at handler construction time, so runtime changes do not affect already-created instances.
 var DefaultErrorHandler ErrorHandler = defaultErrorHandler
 
 func defaultErrorHandler(component string, err error) {

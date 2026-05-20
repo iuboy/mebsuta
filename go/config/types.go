@@ -15,7 +15,7 @@ const (
 	DefaultSyslogTag     = "mebsuta"
 )
 
-// FileConfig 定义文件日志配置
+// FileConfig holds configuration for file-based log output.
 type FileConfig struct {
 	Path           string        `json:"path"`
 	MaxSizeMB      int           `json:"maxSizeMB"`
@@ -26,7 +26,7 @@ type FileConfig struct {
 	RotateInterval time.Duration `json:"rotateInterval"`
 }
 
-// DatabaseConfig 定义数据库日志配置
+// DatabaseConfig holds configuration for database log output.
 type DatabaseConfig struct {
 	DriverName      string        `json:"driver"`
 	DataSourceName  string        `json:"dsn"`
@@ -39,7 +39,7 @@ type DatabaseConfig struct {
 	RetryDelay      time.Duration `json:"retryDelay"`
 }
 
-// SyslogConfig 定义Syslog配置
+// SyslogConfig holds configuration for syslog output.
 type SyslogConfig struct {
 	Network       string        `json:"network"`
 	Address       string        `json:"address"`
@@ -56,7 +56,7 @@ type SyslogConfig struct {
 	JSONInMessage bool          `json:"jsonInMessage"`
 }
 
-// SamplingConfig 定义日志采样配置
+// SamplingConfig holds configuration for log sampling.
 type SamplingConfig struct {
 	Enabled    bool          `json:"enabled"`
 	Initial    int           `json:"initial"`

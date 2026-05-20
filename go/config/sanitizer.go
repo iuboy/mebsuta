@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// Sanitize 返回配置的脱敏字符串表示（用于日志输出）
-// 此方法会隐藏敏感信息如密码、token 等
+// Sanitize returns a sanitized string representation of DatabaseConfig with sensitive fields masked.
 func (dc *DatabaseConfig) Sanitize() string {
 	if dc == nil {
 		return ""
@@ -31,7 +30,7 @@ func (dc *DatabaseConfig) Sanitize() string {
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
 
-// Sanitize 返回文件配置的脱敏字符串表示
+// Sanitize returns a sanitized string representation of FileConfig.
 func (fc *FileConfig) Sanitize() string {
 	if fc == nil {
 		return ""
@@ -44,7 +43,7 @@ func (fc *FileConfig) Sanitize() string {
 		" }"
 }
 
-// Sanitize 返回 Syslog 配置的脱敏字符串表示
+// Sanitize returns a sanitized string representation of SyslogConfig.
 func (sc *SyslogConfig) Sanitize() string {
 	if sc == nil {
 		return ""
@@ -99,7 +98,7 @@ func maskPasswordInDSN(dsn string) string {
 	return "(redacted)"
 }
 
-// SanitizeForLog 对任意配置进行脱敏（通用方法）
+// SanitizeForLog returns a sanitized string for any supported config type.
 func SanitizeForLog(cfg any) string {
 	if cfg == nil {
 		return "(nil)"

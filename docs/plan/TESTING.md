@@ -69,6 +69,22 @@ cargo audit
 - **missing**: No test coverage exists for this behavior in one or both languages.
 - **not applicable**: This behavior does not apply to one language.
 
+## Go Coverage (commit 82d81c0 + round 2)
+
+| Package | Coverage | Date |
+| --- | --- | --- |
+| go/ (main) | 80.7% | 2026-05-20 |
+| go/config/ | 91.5% | 2026-05-20 |
+| go/database/ | 76.5% | 2026-05-20 |
+| go/metrics/ | 90.6% | 2026-05-20 |
+
+### Key improvements (round 2)
+- Main package: 68.4% → 80.7% (+12.3pp)
+- Database: 47.0% → 76.5% (+29.5pp)
+- Syslog: 0% → 79.2% (Handle/Close/formatMessage/reconnect all tested)
+- 8 handler chain integration tests added
+- 5 runnable examples added (examples/)
+
 ## Open Coverage Gaps
 
 No open P0 coverage gaps are currently tracked.

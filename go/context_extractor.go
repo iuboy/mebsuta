@@ -5,7 +5,7 @@ import (
 	"log/slog"
 )
 
-// ContextExtractor 从 context 提取 slog.Attr 列表。
+// ContextExtractor extracts slog.Attr values from a context.Context.
 type ContextExtractor func(ctx context.Context) []slog.Attr
 
 type contextExtractorHandler struct {
@@ -13,6 +13,7 @@ type contextExtractorHandler struct {
 	extract ContextExtractor
 }
 
+// WithContextExtractor wraps inner and injects attributes extracted from context into each log record.
 func WithContextExtractor(inner slog.Handler, extract ContextExtractor) slog.Handler {
 	if inner == nil || extract == nil {
 		return inner

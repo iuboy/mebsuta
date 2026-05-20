@@ -10,7 +10,7 @@ import (
 // validTableNameRe 预编译表名验证正则，避免每次 Validate 调用重新编译。
 var validTableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// Validate 验证文件配置
+// Validate validates the FileConfig and applies defaults for zero fields.
 func (fc *FileConfig) Validate() error {
 	if fc.Path == "" {
 		return fmt.Errorf("file path is required")
@@ -30,7 +30,7 @@ func (fc *FileConfig) Validate() error {
 	return nil
 }
 
-// Validate 验证数据库配置
+// Validate validates the DatabaseConfig and applies defaults for zero fields.
 func (dc *DatabaseConfig) Validate() error {
 	if dc.BatchSize <= 0 {
 		dc.BatchSize = DefaultBatchSize
@@ -68,7 +68,7 @@ func (dc *DatabaseConfig) Validate() error {
 	return nil
 }
 
-// Validate 验证Syslog配置
+// Validate validates the SyslogConfig and applies defaults for zero fields.
 func (sc *SyslogConfig) Validate() error {
 	if sc.Network == "" {
 		sc.Network = DefaultSyslogNetwork
@@ -104,7 +104,7 @@ func (sc *SyslogConfig) Validate() error {
 	return nil
 }
 
-// Validate 验证采样配置
+// Validate validates the SamplingConfig when sampling is enabled.
 func (sc *SamplingConfig) Validate() error {
 	if !sc.Enabled {
 		return nil

@@ -28,8 +28,8 @@ slog.Info("hello", "key", "value")
 | Handler | 构造函数 | 说明 |
 | --- | --- | --- |
 | StdoutHandler | `NewStdoutHandler(level, format)` | 控制台输出 |
-| FileHandler | `NewFileHandler(cfg)` | 文件输出，自研轮转 |
-| SyslogHandler | `NewSyslogHandler(cfg)` | Syslog 输出 |
+| FileHandler | `NewFileHandler(cfg, level)` | 文件输出，自研轮转 |
+| SyslogHandler | `NewSyslogHandler(cfg, level)` | Syslog 输出 |
 | DatabaseHandler | `database.NewDatabaseHandler(cfg, level)` | 数据库批量写入 |
 
 ## 装饰器
@@ -40,6 +40,18 @@ slog.Info("hello", "key", "value")
 | AsyncHandler | `WithAsync(inner, cfg)` | 异步缓冲写入 |
 | MetricsHandler | `WithMetrics(inner, m, name)` | 指标收集 |
 | ContextExtractor | `WithContextExtractor(inner, fn)` | 上下文字段提取 |
+
+## 示例
+
+可运行示例位于 `examples/` 目录：
+
+```bash
+go run ./examples/basic    # 最简 stdout 输出
+go run ./examples/file     # 文件输出 + 轮转
+go run ./examples/sampling # 采样装饰器
+go run ./examples/async    # 异步写入
+go run ./examples/chain    # 完整生产配置链
+```
 
 ## 测试
 
