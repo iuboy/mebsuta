@@ -611,3 +611,155 @@ func TestSyslogHandler_PriorityCalculation(t *testing.T) {
 		t.Errorf("expected priority <11>, got prefix: %q", msg[:min(len(msg), 10)])
 	}
 }
+
+// =============================================================================
+// MetricsHandler 测试
+// =============================================================================
+
+type mockMetrics struct {
+	handleLatency time.Duration
+	errors        []string
+	dropped       []string
+	mu            sync.Mutex
+}
+
+func (m *mockMetrics) ObserveHandle(d time.Duration) {
+	m.mu.Lock()
+	m.handleLatency = d
+	m.mu.Unlock()
+}
+
+func (m *mockMetrics) IncError(name string) {
+	m.mu.Lock()
+	m.errors = append(m.errors, name)
+	m.mu.Unlock()
+}
+
+func (m *mockMetrics) IncDropped(name string) {
+	m.mu.Lock()
+	m.dropped = append(m.dropped, name)
+	m.mu.Unlock()
+}
+
+func TestMetricsHandler_Handle(t *testing.T) {
+	var buf bytes.Buffer
+	inner := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test")
+
+	logger := slog.New(h)
+	logger.Info("hello")
+
+	if mm.handleLatency == 0 {
+		t.Error("ObserveHandle should have been called with non-zero duration")
+	}
+}
+
+func TestMetricsHandler_WithAttrs(t *testing.T) {
+	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test")
+	child := h.WithAttrs([]slog.Attr{slog.String("k", "v")})
+	if child == nil {
+		t.Fatal("WithAttrs returned nil")
+	}
+}
+
+func TestMetricsHandler_WithGroup(t *testing.T) {
+	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test")
+	child := h.WithGroup("request")
+	if child == nil {
+		t.Fatal("WithGroup returned nil")
+	}
+}
+
+func TestMetricsHandler_Unwrap(t *testing.T) {
+	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test").(*MetricsHandler)
+	if h.unwrapHandler() != inner {
+		t.Error("unwrapHandler should return inner")
+	}
+}
+
+func TestMetricsHandler_NilInner(t *testing.T) {
+	mm := &mockMetrics{}
+	h := WithMetrics(nil, mm, "test")
+	if h != nil {
+		t.Error("WithMetrics(nil, ...) should return nil")
+	}
+}
+
+// =============================================================================
+// safeMulti WithAttrs/WithGroup 测试
+// =============================================================================
+
+func TestSafeMulti_WithAttrs(t *testing.T) {
+	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
+	h2 := NewStdoutHandler(slog.LevelInfo, JSON)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	child := multi.WithAttrs([]slog.Attr{slog.String("preset", "val")})
+	if child == nil {
+		t.Fatal("WithAttrs returned nil")
+	}
+
+	sm := child.(*safeMulti)
+	if len(sm.handlers) != 2 {
+		t.Fatalf("expected 2 handlers, got %d", len(sm.handlers))
+	}
+}
+
+func TestSafeMulti_WithGroup(t *testing.T) {
+	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
+	h2 := NewStdoutHandler(slog.LevelInfo, JSON)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	child := multi.WithGroup("request")
+	if child == nil {
+		t.Fatal("WithGroup returned nil")
+	}
+
+	sm := child.(*safeMulti)
+	if len(sm.handlers) != 2 {
+		t.Fatalf("expected 2 handlers, got %d", len(sm.handlers))
+	}
+}
+
+func TestSafeMulti_SingleHandlerFastPath(t *testing.T) {
+	var buf bytes.Buffer
+	inner := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
+	multi := safeMultiHandler([]slog.Handler{inner}, nil)
+	logger := slog.New(multi)
+	logger.Info("single handler fast path")
+	if buf.Len() == 0 {
+		t.Error("single handler should write output")
+	}
+}
+
+// =============================================================================
+// RecordWithGroupAttrs 测试
+// =============================================================================
+
+func TestRecordWithGroupAttrs(t *testing.T) {
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)
+	r.AddAttrs(slog.String("id", "1"))
+
+	newR := RecordWithGroupAttrs(r, "req", []slog.Attr{slog.String("extra", "data")})
+
+	var attrs []slog.Attr
+	newR.Attrs(func(a slog.Attr) bool {
+		attrs = append(attrs, a)
+		return true
+	})
+
+	if len(attrs) != 2 {
+		t.Fatalf("expected 2 attrs, got %d", len(attrs))
+	}
+	if attrs[0].Key != "req.id" {
+		t.Errorf("first attr key = %q, want %q", attrs[0].Key, "req.id")
+	}
+	if attrs[1].Key != "extra" {
+		t.Errorf("second attr key = %q, want %q", attrs[1].Key, "extra")
+	}
+}

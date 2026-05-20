@@ -72,8 +72,6 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return nil
 	}
-
-	// 同步复制 Attr（slog.Record.Attr 只能遍历一次）
 	ar := asyncRecord{
 		Time:    r.Time,
 		Level:   r.Level,
@@ -85,15 +83,16 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		ar.Attrs = append(ar.Attrs, attr)
 		return true
 	})
+	return h.sendRecord(ar)
+}
 
-	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
+func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 	defer func() {
 		if r := recover(); r != nil {
 			h.dropped.Add(1)
 			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()))
 		}
 	}()
-
 	select {
 	case h.ch <- ar:
 		return nil
@@ -188,12 +187,9 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return nil
 	}
-
 	for _, attr := range h.attrs {
 		r.AddAttrs(attr)
 	}
-
-	// 同步复制 Attr，使用 WithGroup 后的内层 handler
 	ar := asyncRecord{
 		Time:    r.Time,
 		Level:   r.Level,
@@ -205,23 +201,7 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		ar.Attrs = append(ar.Attrs, attr)
 		return true
 	})
-
-	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
-	defer func() {
-		if r := recover(); r != nil {
-			h.dropped.Add(1)
-			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()))
-		}
-	}()
-
-	select {
-	case h.ch <- ar:
-		return nil
-	default:
-		h.dropped.Add(1)
-		ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
-		return nil
-	}
+	return h.sendRecord(ar)
 }
 
 func (h *asyncGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
