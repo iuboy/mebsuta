@@ -97,7 +97,7 @@ func TestChain_SamplingAsyncStdout(t *testing.T) {
 		logger.Info("msg", "i", i)
 	}
 
-	CloseAll(logger.Handler())
+	require.NoError(t, CloseAll(logger.Handler()))
 
 	lines := buf.Lines()
 	entries := parseJSONLines(t, lines)
@@ -384,5 +384,114 @@ func TestChain_AuditBypassesAsyncBuffer(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("audit record not found in %d output lines", len(lines))
+	}
+}
+
+// =============================================================================
+// Prohibited combinations — Async wrapping self-buffered handlers
+// =============================================================================
+
+// TestChain_AsyncWrappingSyslogRejected verifies that WithAsync rejects
+// wrapping a SyslogHandler (which has its own async buffer) and returns
+// the inner handler directly.
+func TestChain_AsyncWrappingSyslogRejected(t *testing.T) {
+	srv := newMockSyslogServer(t)
+	defer srv.Close()
+
+	syslogH, err := NewSyslogHandler(defaultTestConfig(srv), slog.LevelDebug)
+	require.NoError(t, err)
+	defer syslogH.Close()
+
+	result := WithAsync(syslogH, AsyncConfig{BufferSize: 64})
+
+	_, isAsync := result.(*AsyncHandler)
+	require.False(t, isAsync, "WithAsync should not wrap SyslogHandler")
+	require.Same(t, syslogH, result, "should return the original SyslogHandler")
+}
+
+// mockSelfBuffered is a minimal handler implementing SelfBufferedHandler,
+// used to test the generic rejection logic in WithAsync.
+type mockSelfBuffered struct{ LevelHandler }
+
+func (*mockSelfBuffered) SelfBuffered()                                 {}
+func (*mockSelfBuffered) Handle(_ context.Context, _ slog.Record) error { return nil }
+func (h *mockSelfBuffered) WithAttrs(attrs []slog.Attr) slog.Handler    { return h }
+func (h *mockSelfBuffered) WithGroup(name string) slog.Handler          { return h }
+
+// TestChain_AsyncWrappingSelfBufferedRejected verifies WithAsync rejects any
+// handler implementing SelfBufferedHandler. The compile-time assertions
+// `var _ SelfBufferedHandler = (*SyslogHandler)(nil)` and the analogous line
+// in database/database_handler.go prove both concrete types satisfy the interface.
+func TestChain_AsyncWrappingSelfBufferedRejected(t *testing.T) {
+	inner := &mockSelfBuffered{}
+	result := WithAsync(inner, AsyncConfig{BufferSize: 64})
+
+	_, isAsync := result.(*AsyncHandler)
+	require.False(t, isAsync, "WithAsync should not wrap SelfBufferedHandler")
+	require.Same(t, inner, result, "should return the original handler")
+}
+
+// TestChain_AsyncWrappingDecoratedSyslogRejected verifies WithAsync recursively
+// detects SyslogHandler even through decorators like WithAttrs/WithGroup/WithSampling.
+func TestChain_AsyncWrappingDecoratedSyslogRejected(t *testing.T) {
+	srv := newMockSyslogServer(t)
+	defer srv.Close()
+
+	syslogH, err := NewSyslogHandler(defaultTestConfig(srv), slog.LevelDebug)
+	require.NoError(t, err)
+	defer syslogH.Close()
+
+	// Wrap SyslogHandler in WithAttrs
+	withAttrs := syslogH.WithAttrs([]slog.Attr{slog.String("key", "value")})
+	result := WithAsync(withAttrs, AsyncConfig{BufferSize: 64})
+
+	_, isAsync := result.(*AsyncHandler)
+	require.False(t, isAsync, "WithAsync should not wrap WithAttrs(SyslogHandler)")
+	require.Same(t, withAttrs, result, "should return the decorated handler")
+
+	// Wrap SyslogHandler in WithGroup
+	withGroup := syslogH.WithGroup("mygroup")
+	result2 := WithAsync(withGroup, AsyncConfig{BufferSize: 64})
+
+	_, isAsync2 := result2.(*AsyncHandler)
+	require.False(t, isAsync2, "WithAsync should not wrap WithGroup(SyslogHandler)")
+	require.Same(t, withGroup, result2, "should return the decorated handler")
+
+	// Wrap SyslogHandler in WithSampling
+	sampled := WithSampling(syslogH, config.SamplingConfig{
+		Enabled: true, Initial: 10, Thereafter: 1, Window: time.Second,
+	})
+	result3 := WithAsync(sampled, AsyncConfig{BufferSize: 64})
+
+	_, isAsync3 := result3.(*AsyncHandler)
+	require.False(t, isAsync3, "WithAsync should not wrap WithSampling(SyslogHandler)")
+	require.Same(t, sampled, result3, "should return the decorated handler")
+}
+
+// TestChain_CloseAllThroughDecorators verifies CloseAll properly closes
+// the inner handler through AttrsSub and GroupSub decorators.
+func TestChain_CloseAllThroughDecorators(t *testing.T) {
+	dir := t.TempDir()
+	fileH, err := NewFileHandler(config.FileConfig{
+		Path:      filepath.Join(dir, "test.log"),
+		MaxSizeMB: 10,
+	}, slog.LevelInfo)
+	require.NoError(t, err)
+
+	// Wrap in WithAttrs and WithGroup
+	withAttrs := fileH.WithAttrs([]slog.Attr{slog.String("key", "value")})
+	withGroup := withAttrs.WithGroup("mygroup")
+
+	logger := slog.New(withGroup)
+	logger.Info("test message")
+
+	// CloseAll should propagate through WithGroup -> WithAttrs -> FileHandler
+	require.NoError(t, CloseAll(logger.Handler()))
+
+	// Verify file was written and closed
+	data, err := os.ReadFile(filepath.Join(dir, "test.log"))
+	require.NoError(t, err)
+	if len(data) == 0 {
+		t.Error("file should have data after CloseAll through decorators")
 	}
 }

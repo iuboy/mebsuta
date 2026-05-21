@@ -297,6 +297,10 @@ func (h *AttrsSub[H]) WithGroup(name string) slog.Handler {
 	}
 }
 
+func (h *AttrsSub[H]) unwrapHandler() slog.Handler {
+	return h.Parent
+}
+
 // GroupSub is a generic sub-handler for WithGroup chains, prefixing all record attrs with the group name before forwarding to the parent.
 // NOTE: Exported for the database sub-package; application code does not need to use this directly.
 type GroupSub[H slog.Handler] struct {
@@ -327,4 +331,8 @@ func (h *GroupSub[H]) WithGroup(name string) slog.Handler {
 		Group:  h.Group + "." + name,
 		Attrs:  h.Attrs,
 	}
+}
+
+func (h *GroupSub[H]) unwrapHandler() slog.Handler {
+	return h.Parent
 }

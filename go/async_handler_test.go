@@ -115,7 +115,7 @@ func TestAsyncHandler_WithGroup(t *testing.T) {
 		closer.Close()
 	}
 
-	output := string(buf.Bytes())
+	output := buf.String()
 	// JSON 格式下 group 会生成嵌套 key
 	if !strings.Contains(output, `"request"`) {
 		t.Errorf("expected 'request' in output, got: %s", output)
@@ -175,7 +175,9 @@ func TestAsyncHandler_AuditNotDropped(t *testing.T) {
 	h := WithAsync(inner, AsyncConfig{BufferSize: 1}) // tiny buffer
 
 	// Fill the buffer with normal records
-	h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0))
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)); err != nil {
+		t.Fatalf("Handle fill: %v", err)
+	}
 
 	// Error/Audit should still be delivered (blocking path retries)
 	r := slog.NewRecord(time.Now(), slog.LevelError, "error record", 0)
@@ -197,7 +199,9 @@ func TestAsyncHandler_AuditLevelNotDropped(t *testing.T) {
 	inner := &countHandler{}
 	h := WithAsync(inner, AsyncConfig{BufferSize: 1})
 
-	h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0))
+	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)); err != nil {
+		t.Fatalf("Handle fill: %v", err)
+	}
 
 	r := slog.NewRecord(time.Now(), LevelAudit, "audit record", 0)
 	if err := h.Handle(context.Background(), r); err != nil {

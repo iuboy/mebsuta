@@ -604,8 +604,5 @@ func TestGenerateHostname(t *testing.T) {
 		if got == "" {
 			t.Error("fallback hostname should not be empty")
 		}
-		if got == "unknown" || got == "localhost" {
-			// Acceptable fallbacks when system hostname fails
-		}
 	})
 }

@@ -96,10 +96,10 @@ func TestDatabaseHandler_ErrorHandlerCallback(t *testing.T) {
 	defer cleanup()
 
 	var (
-		mu       sync.Mutex
-		gotComp  string
-		gotErr   error
-		called   int
+		mu      sync.Mutex
+		gotComp string
+		gotErr  error
+		called  int
 	)
 
 	h.setErrorHandler(func(component string, err error) {
@@ -341,8 +341,8 @@ func TestDatabaseHandler_BufferFullDropsInfoRecord(t *testing.T) {
 	// Do NOT start the run goroutine — the channel will fill up.
 
 	var (
-		mu        sync.Mutex
-		errMsgs   []string
+		mu      sync.Mutex
+		errMsgs []string
 	)
 	h.setErrorHandler(func(component string, err error) {
 		mu.Lock()
@@ -396,7 +396,9 @@ func TestDatabaseHandler_ConcurrentWrites(t *testing.T) {
 					slog.Int("goroutine", goroutineID),
 					slog.Int("seq", i),
 				)
-				h.Handle(context.Background(), r)
+				if err := h.Handle(context.Background(), r); err != nil {
+					t.Errorf("Handle() error: %v", err)
+				}
 			}
 		}(g)
 	}

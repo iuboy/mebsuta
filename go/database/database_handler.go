@@ -267,8 +267,11 @@ func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-// 编译期断言
+// SelfBuffered marks DatabaseHandler as having built-in async buffering.
+func (*DatabaseHandler) SelfBuffered() {}
+
 var (
-	_ slog.Handler = (*DatabaseHandler)(nil)
-	_ io.Closer    = (*DatabaseHandler)(nil)
+	_ slog.Handler                = (*DatabaseHandler)(nil)
+	_ io.Closer                   = (*DatabaseHandler)(nil)
+	_ mebsuta.SelfBufferedHandler = (*DatabaseHandler)(nil)
 )

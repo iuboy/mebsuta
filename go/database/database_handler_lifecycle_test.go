@@ -97,7 +97,9 @@ func TestDatabaseHandler_ConcurrentCloseWrite(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			r := slog.NewRecord(time.Now(), slog.LevelInfo, "concurrent", 0)
-			h.Handle(context.Background(), r) // may return nil or drop
+			if err := h.Handle(context.Background(), r); err != nil {
+				t.Errorf("Handle() error: %v", err)
+			}
 		}()
 	}
 
@@ -147,7 +149,9 @@ func TestDatabaseHandler_RecordsDeliveredBeforeClose(t *testing.T) {
 	for i := range 3 {
 		r := slog.NewRecord(time.Now(), slog.LevelInfo, "persistent msg", 0)
 		r.AddAttrs(slog.Int("i", i))
-		h.Handle(context.Background(), r)
+		if err := h.Handle(context.Background(), r); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
 	}
 
 	if err := h.Close(); err != nil {
@@ -197,7 +201,9 @@ func TestDatabaseHandler_BatchWrite(t *testing.T) {
 	for i := range batchSize + 2 { // exceed batch size to trigger flush
 		r := slog.NewRecord(time.Now(), slog.LevelInfo, "batch test", 0)
 		r.AddAttrs(slog.Int("i", i))
-		h.Handle(context.Background(), r)
+		if err := h.Handle(context.Background(), r); err != nil {
+			t.Fatalf("handle: %v", err)
+		}
 	}
 
 	if err := h.Close(); err != nil {

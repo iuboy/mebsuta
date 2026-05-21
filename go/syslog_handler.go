@@ -121,9 +121,9 @@ func (h *SyslogHandler) Close() error {
 		return nil
 	}
 
-	h.cancel()
 	close(h.buffer)
 	h.wg.Wait()
+	h.cancel()
 
 	h.connMu.Lock()
 	if h.conn != nil {
@@ -224,10 +224,10 @@ func (h *SyslogHandler) writeWithRetry(msg []byte) {
 		h.reconnect()
 	}
 	for i := range maxSyslogRetries {
-		if h.closing.Load() {
+		if err := h.write(msg); err == nil {
 			return
 		}
-		if err := h.write(msg); err == nil {
+		if h.closing.Load() {
 			return
 		}
 		if i == 0 {
@@ -514,7 +514,11 @@ func lastRuneBoundary(s string, n int) int {
 	return n
 }
 
+// SelfBuffered marks SyslogHandler as having built-in async buffering.
+func (*SyslogHandler) SelfBuffered() {}
+
 var (
-	_ slog.Handler = (*SyslogHandler)(nil)
-	_ io.Closer    = (*SyslogHandler)(nil)
+	_ slog.Handler        = (*SyslogHandler)(nil)
+	_ io.Closer           = (*SyslogHandler)(nil)
+	_ SelfBufferedHandler = (*SyslogHandler)(nil)
 )

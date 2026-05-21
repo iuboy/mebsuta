@@ -189,6 +189,74 @@ func TestSyslogHandler_Close(t *testing.T) {
 	require.NoError(t, h.Handle(context.Background(), r))
 }
 
+// TestSyslogHandler_CloseFlushesBufferedMessages verifies that Close() drains
+// all messages still in the buffer — matching the persistence-boundary contract
+// in SPEC.md §Close.
+func TestSyslogHandler_CloseFlushesBufferedMessages(t *testing.T) {
+	srv := newMockSyslogServer(t)
+	defer srv.Close()
+
+	h, err := NewSyslogHandler(defaultTestConfig(srv), slog.LevelDebug)
+	require.NoError(t, err)
+
+	const n = 10
+	for i := range n {
+		r := slog.NewRecord(time.Now(), slog.LevelInfo, fmt.Sprintf("buffered-%d", i), 0)
+		require.NoError(t, h.Handle(context.Background(), r))
+	}
+
+	// Close without waiting for any messages — Close must flush them all.
+	require.NoError(t, h.Close())
+
+	srv.WaitForMessages(t, n, 5*time.Second)
+	msgs := srv.Messages()
+	require.Len(t, msgs, n, "Close should flush all buffered messages")
+
+	received := make(map[string]bool, n)
+	for _, m := range msgs {
+		received[m] = true
+	}
+	for i := range n {
+		require.True(t, received[fmt.Sprintf("buffered-%d", i)] ||
+			func() bool {
+				for m := range received {
+					if strings.Contains(m, fmt.Sprintf("buffered-%d", i)) {
+						return true
+					}
+				}
+				return false
+			}(),
+			"message buffered-%d should be received", i)
+	}
+}
+
+func TestSyslogHandler_CloseDoesNotRetryUnavailableConn(t *testing.T) {
+	client, server := net.Pipe()
+	require.NoError(t, server.Close())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &SyslogHandler{
+		LevelHandler: LevelHandler{Level: slog.LevelDebug},
+		cfg: config.SyslogConfig{
+			RetryDelay: time.Hour,
+		},
+		conn:   client,
+		buffer: make(chan []byte, 1),
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	eh := ErrorHandler(func(string, error) {})
+	h.errorHandler.Store(&eh)
+	h.buffer <- []byte("close-boundary\n")
+
+	h.wg.Add(1)
+	go h.processQueue()
+
+	start := time.Now()
+	require.NoError(t, h.Close())
+	require.Less(t, time.Since(start), 500*time.Millisecond)
+}
+
 // =============================================================================
 // TestSyslogHandler_Reconnect — verify reconnect establishes new connection
 // =============================================================================
@@ -318,11 +386,11 @@ func TestSyslogHandler_PriorityCalc(t *testing.T) {
 		level    slog.Level
 		expected int
 	}{
-		{slog.LevelDebug, 1*8 + 7},  // 15
-		{slog.LevelInfo, 1*8 + 6},   // 14
-		{slog.LevelWarn, 1*8 + 4},   // 12
-		{slog.LevelError, 1*8 + 3},  // 11
-		{LevelAudit, 1*8 + 2},       // 10
+		{slog.LevelDebug, 1*8 + 7}, // 15
+		{slog.LevelInfo, 1*8 + 6},  // 14
+		{slog.LevelWarn, 1*8 + 4},  // 12
+		{slog.LevelError, 1*8 + 3}, // 11
+		{LevelAudit, 1*8 + 2},      // 10
 	}
 
 	for _, tt := range tests {

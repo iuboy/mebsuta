@@ -17,6 +17,13 @@ type AsyncConfig struct {
 
 const defaultAsyncBufferSize = 256
 
+// SelfBufferedHandler is a marker interface for handlers with built-in async
+// buffering. Wrapping such a handler in AsyncHandler creates double-buffering
+// and is rejected at construction time.
+type SelfBufferedHandler interface {
+	SelfBuffered()
+}
+
 // asyncRecord 是 slog.Record 的异步拷贝。
 // slog.Record 的 Attr 只能遍历一次，Handle 中必须同步复制。
 type asyncRecord struct {
@@ -41,9 +48,25 @@ type AsyncHandler struct {
 	errorHandler atomic.Pointer[ErrorHandler]
 }
 
+// findSelfBuffered 递归检查 handler 链中是否有 SelfBufferedHandler。
+func findSelfBuffered(h slog.Handler) bool {
+	if _, ok := h.(SelfBufferedHandler); ok {
+		return true
+	}
+	if uw, ok := h.(handlerUnwrapper); ok {
+		return findSelfBuffered(uw.unwrapHandler())
+	}
+	return false
+}
+
 // WithAsync wraps inner in an AsyncHandler that buffers records and writes them from a background goroutine.
 func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	if inner == nil {
+		return inner
+	}
+	if findSelfBuffered(inner) {
+		ReportError(DefaultErrorHandler, "async",
+			fmt.Errorf("WithAsync: wrapping %T creates double-buffering; returning inner handler directly", inner))
 		return inner
 	}
 	bufferSize := cfg.BufferSize
