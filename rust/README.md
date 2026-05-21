@@ -41,6 +41,22 @@ fn main() {
 }
 ```
 
+JSON 输出使用跨语言稳定契约：
+
+```json
+{"time":"2026-05-21T14:00:00Z","level":"INFO","message":"hello","attributes":{"key":"value"}}
+```
+
+审计日志使用带事件类型的 `Level::Audit(EventType)`：
+
+```rust
+let r = RecordBuilder::new(Level::Audit(EventType::Login), "user login")
+    .actor("user:42")
+    .success(true)
+    .attr("ip", "127.0.0.1")
+    .build();
+```
+
 ## 装饰器组合
 
 ```rust

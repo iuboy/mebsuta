@@ -12,6 +12,38 @@ Mebsuta is maintained as a dual-language monorepo:
 
 The specification covers handler behavior, output formats, safety properties, and lifecycle semantics. It is the source of truth for cross-language consistency.
 
+## API Contract Design Notes
+
+The machine-readable JSON contract intentionally uses one stable envelope across Go and Rust instead of mirroring language defaults.
+
+Reference points:
+
+- OpenTelemetry Logs Data Model separates timestamp, severity, body/message, and attributes.
+- Go `log/slog` built-in JSON output uses `time`, `level`, and `msg`; Mebsuta uses `message` instead of `msg` for cross-language clarity.
+- Elastic Common Schema treats log level and message as first-class log fields and keeps transport-specific syslog details separate.
+- RFC 5424 syslog transport remains transport-specific; when JSON is embedded in syslog message content, it must use the same Mebsuta JSON record contract.
+
+## Contract Evolution
+
+`Required`
+
+Machine-readable contracts are allowed to change only with an explicit major-version release. This includes JSON field names, level ordering, database column names, and syslog JSON payload shape.
+
+`Allowed without a major version`
+
+- adding optional top-level fields
+- adding optional attributes
+- adding new `event_type` values
+- adding new handler configuration options with defaults that preserve behavior
+
+`Requires a major version`
+
+- removing or renaming required JSON fields
+- moving a field between top-level JSON and `attributes`
+- changing level ordering or filtering semantics
+- changing close/flush durability guarantees
+- changing database schema columns used for persisted records
+
 ## Levels
 
 `Required`
@@ -46,8 +78,8 @@ Records must include:
 - audit metadata when the record is an audit event
 
 **Pass/fail criteria:**
-- JSON output must contain `time`, `level`, and `msg` (or `message`) keys.
-- User-provided attributes must appear in the output with correct values.
+- JSON output must contain `time`, `level`, `message`, and `attributes` keys.
+- User-provided attributes must appear under `attributes` with correct values.
 - Attribute keys must remain stable after handler decoration (a record passed through Sampling or Async must retain its original attributes).
 
 ## JSON Output
@@ -60,17 +92,68 @@ Required keys:
 
 - `time`
 - `level`
-- `msg` or `message`
+- `message`
+- `attributes`
 
-`Recommended`
+Optional top-level keys:
 
 - `event_type` for audit events
 - `actor` for audit actor identity
 - `success` for audit success state
 
+Top-level keys are reserved by Mebsuta. User attributes with reserved names are promoted to top-level fields when they have the expected type:
+
+- `event_type`: string
+- `actor`: string
+- `success`: boolean
+
+All other user attributes must remain under `attributes`. Grouped attributes are flattened with dot-separated keys, for example `request.id`.
+
+### JSON Schema
+
+The canonical log record shape is:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mebsuta.dev/schemas/log-record.v1.json",
+  "type": "object",
+  "required": ["time", "level", "message", "attributes"],
+  "additionalProperties": true,
+  "properties": {
+    "time": { "type": "string", "format": "date-time" },
+    "level": { "type": "string", "enum": ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "AUDIT"] },
+    "event_type": { "type": "string" },
+    "message": { "type": "string" },
+    "module": { "type": "string" },
+    "actor": { "type": "string" },
+    "success": { "type": "boolean" },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}
+```
+
+### Examples
+
+Normal record:
+
+```json
+{"time":"2026-05-21T14:00:00Z","level":"INFO","message":"request completed","attributes":{"request.id":"abc","status":200}}
+```
+
+Audit record:
+
+```json
+{"time":"2026-05-21T14:00:00Z","level":"AUDIT","event_type":"login","message":"user login","actor":"user:42","success":true,"attributes":{"ip":"127.0.0.1"}}
+```
+
 **Pass/fail criteria:**
 - Output parses as valid JSON (one object per line) for all supported value types including strings, integers, floats, booleans, and nil/null.
 - Non-finite floating-point values (NaN, +Inf, -Inf) must not produce invalid JSON.
+- Audit helpers must set `event_type`; compatibility helpers may default to `system`.
 
 ## Text Output
 

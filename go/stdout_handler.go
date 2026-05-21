@@ -45,7 +45,7 @@ func newInnerHandler(w io.Writer, format EncodingType) slog.Handler {
 	case Console:
 		return slog.NewTextHandler(w, opts)
 	default:
-		return slog.NewJSONHandler(w, opts)
+		return newContractJSONHandler(w)
 	}
 }
 

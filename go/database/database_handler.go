@@ -45,7 +45,7 @@ func (dbLogEntry) TableName() string {
 // DatabaseHandler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
 type DatabaseHandler struct {
 	mebsuta.LevelHandler
-	cfg          config.DatabaseConfig
+	cfg          *config.DatabaseConfig
 	db           *gorm.DB
 	table        string
 	entries      chan dbLogEntry
@@ -59,22 +59,22 @@ type DatabaseHandler struct {
 }
 
 // NewDatabaseHandler creates a DatabaseHandler that connects to the database specified in cfg at the given log level.
-func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error) {
+func NewDatabaseHandler(cfg *config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
 	var dialector gorm.Dialector
-	switch cfg.DriverName {
+	switch cfg.DriverName() {
 	case "mysql":
-		dialector = mysql.Open(cfg.DataSourceName)
+		dialector = mysql.Open(cfg.DataSourceName())
 	case "postgres":
-		dialector = postgres.Open(cfg.DataSourceName)
+		dialector = postgres.Open(cfg.DataSourceName())
 	}
 
 	gdb, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("mebsuta: connect %s database: %w", cfg.DriverName, err)
+		return nil, fmt.Errorf("mebsuta: connect %s database: %w", cfg.DriverName(), err)
 	}
 
 	sqlDB, err := gdb.DB()
@@ -82,15 +82,15 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 		return nil, fmt.Errorf("mebsuta: get database connection: %w", err)
 	}
 
-	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
-	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
-	if cfg.MaxConnLifetime > 0 {
-		sqlDB.SetConnMaxLifetime(cfg.MaxConnLifetime)
+	sqlDB.SetMaxIdleConns(cfg.MaxIdleConns())
+	sqlDB.SetMaxOpenConns(cfg.MaxOpenConns())
+	if cfg.MaxConnLifetime() > 0 {
+		sqlDB.SetConnMaxLifetime(cfg.MaxConnLifetime())
 	}
 
-	batchSize := cfg.BatchSize
-	batchInterval := cfg.BatchInterval
-	retryDelay := cfg.RetryDelay
+	batchSize := cfg.BatchSize()
+	batchInterval := cfg.BatchInterval()
+	retryDelay := cfg.RetryDelay()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -98,7 +98,7 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 		LevelHandler: mebsuta.LevelHandler{Level: level},
 		cfg:          cfg,
 		db:           gdb,
-		table:        cfg.TableName,
+		table:        cfg.TableName(),
 		entries:      make(chan dbLogEntry, batchSize*10),
 		ctx:          ctx,
 		cancel:       cancel,

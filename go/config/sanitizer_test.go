@@ -19,31 +19,31 @@ func TestDatabaseConfig_Sanitize(t *testing.T) {
 		},
 		{
 			name: "mysql dsn masked",
-			cfg: &DatabaseConfig{
-				DriverName:     "mysql",
-				DataSourceName: "root:s3cret@tcp(localhost:3306)/db",
-				TableName:      "logs",
-				BatchSize:      100,
-				MaxOpenConns:   10,
-			},
+			cfg: func() *DatabaseConfig {
+				cfg, _ := NewDatabaseConfig("mysql", "root:s3cret@tcp(localhost:3306)/db", "logs",
+					WithBatchSize(100),
+					WithMaxOpenConns(10),
+				)
+				return cfg
+			}(),
 			want: []string{"DriverName=mysql", "****", "TableName=logs"},
 			skip: []string{"s3cret"},
 		},
 		{
 			name: "postgres uri masked",
-			cfg: &DatabaseConfig{
-				DriverName:     "postgres",
-				DataSourceName: "postgres://admin:p@ss@localhost:5432/db",
-			},
+			cfg: func() *DatabaseConfig {
+				cfg, _ := NewDatabaseConfig("postgres", "postgres://admin:p@ss@localhost:5432/db", "logs")
+				return cfg
+			}(),
 			want: []string{"****"},
 			skip: []string{"p@ss"},
 		},
 		{
 			name: "password kv masked",
-			cfg: &DatabaseConfig{
-				DriverName:     "sqlserver",
-				DataSourceName: "sqlserver://host?database=db&password=hunter2",
-			},
+			cfg: func() *DatabaseConfig {
+				cfg, _ := NewDatabaseConfig("sqlserver", "sqlserver://host?database=db&password=hunter2", "logs")
+				return cfg
+			}(),
 			want: []string{"password=****"},
 			skip: []string{"hunter2"},
 		},
@@ -76,7 +76,8 @@ func TestFileConfig_Sanitize(t *testing.T) {
 	if got := (*FileConfig)(nil).Sanitize(); got != "" {
 		t.Errorf("nil should return empty, got %q", got)
 	}
-	got := (&FileConfig{Path: "/var/log/app.log", MaxSizeMB: 100, MaxBackups: 5}).Sanitize()
+	cfg, _ := NewFileConfig("/var/log/app.log", WithMaxSizeMB(100), WithMaxBackups(5))
+	got := cfg.Sanitize()
 	if !strings.Contains(got, "/var/log/app.log") {
 		t.Errorf("missing path in %q", got)
 	}
@@ -86,7 +87,8 @@ func TestSyslogConfig_Sanitize(t *testing.T) {
 	if got := (*SyslogConfig)(nil).Sanitize(); got != "" {
 		t.Errorf("nil should return empty, got %q", got)
 	}
-	got := (&SyslogConfig{Network: "tcp", Address: "localhost:514", Tag: "app"}).Sanitize()
+	cfg, _ := NewSyslogConfig("tcp", "localhost:514", WithSyslogTag("app"))
+	got := cfg.Sanitize()
 	if !strings.Contains(got, "localhost:514") {
 		t.Errorf("missing address in %q", got)
 	}
@@ -97,12 +99,12 @@ func TestSanitizeForLog(t *testing.T) {
 		t.Errorf("nil should return (nil), got %q", got)
 	}
 
-	dbCfg := &DatabaseConfig{DriverName: "mysql"}
+	dbCfg, _ := NewDatabaseConfig("mysql", "dsn", "table")
 	if got := SanitizeForLog(dbCfg); !strings.Contains(got, "mysql") {
 		t.Errorf("should dispatch to DatabaseConfig.Sanitize, got %q", got)
 	}
 
-	fileCfg := &FileConfig{Path: "/tmp/test.log"}
+	fileCfg, _ := NewFileConfig("/tmp/test.log")
 	if got := SanitizeForLog(fileCfg); !strings.Contains(got, "/tmp/test.log") {
 		t.Errorf("should dispatch to FileConfig.Sanitize, got %q", got)
 	}

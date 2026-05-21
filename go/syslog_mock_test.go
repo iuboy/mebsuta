@@ -115,15 +115,14 @@ func (s *mockSyslogServer) Close() {
 	s.connMu.Unlock()
 }
 
-func defaultTestConfig(srv *mockSyslogServer) config.SyslogConfig {
-	return config.SyslogConfig{
-		Network:    "tcp",
-		Address:    srv.Addr(),
-		Tag:        "test",
-		Facility:   1,
-		RetryDelay: 100 * time.Millisecond,
-		BufferSize: 100,
-	}
+func defaultTestConfig(srv *mockSyslogServer) *config.SyslogConfig {
+	cfg, _ := config.NewSyslogConfig("tcp", srv.Addr(),
+		config.WithSyslogTag("test"),
+		config.WithSyslogFacility(1),
+		config.WithSyslogRetryDelay(100*time.Millisecond),
+		config.WithBufferSize(100),
+	)
+	return cfg
 }
 
 // =============================================================================
@@ -235,15 +234,14 @@ func TestSyslogHandler_CloseDoesNotRetryUnavailableConn(t *testing.T) {
 	require.NoError(t, server.Close())
 
 	ctx, cancel := context.WithCancel(context.Background())
+	testCfg, _ := config.NewSyslogConfig("tcp", "localhost", config.WithSyslogRetryDelay(time.Hour))
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg: config.SyslogConfig{
-			RetryDelay: time.Hour,
-		},
-		conn:   client,
-		buffer: make(chan []byte, 1),
-		ctx:    ctx,
-		cancel: cancel,
+		cfg:          testCfg,
+		conn:         client,
+		buffer:       make(chan []byte, 1),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 	eh := ErrorHandler(func(string, error) {})
 	h.errorHandler.Store(&eh)
@@ -265,8 +263,12 @@ func TestSyslogHandler_Reconnect(t *testing.T) {
 	srv := newMockSyslogServer(t)
 	defer srv.Close()
 
-	cfg := defaultTestConfig(srv)
-	cfg.RetryDelay = 50 * time.Millisecond
+	cfg, _ := config.NewSyslogConfig("tcp", srv.Addr(),
+		config.WithSyslogTag("test"),
+		config.WithSyslogFacility(1),
+		config.WithSyslogRetryDelay(50*time.Millisecond),
+		config.WithBufferSize(100),
+	)
 
 	h, err := NewSyslogHandler(cfg, slog.LevelDebug)
 	require.NoError(t, err)
@@ -304,8 +306,11 @@ func TestSyslogHandler_FormatMessages_Structured(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg:          config.SyslogConfig{Facility: 1, Tag: "test"},
-		location:     loc,
+		cfg: func() *config.SyslogConfig {
+			c, _ := config.NewSyslogConfig("tcp", "localhost", config.WithSyslogFacility(1), config.WithSyslogTag("test"))
+			return c
+		}(),
+		location: loc,
 	}
 
 	entry := LogEntry{
@@ -324,8 +329,11 @@ func TestSyslogHandler_FormatMessages_StructuredRFC5424(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg:          config.SyslogConfig{Facility: 1, Tag: "test", RFC5424: true},
-		location:     loc,
+		cfg: func() *config.SyslogConfig {
+			c, _ := config.NewSyslogConfig("tcp", "localhost", config.WithSyslogFacility(1), config.WithSyslogTag("test"), config.WithRFC5424(true))
+			return c
+		}(),
+		location: loc,
 	}
 
 	entry := LogEntry{
@@ -346,8 +354,11 @@ func TestSyslogHandler_FormatMessages_JSON(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg:          config.SyslogConfig{Facility: 1, Tag: "test", JSONInMessage: true},
-		location:     loc,
+		cfg: func() *config.SyslogConfig {
+			c, _ := config.NewSyslogConfig("tcp", "localhost", config.WithSyslogFacility(1), config.WithSyslogTag("test"), config.WithJSONInMessage(true))
+			return c
+		}(),
+		location: loc,
 	}
 
 	entry := LogEntry{
@@ -366,8 +377,10 @@ func TestSyslogHandler_FormatMessages_JSON(t *testing.T) {
 	var data map[string]any
 	err := json.Unmarshal([]byte(msg[idx:]), &data)
 	require.NoError(t, err)
-	require.Equal(t, "json format test", data["msg"])
+	require.Equal(t, "json format test", data["message"])
 	require.Equal(t, "WARN", data["level"])
+	attrs := data["attributes"].(map[string]any)
+	require.Equal(t, "auth", attrs["module"])
 }
 
 // =============================================================================
@@ -378,8 +391,11 @@ func TestSyslogHandler_PriorityCalc(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg:          config.SyslogConfig{Facility: 1, Tag: "test"},
-		location:     loc,
+		cfg: func() *config.SyslogConfig {
+			c, _ := config.NewSyslogConfig("tcp", "localhost", config.WithSyslogFacility(1), config.WithSyslogTag("test"))
+			return c
+		}(),
+		location: loc,
 	}
 
 	tests := []struct {
@@ -457,8 +473,11 @@ func TestSyslogHandler_BufferFull(t *testing.T) {
 	// Test safeSend directly with a full channel (no consumer)
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg:          config.SyslogConfig{Facility: 1, Tag: "test"},
-		buffer:       make(chan []byte, 1),
+		cfg: func() *config.SyslogConfig {
+			c, _ := config.NewSyslogConfig("tcp", "localhost", config.WithSyslogFacility(1), config.WithSyslogTag("test"))
+			return c
+		}(),
+		buffer: make(chan []byte, 1),
 	}
 
 	// Fill the buffer
@@ -597,14 +616,12 @@ func TestSyslogHandler_MockWithGroup(t *testing.T) {
 // =============================================================================
 
 func TestSyslogHandler_NewConnectionFailure(t *testing.T) {
-	cfg := config.SyslogConfig{
-		Network:    "tcp",
-		Address:    "127.0.0.1:1", // port 1 should refuse connections
-		Tag:        "test",
-		Facility:   1,
-		RetryDelay: 100 * time.Millisecond,
-		BufferSize: 10,
-	}
+	cfg, _ := config.NewSyslogConfig("tcp", "127.0.0.1:1",
+		config.WithSyslogTag("test"),
+		config.WithSyslogFacility(1),
+		config.WithSyslogRetryDelay(100*time.Millisecond),
+		config.WithBufferSize(10),
+	)
 
 	_, err := NewSyslogHandler(cfg, slog.LevelInfo)
 	require.Error(t, err)

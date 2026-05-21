@@ -23,6 +23,24 @@ defer mebsuta.CloseAll(logger.Handler())
 slog.Info("hello", "key", "value")
 ```
 
+JSON 输出使用跨语言稳定契约：
+
+```json
+{"time":"2026-05-21T14:00:00Z","level":"INFO","message":"hello","attributes":{"key":"value"}}
+```
+
+审计日志使用 `AUDIT` 级别，并将审计元数据提升为顶层字段：
+
+```go
+mebsuta.AuditEvent(
+    mebsuta.EventLogin,
+    "user login",
+    "actor", "user:42",
+    "success", true,
+    "ip", "127.0.0.1",
+)
+```
+
 ## Handler
 
 | Handler | 构造函数 | 说明 |

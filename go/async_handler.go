@@ -95,7 +95,7 @@ func (h *AsyncHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
-		return nil
+		return fmt.Errorf("async handler is closed, log dropped")
 	}
 	ar := asyncRecord{
 		Time:    r.Time,
@@ -224,7 +224,7 @@ type asyncGroupHandler struct {
 
 func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
-		return nil
+		return fmt.Errorf("async handler is closed, log dropped")
 	}
 	for _, attr := range h.attrs {
 		r.AddAttrs(attr)

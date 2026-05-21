@@ -28,7 +28,9 @@ cargo audit
 
 | Behavior | Priority | Go Coverage | Rust Coverage | Status | Notes |
 | --- | --- | --- | --- | --- | --- |
-| JSON record contains message, level, and attributes | P0 | `TestFileHandler_JSONFormat`, `TestStdoutHandler_JSONFormat` | `record::to_json_basic`, `record::to_json_with_attrs` | covered | Field names may differ between language ecosystems; document user-visible differences. |
+| JSON record contains message, level, and nested attributes | P0 | `TestFileHandler_JSONFormat`, `TestStdoutHandler_JSONFormat` | `record::to_json_basic`, `record::to_json_with_attrs` | covered | Go and Rust now share the `time/level/message/attributes` machine contract. |
+| Audit JSON promotes reserved metadata fields | P0 | `TestAuditEvent_JSONContract`, `TestAudit_DefaultEventType` | `record::to_json_audit_fields` | covered | `event_type`, `actor`, and `success` are top-level metadata, not user attributes. |
+| Grouped JSON attributes use dotted keys under attributes | P1 | `TestStdoutHandler_WithGroup`, `TestFileHandler_WithGroup`, `TestAsyncHandler_WithGroup` | `handler::group_handler_prefixes_keys` | covered | JSON does not create nested objects for groups. |
 | Text output contains message and attributes | P1 | `TestFileHandler_ConsoleFormat`, `TestStdoutHandler_TextFormat` | `file::file_handler_writes_text`, `stdout::file_handler_writes_json` | covered | Text output is human-readable, not a strict machine contract. |
 | Level filtering drops lower-severity records | P0 | `TestFileHandler_LevelFilter`, `TestStdoutHandler_LevelFilter` | `file::file_handler_level_filter`, `stdout::enabled_level_filter` | covered | Audit must pass through Error-level handler (see audit row). |
 | Audit records pass through Error-level filtering | P0 | `TestWithSampling_ErrorAlwaysRecorded` | `level::audit_event_types_equal_severity` | covered | SPEC requires Audit >= Error severity. |

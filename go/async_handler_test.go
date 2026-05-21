@@ -116,9 +116,8 @@ func TestAsyncHandler_WithGroup(t *testing.T) {
 	}
 
 	output := buf.String()
-	// JSON 格式下 group 会生成嵌套 key
-	if !strings.Contains(output, `"request"`) {
-		t.Errorf("expected 'request' in output, got: %s", output)
+	if !strings.Contains(output, `"request.id"`) {
+		t.Errorf("expected 'request.id' in output, got: %s", output)
 	}
 }
 
@@ -439,12 +438,7 @@ func TestDecoratorChain_Stdout_Sampling_Metrics(t *testing.T) {
 
 	// Stdout -> Sampling -> Metrics
 	h := WithMetrics(
-		WithSampling(inner, config.SamplingConfig{
-			Enabled:    true,
-			Initial:    5,
-			Thereafter: 10,
-			Window:     time.Second,
-		}),
+		WithSampling(inner, config.MustNewSamplingConfig(true, 5, 10, time.Second)),
 		m, "stdout",
 	)
 	logger := slog.New(h)

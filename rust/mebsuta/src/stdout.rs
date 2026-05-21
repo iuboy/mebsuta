@@ -130,8 +130,8 @@ mod tests {
             .build();
         let json = format_json(&r);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["attrs"]["key"], "value");
-        assert_eq!(parsed["attrs"]["count"], 42);
+        assert_eq!(parsed["attributes"]["key"], "value");
+        assert_eq!(parsed["attributes"]["count"], 42);
     }
 
     #[test]
@@ -142,7 +142,7 @@ mod tests {
         let json = format_json(&r);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["message"], "line1\nline2\t\"quoted\"");
-        assert_eq!(parsed["attrs"]["path"], "C:\\Users\\test");
+        assert_eq!(parsed["attributes"]["path"], "C:\\Users\\test");
     }
 
     #[test]

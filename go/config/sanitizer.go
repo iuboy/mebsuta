@@ -14,18 +14,18 @@ func (dc *DatabaseConfig) Sanitize() string {
 	}
 
 	parts := []string{}
-	parts = append(parts, "DriverName="+dc.DriverName)
+	parts = append(parts, "DriverName="+dc.DriverName())
 
-	if dc.DataSourceName != "" {
-		parts = append(parts, "DataSourceName="+maskPasswordInDSN(dc.DataSourceName))
+	if dc.DataSourceName() != "" {
+		parts = append(parts, "DataSourceName="+maskPasswordInDSN(dc.DataSourceName()))
 	}
 
-	if dc.TableName != "" {
-		parts = append(parts, "TableName="+dc.TableName)
+	if dc.TableName() != "" {
+		parts = append(parts, "TableName="+dc.TableName())
 	}
 
-	parts = append(parts, "BatchSize="+fmt.Sprint(dc.BatchSize))
-	parts = append(parts, "MaxOpenConns="+fmt.Sprint(dc.MaxOpenConns))
+	parts = append(parts, "BatchSize="+fmt.Sprint(dc.BatchSize()))
+	parts = append(parts, "MaxOpenConns="+fmt.Sprint(dc.MaxOpenConns()))
 
 	return "{ " + strings.Join(parts, ", ") + " }"
 }
@@ -37,9 +37,9 @@ func (fc *FileConfig) Sanitize() string {
 	}
 
 	return "{ " +
-		"Path=" + fc.Path + ", " +
-		"MaxSizeMB=" + fmt.Sprint(fc.MaxSizeMB) + ", " +
-		"MaxBackups=" + fmt.Sprint(fc.MaxBackups) +
+		"Path=" + fc.Path() + ", " +
+		"MaxSizeMB=" + fmt.Sprint(fc.MaxSizeMB()) + ", " +
+		"MaxBackups=" + fmt.Sprint(fc.MaxBackups()) +
 		" }"
 }
 
@@ -50,9 +50,9 @@ func (sc *SyslogConfig) Sanitize() string {
 	}
 
 	return "{ " +
-		"Network=" + sc.Network + ", " +
-		"Address=" + sc.Address + ", " +
-		"Tag=" + sc.Tag +
+		"Network=" + sc.Network() + ", " +
+		"Address=" + sc.Address() + ", " +
+		"Tag=" + sc.Tag() +
 		" }"
 }
 

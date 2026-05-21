@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::record::EventType;
 
-/// Log level, ordered by severity: `Error > Warn > Audit > Info > Debug > Trace`.
+/// Log level, ordered by severity: `Audit > Error > Warn > Info > Debug > Trace`.
 ///
 /// `Audit(EventType)` carries the required operation type for compliance logging.
 /// You cannot construct `Level::Audit` without an `EventType` — the compiler enforces it.
@@ -24,9 +24,9 @@ impl Level {
             Self::Trace => 0,
             Self::Debug => 1,
             Self::Info => 2,
-            Self::Audit(_) => 3,
-            Self::Warn => 4,
-            Self::Error => 5,
+            Self::Warn => 3,
+            Self::Error => 4,
+            Self::Audit(_) => 5,
         }
     }
 }
@@ -68,9 +68,9 @@ mod tests {
 
     #[test]
     fn ordering() {
+        assert!(Level::Audit(EventType::Login) > Level::Error);
         assert!(Level::Error > Level::Warn);
-        assert!(Level::Warn > Level::Audit(EventType::System));
-        assert!(Level::Audit(EventType::Login) > Level::Info);
+        assert!(Level::Warn > Level::Info);
         assert!(Level::Info > Level::Debug);
         assert!(Level::Debug > Level::Trace);
     }
@@ -80,9 +80,9 @@ mod tests {
         assert_eq!(Level::Trace.severity(), 0);
         assert_eq!(Level::Debug.severity(), 1);
         assert_eq!(Level::Info.severity(), 2);
-        assert_eq!(Level::Audit(EventType::System).severity(), 3);
-        assert_eq!(Level::Warn.severity(), 4);
-        assert_eq!(Level::Error.severity(), 5);
+        assert_eq!(Level::Warn.severity(), 3);
+        assert_eq!(Level::Error.severity(), 4);
+        assert_eq!(Level::Audit(EventType::System).severity(), 5);
     }
 
     #[test]

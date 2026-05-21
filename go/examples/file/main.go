@@ -17,12 +17,17 @@ func main() {
 	}
 	defer os.RemoveAll(dir)
 
-	fileH, err := mebsuta.NewFileHandler(config.FileConfig{
-		Path:       filepath.Join(dir, "app.log"),
-		MaxSizeMB:  1,
-		MaxBackups: 3,
-		Compress:   true,
-	}, slog.LevelInfo)
+	cfg, err := config.NewFileConfig(
+		filepath.Join(dir, "app.log"),
+		config.WithMaxSizeMB(1),
+		config.WithMaxBackups(3),
+		config.WithCompress(true),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	fileH, err := mebsuta.NewFileHandler(cfg, slog.LevelInfo)
 	if err != nil {
 		panic(err)
 	}

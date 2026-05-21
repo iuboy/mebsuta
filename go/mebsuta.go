@@ -46,14 +46,24 @@ func Warn(msg string, args ...any) { slog.Warn(msg, args...) }
 // Error logs at Error level using the default logger.
 func Error(msg string, args ...any) { slog.Error(msg, args...) }
 
-// Audit logs at the Audit level for compliance records. The level is above Error and is never sampled out.
+// Audit logs at the Audit level for compliance records. The event type defaults to "system".
 func Audit(msg string, args ...any) {
-	slog.Log(context.Background(), LevelAudit, msg, args...)
+	AuditEvent(EventSystem, msg, args...)
 }
 
-// AuditContext logs at the Audit level with the given context.
+// AuditContext logs at the Audit level with the given context. The event type defaults to "system".
 func AuditContext(ctx context.Context, msg string, args ...any) {
-	slog.Log(ctx, LevelAudit, msg, args...)
+	AuditEventContext(ctx, EventSystem, msg, args...)
+}
+
+// AuditEvent logs an audit record with an explicit event type.
+func AuditEvent(eventType EventType, msg string, args ...any) {
+	AuditEventContext(context.Background(), eventType, msg, args...)
+}
+
+// AuditEventContext logs an audit record with an explicit event type and context.
+func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
+	slog.Log(ctx, LevelAudit, msg, append(args, "event_type", string(eventType))...)
 }
 
 // DebugContext logs at Debug level with the given context.

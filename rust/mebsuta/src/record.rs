@@ -80,7 +80,7 @@ struct OwnedRecordJson<'a> {
     actor: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     success: Option<bool>,
-    attrs: HashMap<&'a str, &'a Value>,
+    attributes: HashMap<&'a str, &'a Value>,
 }
 
 impl OwnedRecord {
@@ -98,7 +98,7 @@ impl OwnedRecord {
             module: self.module_path.as_deref(),
             actor: self.actor.as_deref(),
             success: self.success,
-            attrs: attrs_map,
+            attributes: attrs_map,
         };
         serde_json::to_string(&json_rec)
     }
@@ -221,8 +221,8 @@ mod tests {
             .build();
         let json = r.to_json_string().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["attrs"]["key"], "value");
-        assert_eq!(parsed["attrs"]["count"], 42);
+        assert_eq!(parsed["attributes"]["key"], "value");
+        assert_eq!(parsed["attributes"]["count"], 42);
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
         let json = r.to_json_string().unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["message"], "line1\nline2\t\"quoted\"");
-        assert_eq!(parsed["attrs"]["path"], "C:\\Users\\test");
+        assert_eq!(parsed["attributes"]["path"], "C:\\Users\\test");
     }
 
     #[test]
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(parsed["event_type"], "delete");
         assert_eq!(parsed["actor"], "user_id:10086");
         assert_eq!(parsed["success"], true);
-        assert_eq!(parsed["attrs"]["target"], "orders#12345");
+        assert_eq!(parsed["attributes"]["target"], "orders#12345");
     }
 
     #[test]

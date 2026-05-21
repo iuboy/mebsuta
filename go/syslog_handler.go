@@ -36,7 +36,7 @@ var spaceRe = regexp.MustCompile(`\s+`)
 // SyslogHandler writes log records to a syslog server with built-in buffering, TLS support, and automatic reconnection.
 type SyslogHandler struct {
 	LevelHandler
-	cfg          config.SyslogConfig
+	cfg          *config.SyslogConfig
 	conn         net.Conn
 	connMu       sync.RWMutex
 	dialer       net.Dialer
@@ -52,23 +52,25 @@ type SyslogHandler struct {
 }
 
 // NewSyslogHandler creates a SyslogHandler that connects to the syslog server specified in cfg at the given log level.
-func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
+func NewSyslogHandler(cfg *config.SyslogConfig, level slog.Level) (*SyslogHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
-	if cfg.BufferSize <= 0 {
-		cfg.BufferSize = defaultSyslogBufferSize
-	} else if cfg.BufferSize > maxSyslogBufferSize {
-		cfg.BufferSize = maxSyslogBufferSize
+	bufferSize := cfg.BufferSize()
+	if bufferSize <= 0 {
+		bufferSize = defaultSyslogBufferSize
+	} else if bufferSize > maxSyslogBufferSize {
+		bufferSize = maxSyslogBufferSize
 	}
 
-	hostname, err := generateHostname(cfg.StaticHost)
+	hostname, err := generateHostname(cfg.StaticHost())
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
-	loc, _ := time.LoadLocation(cfg.TimeZone)
-	if loc == nil {
+	loc, err := time.LoadLocation(cfg.TimeZone())
+	if err != nil {
+		ReportError(DefaultErrorHandler, "syslog", fmt.Errorf("invalid timezone %q, using UTC: %w", cfg.TimeZone(), err))
 		loc = time.UTC
 	}
 
@@ -79,7 +81,7 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 		cfg:          cfg,
 		dialer:       net.Dialer{Timeout: syslogDialerTimeout},
 		hostname:     hostname,
-		buffer:       make(chan []byte, cfg.BufferSize),
+		buffer:       make(chan []byte, bufferSize),
 		ctx:          ctx,
 		cancel:       cancel,
 		location:     loc,
@@ -87,9 +89,9 @@ func NewSyslogHandler(cfg config.SyslogConfig, level slog.Level) (*SyslogHandler
 	eh := DefaultErrorHandler
 	h.errorHandler.Store(&eh)
 
-	if cfg.Secure {
+	if cfg.Secure() {
 		h.tlsCfg = &tls.Config{
-			InsecureSkipVerify: cfg.TLSSkipVerify,
+			InsecureSkipVerify: cfg.TLSSkipVerify(),
 			MinVersion:         tls.VersionTLS12,
 		}
 	}
@@ -127,7 +129,9 @@ func (h *SyslogHandler) Close() error {
 
 	h.connMu.Lock()
 	if h.conn != nil {
-		_ = h.conn.Close()
+		if err := h.conn.Close(); err != nil {
+			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in connect: %w", err))
+		}
 		h.conn = nil
 	}
 	h.connMu.Unlock()
@@ -151,15 +155,18 @@ func (h *SyslogHandler) dialLocked() (net.Conn, error) {
 	var conn net.Conn
 	var err error
 	if h.tlsCfg != nil {
-		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network, h.cfg.Address, h.tlsCfg)
+		conn, err = tls.DialWithDialer(&h.dialer, h.cfg.Network(), h.cfg.Address(), h.tlsCfg)
 	} else {
-		conn, err = h.dialer.Dial(h.cfg.Network, h.cfg.Address)
+		conn, err = h.dialer.Dial(h.cfg.Network(), h.cfg.Address())
 	}
 	if err != nil {
 		return nil, err
 	}
 	if tc, ok := conn.(*net.TCPConn); ok {
-		_ = tc.SetKeepAlive(true)
+		if err := tc.SetKeepAlive(true); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("set keep-alive: %w", err)
+		}
 		_ = tc.SetKeepAlivePeriod(3 * time.Minute)
 	}
 	return conn, nil
@@ -170,7 +177,9 @@ func (h *SyslogHandler) connect() error {
 	defer h.connMu.Unlock()
 
 	if h.conn != nil {
-		_ = h.conn.Close()
+		if err := h.conn.Close(); err != nil {
+			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in connect: %w", err))
+		}
 		h.conn = nil
 	}
 
@@ -190,7 +199,9 @@ func (h *SyslogHandler) reconnect() {
 	}
 
 	if h.conn != nil {
-		_ = h.conn.Close()
+		if err := h.conn.Close(); err != nil {
+			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in connect: %w", err))
+		}
 		h.conn = nil
 	}
 
@@ -214,7 +225,9 @@ func (h *SyslogHandler) write(p []byte) error {
 	if h.conn == nil {
 		return net.ErrClosed
 	}
-	_ = h.conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout))
+	if err := h.conn.SetWriteDeadline(time.Now().Add(syslogWriteTimeout)); err != nil {
+		return fmt.Errorf("set write deadline: %w", err)
+	}
 	_, err := h.conn.Write(p)
 	return err
 }
@@ -234,7 +247,7 @@ func (h *SyslogHandler) writeWithRetry(msg []byte) {
 			h.disconnect()
 			h.reconnect()
 		}
-		time.Sleep(h.cfg.RetryDelay)
+		time.Sleep(h.cfg.RetryDelay())
 	}
 	ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("write failed after %d attempts", maxSyslogRetries))
 }
@@ -243,7 +256,9 @@ func (h *SyslogHandler) disconnect() {
 	h.connMu.Lock()
 	defer h.connMu.Unlock()
 	if h.conn != nil {
-		_ = h.conn.Close()
+		if err := h.conn.Close(); err != nil {
+			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in connect: %w", err))
+		}
 		h.conn = nil
 	}
 }
@@ -263,7 +278,7 @@ func backoffDelay(retries int32) time.Duration {
 func (h *SyslogHandler) processQueue() {
 	defer h.wg.Done()
 
-	reconnector := time.NewTicker(h.cfg.RetryDelay)
+	reconnector := time.NewTicker(h.cfg.RetryDelay())
 	defer reconnector.Stop()
 
 	var retryCount atomic.Int32
@@ -319,41 +334,55 @@ func (h *SyslogHandler) safeSend(data []byte) (err error) {
 func (h *SyslogHandler) formatMessage(entry LogEntry) string {
 	timestamp := entry.Time.In(h.location)
 	severity := h.levelToSeverity(entry.Level)
-	priority := h.cfg.Facility*8 + severity
+	priority := h.cfg.Facility()*8 + severity
 	procid := os.Getpid()
 	host := h.getCleanHost()
 
-	if h.cfg.JSONInMessage {
+	if h.cfg.JSONInMessage() {
 		return h.formatJSONMessage(entry, timestamp, priority, host, procid)
 	}
 	return h.formatStructuredMessage(entry, timestamp, priority, host, procid)
 }
 
 func (h *SyslogHandler) formatJSONMessage(entry LogEntry, ts time.Time, priority int, host string, procid int) string {
-	logData := map[string]any{
-		"time":  ts.Format(time.RFC3339Nano),
-		"level": entry.Level.String(),
-		"msg":   entry.Message,
-	}
+	attributes := make(map[string]any)
 	for _, attr := range entry.Attrs {
-		logData[attr.Key] = attr.Value
+		flattenAttr(attributes, "", attr)
+	}
+	level := entry.Level.String()
+	if entry.Level == LevelAudit {
+		level = "AUDIT"
+	}
+	logData := map[string]any{
+		"time":       ts.Format(time.RFC3339Nano),
+		"level":      level,
+		"message":    entry.Message,
+		"attributes": attributes,
 	}
 
 	jsonBytes, err := json.Marshal(logData)
 	if err != nil {
-		jsonBytes = []byte(`{"msg":"log marshaling failed","level":"error"}`)
+		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("marshal log entry (msg=%q, level=%v): %w", entry.Message, entry.Level, err))
+		// 保留原始消息和级别，丢弃无法序列化的字段
+		safeData := map[string]any{
+			"time":       logData["time"],
+			"level":      logData["level"],
+			"message":    entry.Message,
+			"attributes": map[string]any{"_error": "field marshaling failed"},
+		}
+		jsonBytes, _ = json.Marshal(safeData)
 	}
 	cleaned := string(jsonBytes)
 	if len(cleaned) > maxSyslogMsgSize {
 		cleaned = truncateUTF8(cleaned, maxSyslogMsgSize)
 	}
 
-	if h.cfg.RFC5424 {
+	if h.cfg.RFC5424() {
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - - %s`,
-			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, cleaned) + "\n"
+			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag(), procid, cleaned) + "\n"
 	}
 	return fmt.Sprintf(`<%d>%s %s %s[%d]: %s`,
-		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag, procid, cleaned) + "\n"
+		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag(), procid, cleaned) + "\n"
 }
 
 func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, priority int, host string, procid int) string {
@@ -362,7 +391,7 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 		msgContent = truncateUTF8(msgContent, maxSyslogMsgSize)
 	}
 
-	if h.cfg.RFC5424 {
+	if h.cfg.RFC5424() {
 		var sd strings.Builder
 		sd.WriteByte('[')
 		for i, attr := range entry.Attrs {
@@ -378,11 +407,11 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 		}
 
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - %s %s`,
-			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, sdStr, msgContent) + "\n"
+			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag(), procid, sdStr, msgContent) + "\n"
 	}
 
 	return fmt.Sprintf(`<%d>%s %s %s[%d]: %s`,
-		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag, procid, msgContent) + "\n"
+		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag(), procid, msgContent) + "\n"
 }
 
 func (h *SyslogHandler) levelToSeverity(level slog.Level) int {
@@ -422,6 +451,7 @@ func generateHostname(static string) (string, error) {
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
+		ReportError(DefaultErrorHandler, "syslog", fmt.Errorf("get hostname: %w", err))
 		return "unknown", nil
 	}
 	hostname = cleanHostname(hostname)

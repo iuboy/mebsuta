@@ -52,12 +52,7 @@ func BenchmarkStdoutHandler_WithAttrs(b *testing.B) {
 func BenchmarkSamplingHandler_Pass(b *testing.B) {
 	var buf bytes.Buffer
 	inner := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    b.N + 100,
-		Thereafter: 1,
-		Window:     10 * time.Second,
-	})
+	h := WithSampling(inner, config.MustNewSamplingConfig(true, b.N + 100, 1, 10*time.Second))
 	logger := slog.New(h)
 
 	b.ResetTimer()
@@ -70,12 +65,7 @@ func BenchmarkSamplingHandler_Pass(b *testing.B) {
 func BenchmarkSamplingHandler_Drop(b *testing.B) {
 	var buf bytes.Buffer
 	inner := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    1,
-		Thereafter: 1000000,
-		Window:     10 * time.Second,
-	})
+	h := WithSampling(inner, config.MustNewSamplingConfig(true, 1, 1000000, 10*time.Second))
 	logger := slog.New(h)
 
 	b.ResetTimer()
@@ -209,12 +199,7 @@ func BenchmarkHandlerChain_SamplingAsyncStdout(b *testing.B) {
 	var buf bytes.Buffer
 	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
 	async := WithAsync(stdout, AsyncConfig{BufferSize: 4096})
-	sampled := WithSampling(async, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    b.N + 100,
-		Thereafter: 1,
-		Window:     10 * time.Second,
-	})
+	sampled := WithSampling(async, config.MustNewSamplingConfig(true, b.N + 100, 1, 10*time.Second))
 	logger := slog.New(sampled)
 
 	b.ResetTimer()

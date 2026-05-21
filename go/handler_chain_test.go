@@ -84,12 +84,7 @@ func parseJSONLines(t *testing.T, lines []string) []map[string]any {
 func TestChain_SamplingAsyncStdout(t *testing.T) {
 	var buf chainBuf
 	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
-	sampled := WithSampling(stdout, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    5,
-		Thereafter: 3,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(stdout, config.MustNewSamplingConfig(true, 5, 3, time.Second))
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 	logger := slog.New(async)
 
@@ -105,9 +100,10 @@ func TestChain_SamplingAsyncStdout(t *testing.T) {
 	// First 5 should all pass (Initial=5)
 	var initialCount int
 	for _, e := range entries {
-		msg, _ := e["msg"].(string)
+		msg, _ := e["message"].(string)
 		if msg == "msg" {
-			i := int(e["i"].(float64))
+			attrs := e["attributes"].(map[string]any)
+			i := int(attrs["i"].(float64))
 			if i < 5 {
 				initialCount++
 			}
@@ -128,18 +124,11 @@ func TestChain_SamplingAsyncStdout(t *testing.T) {
 // correctly to a file with sampling applied.
 func TestChain_SamplingAsyncFile(t *testing.T) {
 	dir := t.TempDir()
-	fileH, err := NewFileHandler(config.FileConfig{
-		Path:      filepath.Join(dir, "test.log"),
-		MaxSizeMB: 10,
-	}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(filepath.Join(dir, "test.log"), config.WithMaxSizeMB(10))
+	fileH, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 
-	sampled := WithSampling(fileH, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    100,
-		Thereafter: 10,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(fileH, config.MustNewSamplingConfig(true, 100, 10, time.Second))
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 	logger := slog.New(async)
 
@@ -164,12 +153,7 @@ func TestChain_MetricsSamplingAsync(t *testing.T) {
 	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
 	mm := &mockMetrics{}
 
-	sampled := WithSampling(stdout, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    100,
-		Thereafter: 1,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(stdout, config.MustNewSamplingConfig(true, 100, 1, time.Second))
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 	metrics := WithMetrics(async, mm, "chain-test")
 
@@ -195,10 +179,8 @@ func TestChain_MultiStdoutFile(t *testing.T) {
 	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
 
 	dir := t.TempDir()
-	fileH, err := NewFileHandler(config.FileConfig{
-		Path:      filepath.Join(dir, "test.log"),
-		MaxSizeMB: 10,
-	}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(filepath.Join(dir, "test.log"), config.WithMaxSizeMB(10))
+	fileH, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 
 	logger, err := New(
@@ -216,8 +198,8 @@ func TestChain_MultiStdoutFile(t *testing.T) {
 		t.Fatalf("stdout: expected 1 line, got %d", len(stdoutLines))
 	}
 	entry := parseJSONLines(t, stdoutLines)
-	if entry[0]["msg"] != "fanout test" {
-		t.Errorf("stdout msg = %v, want 'fanout test'", entry[0]["msg"])
+	if entry[0]["message"] != "fanout test" {
+		t.Errorf("stdout message = %v, want 'fanout test'", entry[0]["message"])
 	}
 
 	// File should also have the message
@@ -236,12 +218,7 @@ func TestChain_ReverseOrderAsyncSampling(t *testing.T) {
 	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
 
 	async := WithAsync(stdout, AsyncConfig{BufferSize: 64})
-	sampled := WithSampling(async, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    3,
-		Thereafter: 100,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(async, config.MustNewSamplingConfig(true, 3, 100, time.Second))
 
 	logger := slog.New(sampled)
 	for i := range 10 {
@@ -263,12 +240,7 @@ func TestChain_AuditLevelNotDropped(t *testing.T) {
 	var buf chainBuf
 	stdout := newStdoutHandlerWithWriter(&buf, slog.LevelDebug, JSON)
 
-	sampled := WithSampling(stdout, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    3,
-		Thereafter: 1000,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(stdout, config.MustNewSamplingConfig(true, 3, 1000, time.Second))
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 
 	logger := slog.New(async)
@@ -289,10 +261,10 @@ func TestChain_AuditLevelNotDropped(t *testing.T) {
 	// Audit must be present
 	found := false
 	for _, e := range entries {
-		if e["msg"] == "audit event" {
+		if e["message"] == "audit event" {
 			found = true
-			if e["level"] != "ERROR+4" {
-				t.Errorf("audit level = %v, want ERROR+4", e["level"])
+			if e["level"] != "AUDIT" {
+				t.Errorf("audit level = %v, want AUDIT", e["level"])
 			}
 		}
 	}
@@ -315,18 +287,11 @@ func AuditFunc(logger *slog.Logger, msg string, args ...any) {
 // the full decorator chain and closes all resources.
 func TestChain_CloseAllPropagation(t *testing.T) {
 	dir := t.TempDir()
-	fileH, err := NewFileHandler(config.FileConfig{
-		Path:      filepath.Join(dir, "test.log"),
-		MaxSizeMB: 10,
-	}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(filepath.Join(dir, "test.log"), config.WithMaxSizeMB(10))
+	fileH, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 
-	sampled := WithSampling(fileH, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    100,
-		Thereafter: 1,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(fileH, config.MustNewSamplingConfig(true, 100, 1, time.Second))
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 
 	logger := slog.New(async)
@@ -376,7 +341,7 @@ func TestChain_AuditBypassesAsyncBuffer(t *testing.T) {
 	for _, line := range lines {
 		var m map[string]any
 		if json.Unmarshal([]byte(line), &m) == nil {
-			if m["msg"] == "critical audit" {
+			if m["message"] == "critical audit" {
 				found = true
 				break
 			}
@@ -458,9 +423,7 @@ func TestChain_AsyncWrappingDecoratedSyslogRejected(t *testing.T) {
 	require.Same(t, withGroup, result2, "should return the decorated handler")
 
 	// Wrap SyslogHandler in WithSampling
-	sampled := WithSampling(syslogH, config.SamplingConfig{
-		Enabled: true, Initial: 10, Thereafter: 1, Window: time.Second,
-	})
+	sampled := WithSampling(syslogH, config.MustNewSamplingConfig(true, 10, 1, time.Second))
 	result3 := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 
 	_, isAsync3 := result3.(*AsyncHandler)
@@ -472,10 +435,8 @@ func TestChain_AsyncWrappingDecoratedSyslogRejected(t *testing.T) {
 // the inner handler through AttrsSub and GroupSub decorators.
 func TestChain_CloseAllThroughDecorators(t *testing.T) {
 	dir := t.TempDir()
-	fileH, err := NewFileHandler(config.FileConfig{
-		Path:      filepath.Join(dir, "test.log"),
-		MaxSizeMB: 10,
-	}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(filepath.Join(dir, "test.log"), config.WithMaxSizeMB(10))
+	fileH, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 
 	// Wrap in WithAttrs and WithGroup

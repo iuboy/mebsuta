@@ -61,11 +61,15 @@ func TestStdoutHandler_JSONFormat(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON output: %v, got: %s", err, buf.String())
 	}
-	if result["msg"] != "hello" {
-		t.Errorf("msg = %v, want hello", result["msg"])
+	if result["message"] != "hello" {
+		t.Errorf("message = %v, want hello", result["message"])
 	}
-	if result["key"] != "value" {
-		t.Errorf("key = %v, want value", result["key"])
+	attrs, ok := result["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("attributes missing or invalid: %v", result["attributes"])
+	}
+	if attrs["key"] != "value" {
+		t.Errorf("attributes.key = %v, want value", attrs["key"])
 	}
 	if result["level"] != "INFO" {
 		t.Errorf("level = %v, want INFO", result["level"])
@@ -113,8 +117,9 @@ func TestStdoutHandler_WithAttrs(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if result["preset"] != "value" {
-		t.Errorf("preset = %v, want value", result["preset"])
+	attrs := result["attributes"].(map[string]any)
+	if attrs["preset"] != "value" {
+		t.Errorf("attributes.preset = %v, want value", attrs["preset"])
 	}
 }
 
@@ -129,12 +134,9 @@ func TestStdoutHandler_WithGroup(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	req, ok := result["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("request should be a group, got: %v", result["request"])
-	}
-	if req["id"] != "123" {
-		t.Errorf("request.id = %v, want 123", req["id"])
+	attrs := result["attributes"].(map[string]any)
+	if attrs["request.id"] != "123" {
+		t.Errorf("attributes[request.id] = %v, want 123", attrs["request.id"])
 	}
 }
 
@@ -242,7 +244,7 @@ func TestCloseAll_MultiHandler(t *testing.T) {
 
 func TestCloseAll_DecoratorChain(t *testing.T) {
 	inner := NewStdoutHandler(slog.LevelInfo, JSON)
-	sampling := WithSampling(inner, config.SamplingConfig{Enabled: true, Initial: 10, Thereafter: 1, Window: time.Second})
+	sampling := WithSampling(inner, config.MustNewSamplingConfig(true, 10, 1, time.Second))
 
 	// CloseAll 应通过 unwrapHandler 递归关闭 inner
 	if err := CloseAll(sampling); err != nil {
@@ -302,7 +304,8 @@ func TestErrorHandler_WithErrorHandler(t *testing.T) {
 		fmt.Fprintf(&buf, "%s: %v\n", component, err)
 	}
 
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(t.TempDir() + "/test.log")
+	fh, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -321,7 +324,8 @@ func TestErrorHandler_WithErrorHandler(t *testing.T) {
 }
 
 func TestErrorHandler_NilSilent(t *testing.T) {
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(t.TempDir() + "/test.log")
+	fh, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -341,7 +345,8 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 		fmt.Fprintf(&buf, "%s: %v\n", component, err)
 	}
 
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(t.TempDir() + "/test.log")
+	fh, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -372,9 +377,10 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 func TestSyslogHandler_WithAttrs(t *testing.T) {
 	// SyslogHandler 需要真实连接，这里只验证 WithAttrs 返回的 handler 类型正确
 	// 且 Handle 不会 panic（即使连接失败，safeSend 会 recover）
+	testCfg, _ := config.NewSyslogConfig("tcp", "127.0.0.1:9999")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelInfo},
-		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
+		cfg:          testCfg,
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 	}
@@ -414,9 +420,10 @@ func TestSyslogHandler_WithAttrs(t *testing.T) {
 // Regression: group 语义丢失 — WithGroup 后 WithAttrs 的属性 key 应带 group 前缀。
 // Found by /pr-review-toolkit:review-pr on 2026-04-15.
 func TestSyslogHandler_GroupPrefix(t *testing.T) {
+	testCfg, _ := config.NewSyslogConfig("tcp", "127.0.0.1:9999")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelInfo},
-		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
+		cfg:          testCfg,
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 	}
@@ -459,9 +466,10 @@ func TestAsyncHandler_GroupPrefix(t *testing.T) {
 // Found by code review on 2026-04-16.
 // handler.WithAttrs(a=1).WithGroup("req").WithAttrs(b=2) 中 a=1 被静默丢弃。
 func TestSyslogHandler_AttrsSurviveGroup(t *testing.T) {
+	testCfg, _ := config.NewSyslogConfig("tcp", "127.0.0.1:9999")
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelInfo},
-		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
+		cfg:          testCfg,
 		buffer:       make(chan []byte, 10),
 		closing:      atomic.Bool{},
 	}
@@ -535,7 +543,8 @@ func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	var buf bytes.Buffer
 	// FileHandler 有 errorHandler 字段，默认是 DefaultErrorHandler
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg, _ := config.NewFileConfig(t.TempDir() + "/test.log")
+	fh, err := NewFileHandler(cfg, slog.LevelInfo)
 	require.NoError(t, err)
 	defer fh.Close()
 	DefaultErrorHandler = func(component string, err error) {
@@ -572,6 +581,56 @@ func TestLevelAudit_EnabledAtError(t *testing.T) {
 	}
 }
 
+func TestAuditEvent_JSONContract(t *testing.T) {
+	h, buf := newTestHandler(slog.LevelInfo, JSON)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	defer slog.SetDefault(prev)
+
+	AuditEvent(EventLogin, "user login", "actor", "user:42", "success", true, "ip", "127.0.0.1")
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if result["level"] != "AUDIT" {
+		t.Fatalf("level = %v, want AUDIT", result["level"])
+	}
+	if result["event_type"] != "login" {
+		t.Fatalf("event_type = %v, want login", result["event_type"])
+	}
+	if result["actor"] != "user:42" {
+		t.Fatalf("actor = %v, want user:42", result["actor"])
+	}
+	if result["success"] != true {
+		t.Fatalf("success = %v, want true", result["success"])
+	}
+	attrs := result["attributes"].(map[string]any)
+	if attrs["ip"] != "127.0.0.1" {
+		t.Fatalf("attributes.ip = %v, want 127.0.0.1", attrs["ip"])
+	}
+	if _, ok := attrs["event_type"]; ok {
+		t.Fatal("event_type must be promoted out of attributes")
+	}
+}
+
+func TestAudit_DefaultEventType(t *testing.T) {
+	h, buf := newTestHandler(slog.LevelInfo, JSON)
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	defer slog.SetDefault(prev)
+
+	Audit("system audit")
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if result["event_type"] != "system" {
+		t.Fatalf("event_type = %v, want system", result["event_type"])
+	}
+}
+
 // =============================================================================
 // SPEC: Multi Handler — 并发写无竞态
 // =============================================================================
@@ -599,9 +658,10 @@ func TestSafeMulti_ConcurrentNoRace(t *testing.T) {
 
 func TestSyslogHandler_PriorityCalculation(t *testing.T) {
 	loc, _ := time.LoadLocation("UTC")
+	testCfg, _ := config.NewSyslogConfig("tcp", "localhost:514", config.WithSyslogFacility(1), config.WithSyslogTag("test"))
 	h := &SyslogHandler{
 		LevelHandler: LevelHandler{Level: slog.LevelDebug},
-		cfg:          config.SyslogConfig{Facility: 1, Tag: "test"},
+		cfg:          testCfg,
 		location:     loc,
 	}
 	entry := LogEntry{Time: time.Now().In(loc), Level: slog.LevelError, Message: "test"}

@@ -15,7 +15,7 @@ import (
 // Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
 type SamplingHandler struct {
 	inner   slog.Handler
-	cfg     config.SamplingConfig
+	cfg     *config.SamplingConfig
 	count   *atomic.Int64 // 指针，跨 WithAttrs/WithGroup 共享
 	ticker  *time.Ticker
 	stopCh  chan struct{}
@@ -24,25 +24,21 @@ type SamplingHandler struct {
 }
 
 // WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
-func WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler {
-	if !cfg.Enabled || inner == nil {
+func WithSampling(inner slog.Handler, cfg *config.SamplingConfig) slog.Handler {
+	if !cfg.Enabled() || inner == nil {
 		return inner
 	}
-	if cfg.Window <= 0 {
-		cfg.Window = time.Second
-	}
-	if cfg.Initial <= 0 {
-		cfg.Initial = 100
-	}
-	if cfg.Thereafter <= 0 {
-		cfg.Thereafter = 10
+	if cfg.Window() <= 0 {
+		// 使用构造函数创建一个带有默认值的配置
+		newCfg, _ := config.NewSamplingConfig(true, 100, 10, time.Second)
+		cfg = newCfg
 	}
 
 	h := &SamplingHandler{
 		inner:   inner,
 		cfg:     cfg,
 		count:   &atomic.Int64{},
-		ticker:  time.NewTicker(cfg.Window),
+		ticker:  time.NewTicker(cfg.Window()),
 		stopCh:  make(chan struct{}),
 		wg:      &sync.WaitGroup{},
 		stopped: &atomic.Bool{},
@@ -68,10 +64,10 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	count := h.count.Add(1)
 
 	cfg := h.cfg
-	if count <= int64(cfg.Initial) {
+	if count <= int64(cfg.Initial()) {
 		return h.inner.Handle(ctx, r)
 	}
-	if (count-int64(cfg.Initial))%int64(cfg.Thereafter) == 0 {
+	if (count-int64(cfg.Initial()))%int64(cfg.Thereafter()) == 0 {
 		return h.inner.Handle(ctx, r)
 	}
 

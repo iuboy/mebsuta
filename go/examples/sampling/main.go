@@ -11,12 +11,7 @@ import (
 
 func main() {
 	stdout := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)
-	sampled := mebsuta.WithSampling(stdout, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    5,
-		Thereafter: 3,
-		Window:     time.Second,
-	})
+	sampled := mebsuta.WithSampling(stdout, config.MustNewSamplingConfig(true, 100, 10, time.Second))
 
 	logger, err := mebsuta.New(mebsuta.WithHandler(sampled))
 	if err != nil {

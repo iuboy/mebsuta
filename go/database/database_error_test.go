@@ -564,11 +564,7 @@ func TestDatabaseHandler_ErrCountTracksDrops(t *testing.T) {
 // NewDatabaseHandler returns an error when the database connection fails.
 func TestDatabaseHandler_NewDatabaseHandler_ConnectFailure(t *testing.T) {
 	// MySQL with invalid DSN should fail to connect.
-	_, err := NewDatabaseHandler(config.DatabaseConfig{
-		DriverName:     "mysql",
-		DataSourceName: "invalid:invalid@tcp(localhost:99999)/nonexistent",
-		TableName:      "logs",
-	}, slog.LevelInfo)
+	_, err := NewDatabaseHandler(config.MustNewDatabaseConfig("mysql", "invalid:invalid@tcp(localhost:99999)/nonexistent", "logs"), slog.LevelInfo)
 	require.Error(t, err, "should fail to connect to invalid MySQL DSN")
 	require.True(t, errors.Is(err, nil) || err != nil,
 		"error should be non-nil for connection failure")

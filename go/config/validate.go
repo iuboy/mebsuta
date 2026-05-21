@@ -12,93 +12,93 @@ var validTableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // Validate validates the FileConfig and applies defaults for zero fields.
 func (fc *FileConfig) Validate() error {
-	if fc.Path == "" {
+	if fc.path == "" {
 		return fmt.Errorf("file path is required")
 	}
-	if !filepath.IsAbs(fc.Path) {
-		return fmt.Errorf("file path must be absolute: %s", fc.Path)
+	if !filepath.IsAbs(fc.path) {
+		return fmt.Errorf("file path must be absolute: %s", fc.path)
 	}
-	if fc.MaxSizeMB == 0 {
-		fc.MaxSizeMB = DefaultFileMaxSizeMB
+	if fc.maxSizeMB == 0 {
+		fc.maxSizeMB = DefaultFileMaxSizeMB
 	}
-	if fc.MaxBackups == 0 {
-		fc.MaxBackups = DefaultMaxBackups
+	if fc.maxBackups == 0 {
+		fc.maxBackups = DefaultMaxBackups
 	}
-	if fc.MaxAgeDays == 0 {
-		fc.MaxAgeDays = DefaultMaxAgeDays
+	if fc.maxAgeDays == 0 {
+		fc.maxAgeDays = DefaultMaxAgeDays
 	}
 	return nil
 }
 
 // Validate validates the DatabaseConfig and applies defaults for zero fields.
 func (dc *DatabaseConfig) Validate() error {
-	if dc.BatchSize <= 0 {
-		dc.BatchSize = DefaultBatchSize
+	if dc.batchSize <= 0 {
+		dc.batchSize = DefaultBatchSize
 	}
-	if dc.BatchInterval <= 0 {
-		dc.BatchInterval = DefaultBatchInterval
+	if dc.batchInterval <= 0 {
+		dc.batchInterval = DefaultBatchInterval
 	}
-	if dc.MaxOpenConns <= 0 {
-		dc.MaxOpenConns = DefaultMaxOpenConns
+	if dc.maxOpenConns <= 0 {
+		dc.maxOpenConns = DefaultMaxOpenConns
 	}
-	if dc.MaxIdleConns <= 0 {
-		dc.MaxIdleConns = DefaultMaxIdleConns
+	if dc.maxIdleConns <= 0 {
+		dc.maxIdleConns = DefaultMaxIdleConns
 	}
-	if dc.MaxIdleConns > dc.MaxOpenConns {
-		dc.MaxIdleConns = dc.MaxOpenConns
+	if dc.maxIdleConns > dc.maxOpenConns {
+		dc.maxIdleConns = dc.maxOpenConns
 	}
-	if dc.RetryDelay <= 0 {
-		dc.RetryDelay = DefaultRetryDelay
+	if dc.retryDelay <= 0 {
+		dc.retryDelay = DefaultRetryDelay
 	}
 
-	switch dc.DriverName {
+	switch dc.driverName {
 	case "mysql", "postgres":
-		if dc.DataSourceName == "" {
+		if dc.dataSourceName == "" {
 			return fmt.Errorf("SQL database requires data source name")
 		}
-		if dc.TableName == "" {
-			dc.TableName = "logs"
+		if dc.tableName == "" {
+			dc.tableName = "logs"
 		}
-		if !validTableNameRe.MatchString(dc.TableName) {
-			return fmt.Errorf("invalid table name: %s, only letters, digits and underscores allowed, must start with letter or underscore", dc.TableName)
+		if !validTableNameRe.MatchString(dc.tableName) {
+			return fmt.Errorf("invalid table name: %s, only letters, digits and underscores allowed, must start with letter or underscore", dc.tableName)
 		}
 	default:
-		return fmt.Errorf("unsupported database driver: %s", dc.DriverName)
+		return fmt.Errorf("unsupported database driver: %s", dc.driverName)
 	}
 	return nil
 }
 
 // Validate validates the SyslogConfig and applies defaults for zero fields.
 func (sc *SyslogConfig) Validate() error {
-	if sc.Network == "" {
-		sc.Network = DefaultSyslogNetwork
+	if sc.network == "" {
+		sc.network = DefaultSyslogNetwork
 	}
-	if sc.Address == "" {
+	if sc.address == "" {
 		return fmt.Errorf("syslog address is required")
 	}
-	if sc.Tag == "" {
-		sc.Tag = DefaultSyslogTag
+	if sc.tag == "" {
+		sc.tag = DefaultSyslogTag
 	}
-	if len(sc.Tag) > 48 {
-		return fmt.Errorf("syslog tag too long: %d chars (max 48)", len(sc.Tag))
+	if len(sc.tag) > 48 {
+		return fmt.Errorf("syslog tag too long: %d chars (max 48)", len(sc.tag))
 	}
-	for _, r := range sc.Tag {
+	for _, r := range sc.tag {
 		if r < 33 || r > 126 {
 			return fmt.Errorf("syslog tag contains non-printable character: %q", r)
 		}
 	}
-	if sc.RetryDelay <= 0 {
-		sc.RetryDelay = DefaultRetryDelay
+	if sc.retryDelay <= 0 {
+		sc.retryDelay = DefaultRetryDelay
 	}
-	if sc.BufferSize <= 0 {
-		sc.BufferSize = 1000
+	if sc.bufferSize <= 0 {
+		sc.bufferSize = 1000
 	}
-	if sc.Facility < 0 || sc.Facility > 23 {
-		return fmt.Errorf("invalid syslog facility: %d, must be 0-23", sc.Facility)
+	if sc.facility < 0 || sc.facility > 23 {
+		return fmt.Errorf("invalid syslog facility: %d, must be 0-23", sc.facility)
 	}
-	if sc.TimeZone != "" {
-		if _, err := time.LoadLocation(sc.TimeZone); err != nil {
-			return fmt.Errorf("invalid timezone: %s", sc.TimeZone)
+	if sc.timeZone != "" {
+		if _, err := time.LoadLocation(sc.timeZone); err != nil {
+			return fmt.Errorf("invalid timezone: %s", sc.timeZone)
 		}
 	}
 	return nil
@@ -106,10 +106,10 @@ func (sc *SyslogConfig) Validate() error {
 
 // Validate validates the SamplingConfig when sampling is enabled.
 func (sc *SamplingConfig) Validate() error {
-	if !sc.Enabled {
+	if !sc.enabled {
 		return nil
 	}
-	if sc.Initial <= 0 || sc.Thereafter <= 0 || sc.Window <= 0 {
+	if sc.initial <= 0 || sc.thereafter <= 0 || sc.window <= 0 {
 		return fmt.Errorf("sampling config requires positive initial, thereafter and window values")
 	}
 	return nil

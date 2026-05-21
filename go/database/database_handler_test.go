@@ -14,20 +14,25 @@ import (
 // =============================================================================
 
 func TestNewDatabaseHandler_UnsupportedDriver(t *testing.T) {
-	_, err := NewDatabaseHandler(config.DatabaseConfig{
-		DriverName: "sqlite",
-	}, slog.LevelInfo)
+	// 使用有效的 DSN 格式，但不支持的驱动程序
+	cfg, err := config.NewDatabaseConfig("sqlite", "file:test.db", "logs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewDatabaseHandler(cfg, slog.LevelInfo)
 	if err == nil {
 		t.Fatal("expected error for unsupported driver")
 	}
 }
 
 func TestNewDatabaseHandler_EmptyDSN(t *testing.T) {
-	_, err := NewDatabaseHandler(config.DatabaseConfig{
-		DriverName: "mysql",
-	}, slog.LevelInfo)
+	_, err := config.NewDatabaseConfig("mysql", "", "logs")
 	if err == nil {
-		t.Fatal("expected error for empty DSN")
+		t.Fatal("expected error for empty DSN, got none")
+	}
+	// NewDatabaseConfig 应该返回错误，因为 DSN 不能为空
+	if err == nil {
+		t.Fatal("NewDatabaseConfig should reject empty DSN")
 	}
 }
 

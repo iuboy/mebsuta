@@ -2,6 +2,7 @@ package mebsuta
 
 import (
 	"compress/gzip"
+	"errors"
 	"context"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ type fileState struct {
 	rotatedAt    time.Time    // 上次轮转时间
 	closed       atomic.Bool
 	errCount     atomic.Int64
-	cfg          config.FileConfig
+	cfg          *config.FileConfig
 	errorHandler atomic.Pointer[ErrorHandler]
 	compressWg   sync.WaitGroup // 跟踪异步压缩 goroutine
 }
@@ -59,18 +60,18 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 }
 
 // NewFileHandler creates a FileHandler that writes to the file specified in cfg at the given log level.
-func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, error) {
+func NewFileHandler(cfg *config.FileConfig, level slog.Level) (*FileHandler, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
 	// 确保目录存在
-	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Path()), 0750); err != nil {
 		return nil, fmt.Errorf("mebsuta: create log directory: %w", err)
 	}
 
 	// 打开日志文件
-	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
+	f, err := os.OpenFile(cfg.Path(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: open log file: %w", err)
 	}
@@ -82,7 +83,7 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 		return nil, fmt.Errorf("mebsuta: stat log file: %w", err)
 	}
 
-	format := EncodingType(cfg.Format)
+	format := EncodingType(cfg.Format())
 	if format == "" {
 		format = JSON
 	}
@@ -95,7 +96,7 @@ func NewFileHandler(cfg config.FileConfig, level slog.Level) (*FileHandler, erro
 	state.size.Store(fi.Size())
 
 	// 启动时检测并压缩残留的未压缩轮转文件
-	compressResidual(cfg.Path, cfg.Compress, &state.compressWg)
+	compressResidual(cfg.Path(), cfg.Compress(), &state.compressWg)
 
 	cw := &countingWriter{state: state}
 	inner := newInnerHandler(cw, format)
@@ -190,12 +191,12 @@ func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
 func (h *FileHandler) needsRotation() bool {
 	cfg := h.state.cfg
 	// 大小轮转
-	maxBytes := int64(cfg.MaxSizeMB) * 1024 * 1024
+	maxBytes := int64(cfg.MaxSizeMB()) * 1024 * 1024
 	if maxBytes > 0 && h.state.size.Load() >= maxBytes {
 		return true
 	}
 	// 时间轮转
-	if cfg.RotateInterval > 0 && time.Since(h.state.rotatedAt) >= cfg.RotateInterval {
+	if cfg.RotateInterval() > 0 && time.Since(h.state.rotatedAt) >= cfg.RotateInterval() {
 		return true
 	}
 	return false
@@ -224,10 +225,10 @@ func (h *FileHandler) doRotate() {
 
 	// 生成备份文件名并重命名
 	backup := h.backupNameLocked()
-	if err := os.Rename(cfg.Path, backup); err != nil {
+	if err := os.Rename(cfg.Path(), backup); err != nil {
 		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("rename for rotation: %w", err))
 		// 尝试重新打开原文件继续写入
-		f, openErr := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
+		f, openErr := os.OpenFile(cfg.Path(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 		if openErr != nil {
 			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("reopen after failed rotation: %w", openErr))
 			return
@@ -237,7 +238,7 @@ func (h *FileHandler) doRotate() {
 	}
 
 	// 创建新文件
-	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
+	f, err := os.OpenFile(cfg.Path(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, logFileMode)
 	if err != nil {
 		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("create new log file: %w", err))
 		h.state.closed.Store(true)
@@ -249,7 +250,7 @@ func (h *FileHandler) doRotate() {
 	h.state.rotatedAt = time.Now()
 
 	// 异步压缩备份
-	if cfg.Compress {
+	if cfg.Compress() {
 		eh := loadErrorHandler(&h.state.errorHandler)
 		h.state.compressWg.Add(1)
 		go func() {
@@ -265,34 +266,38 @@ func (h *FileHandler) doRotate() {
 // backupNameLocked 生成唯一的备份文件名。调用方必须持有 state.mu Lock。
 func (h *FileHandler) backupNameLocked() string {
 	ts := time.Now().Format("20060102-150405")
-	name := h.state.cfg.Path + "." + ts
+	name := h.state.cfg.Path() + "." + ts
 	if _, err := os.Stat(name); err != nil {
+		if !os.IsNotExist(err) {
+			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("backup name stat %s: %w", name, err))
+		}
 		return name
 	}
 	// 同一秒内多次轮转，加序号后缀
 	for i := 1; i < 1000; i++ {
-		candidate := fmt.Sprintf("%s.%s.%d", h.state.cfg.Path, ts, i)
+		candidate := fmt.Sprintf("%s.%s.%d", h.state.cfg.Path(), ts, i)
 		if _, err := os.Stat(candidate); err != nil {
 			return candidate
 		}
 	}
 	// 极端情况：使用纳秒时间戳兜底
-	return h.state.cfg.Path + "." + time.Now().Format("20060102-150405.000000000")
+	return h.state.cfg.Path() + "." + time.Now().Format("20060102-150405.000000000")
 }
 
 // cleanupBackupsLocked 清理超过 MaxBackups 或 MaxAgeDays 的旧备份文件。
 // 调用方必须持有 state.mu Lock。
 func (h *FileHandler) cleanupBackupsLocked() {
 	cfg := h.state.cfg
-	if cfg.MaxBackups <= 0 && cfg.MaxAgeDays <= 0 {
+	if cfg.MaxBackups() <= 0 && cfg.MaxAgeDays() <= 0 {
 		return
 	}
 
-	dir := filepath.Dir(cfg.Path)
-	base := filepath.Base(cfg.Path)
+	dir := filepath.Dir(cfg.Path())
+	base := filepath.Base(cfg.Path())
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("cleanup backups: readdir %s: %w", dir, err))
 		return
 	}
 
@@ -321,20 +326,34 @@ func (h *FileHandler) cleanupBackupsLocked() {
 	})
 
 	// 按 MaxBackups 清理
-	if cfg.MaxBackups > 0 && len(backups) > cfg.MaxBackups {
-		for _, b := range backups[cfg.MaxBackups:] {
-			os.Remove(filepath.Join(dir, b.name))
+	if cfg.MaxBackups() > 0 && len(backups) > cfg.MaxBackups() {
+		var cleanupErrs []error
+		for _, b := range backups[cfg.MaxBackups():] {
+			path := filepath.Join(dir, b.name)
+			if err := os.Remove(path); err != nil {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("remove old backup %s: %w", path, err))
+			}
 		}
-		backups = backups[:cfg.MaxBackups]
+		if len(cleanupErrs) > 0 {
+			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("cleanup old backups: %v", errors.Join(cleanupErrs...)))
+		}
+		backups = backups[:cfg.MaxBackups()]
 	}
 
 	// 按 MaxAgeDays 清理
-	if cfg.MaxAgeDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -cfg.MaxAgeDays)
+	if cfg.MaxAgeDays() > 0 {
+		cutoff := time.Now().AddDate(0, 0, -cfg.MaxAgeDays())
+		var cleanupErrs []error
 		for _, b := range backups {
 			if b.modTime.Before(cutoff) {
-				os.Remove(filepath.Join(dir, b.name))
+				path := filepath.Join(dir, b.name)
+				if err := os.Remove(path); err != nil {
+					cleanupErrs = append(cleanupErrs, fmt.Errorf("remove expired backup %s: %w", path, err))
+				}
 			}
+		}
+		if len(cleanupErrs) > 0 {
+			ReportError(loadErrorHandler(&h.state.errorHandler), "file", fmt.Errorf("cleanup expired backups: %v", errors.Join(cleanupErrs...)))
 		}
 	}
 }
@@ -397,6 +416,7 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup) {
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		ReportError(DefaultErrorHandler, "file", fmt.Errorf("compress residual: readdir %s: %w", dir, err))
 		return
 	}
 

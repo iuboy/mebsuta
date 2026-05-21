@@ -20,12 +20,17 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	// File handler with rotation
-	fileH, err := mebsuta.NewFileHandler(config.FileConfig{
-		Path:       filepath.Join(dir, "app.log"),
-		MaxSizeMB:  10,
-		MaxBackups: 5,
-		Compress:   true,
-	}, slog.LevelDebug)
+	fileCfg, err := config.NewFileConfig(
+		filepath.Join(dir, "app.log"),
+		config.WithMaxSizeMB(10),
+		config.WithMaxBackups(5),
+		config.WithCompress(true),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	fileH, err := mebsuta.NewFileHandler(fileCfg, slog.LevelDebug)
 	if err != nil {
 		panic(err)
 	}
@@ -40,12 +45,7 @@ func main() {
 	}
 
 	// Wrap with sampling (first 100 per window, then 1 in 10)
-	sampled := mebsuta.WithSampling(multi.Handler(), config.SamplingConfig{
-		Enabled:    true,
-		Initial:    100,
-		Thereafter: 10,
-		Window:     time.Second,
-	})
+	sampled := mebsuta.WithSampling(multi.Handler(), config.MustNewSamplingConfig(true, 100, 10, time.Second))
 
 	// Wrap with async buffering
 	async := mebsuta.WithAsync(sampled, mebsuta.AsyncConfig{
@@ -60,5 +60,5 @@ func main() {
 	slog.Error("simulated error", "code", 500)
 
 	// Audit level: bypasses sampling and async buffer (direct write)
-	mebsuta.Audit("compliance event", "action", "login", "user", "admin")
+	mebsuta.AuditEvent(mebsuta.EventLogin, "compliance event", "actor", "admin", "success", true)
 }
