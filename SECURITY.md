@@ -11,7 +11,9 @@
 
 ### 报告方式
 
-请发送邮件至：security@example.com
+请发送邮件至：security@mebsuta.dev
+
+或在 GitHub 上私下报告：https://github.com/ycq/mebsuta/security/advisories/new
 
 邮件应包含：
 - 漏洞描述

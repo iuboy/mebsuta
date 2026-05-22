@@ -178,9 +178,9 @@ impl SyslogHandler {
 
 fn level_to_severity(level: &Level) -> u8 {
     match level {
+        Level::Audit(_) => 2, // CRITICAL — audit/compliance records
         Level::Error => 3,
         Level::Warn => 4,
-        Level::Audit(_) => 5,
         Level::Info => 6,
         Level::Debug | Level::Trace => 7,
     }
@@ -323,7 +323,7 @@ mod tests {
     fn level_to_severity_mapping() {
         assert_eq!(level_to_severity(&Level::Error), 3);
         assert_eq!(level_to_severity(&Level::Warn), 4);
-        assert_eq!(level_to_severity(&Level::Audit(EventType::Login)), 5);
+        assert_eq!(level_to_severity(&Level::Audit(EventType::Login)), 2);
         assert_eq!(level_to_severity(&Level::Info), 6);
         assert_eq!(level_to_severity(&Level::Debug), 7);
         assert_eq!(level_to_severity(&Level::Trace), 7);

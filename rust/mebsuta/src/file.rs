@@ -383,6 +383,7 @@ fn compress_file(backup_path: &Path, on_error: impl Fn(&Error) + Send) {
         let src = std::fs::File::open(backup_path)?;
         let mut src = std::io::BufReader::new(src);
         let dst = std::fs::File::create(&tmp_path)?;
+        restrict_file_permissions(&dst);
         let mut gz = flate2::write::GzEncoder::new(dst, flate2::Compression::default());
         let mut buf = [0u8; 8192];
         loop {

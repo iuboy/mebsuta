@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::error::Error;
 use crate::handler::{Close, ErrorHandler, Handler, Terminal, call_error_handler, recover_lock};
@@ -12,6 +13,7 @@ use crate::time::system_time_to_rfc3339;
 const DEFAULT_BATCH_SIZE: usize = 100;
 const DEFAULT_BATCH_INTERVAL_SECS: u64 = 5;
 const FLUSH_RETRIES: usize = 3;
+const BLOCKING_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configuration for DatabaseHandler.
 #[derive(Debug, Clone)]
@@ -252,12 +254,33 @@ impl Handler for DatabaseHandler {
             return Ok(());
         };
 
-        let entry = Self::record_to_entry(record);
-        match tx.try_send(entry) {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                self.shared.dropped.fetch_add(1, Ordering::Relaxed);
-                Ok(())
+        if record.level.severity() >= Level::Error.severity() {
+            let deadline = Instant::now() + BLOCKING_SEND_TIMEOUT;
+            loop {
+                let entry = Self::record_to_entry(record);
+                match tx.try_send(entry) {
+                    Ok(()) => return Ok(()),
+                    Err(mpsc::TrySendError::Full(_)) => {
+                        if Instant::now() >= deadline {
+                            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                            return Ok(());
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                        return Ok(());
+                    }
+                }
+            }
+        } else {
+            let entry = Self::record_to_entry(record);
+            match tx.try_send(entry) {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
             }
         }
     }

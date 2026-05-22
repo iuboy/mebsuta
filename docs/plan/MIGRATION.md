@@ -2,6 +2,12 @@
 
 v0.2 从 zap 封装全面转向 `log/slog` Handler 插件架构。
 
+## Rust 版本策略
+
+Rust 实现（`rust/`）从 v0.1.0 起步，尚无迁移历史。API 遵循 `SPEC.md` 定义的跨语言行为契约，但使用 Rust 惯用模式（serde-deserializable 配置、`Result` 返回值、trait-based Handler）而非镜像 Go 的 functional options 模式。
+
+标签格式：`rust/vX.Y.Z`（如 `rust/v0.1.0`）。
+
 ## v0.3.x → Monorepo Split
 
 仓库从单语言 Go 项目拆分为双语言 monorepo（`go/` + `rust/`）。

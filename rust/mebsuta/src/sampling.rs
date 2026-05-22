@@ -1,9 +1,15 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::error::Error;
 use crate::handler::{Handler, Middleware};
 use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
+
+struct SamplingState {
+    counter: AtomicU64,
+    window_start: AtomicU64,
+}
 
 /// Sampling decorator. Passes the first `initial` records, then 1 in `thereafter`
 /// thereafter. Error-level records always pass (never sampled).
@@ -16,13 +22,15 @@ use crate::record::{Context, OwnedRecord};
 /// effective sampling rate may deviate slightly from the configured ratio (e.g.,
 /// a few extra records may pass during counter reset windows). This is acceptable
 /// for observability sampling where exact precision is not required.
+///
+/// Clones share the same counter state via `Arc`, matching Go's pointer-sharing
+/// semantics so that decoration (with_attrs/with_group) does not reset sampling.
 pub struct Sampling<H> {
     inner: H,
     initial: u64,
     thereafter: u64,
-    counter: AtomicU64,
+    state: Arc<SamplingState>,
     window_ticks: u64,
-    window_start: AtomicU64,
 }
 
 impl<H: Handler> Sampling<H> {
@@ -31,9 +39,11 @@ impl<H: Handler> Sampling<H> {
             inner,
             initial,
             thereafter,
-            counter: AtomicU64::new(0),
+            state: Arc::new(SamplingState {
+                counter: AtomicU64::new(0),
+                window_start: AtomicU64::new(0),
+            }),
             window_ticks,
-            window_start: AtomicU64::new(0),
         }
     }
 }
@@ -48,13 +58,13 @@ impl<H: Handler + Clone + 'static> Handler for Sampling<H> {
             return self.inner.handle(record);
         }
 
-        let count = self.counter.fetch_add(1, Ordering::Relaxed);
-        let window_start = self.window_start.load(Ordering::Relaxed);
+        let count = self.state.counter.fetch_add(1, Ordering::Relaxed);
+        let window_start = self.state.window_start.load(Ordering::Relaxed);
         let local_count = count.saturating_sub(window_start);
 
         if local_count >= self.window_ticks && count > 0 {
-            self.counter.store(1, Ordering::Relaxed);
-            self.window_start.store(count, Ordering::Relaxed);
+            self.state.counter.store(1, Ordering::Relaxed);
+            self.state.window_start.store(count, Ordering::Relaxed);
             return self.inner.handle(record);
         }
 
@@ -76,9 +86,8 @@ impl<H: Handler + Clone + 'static> Handler for Sampling<H> {
             inner: self.inner.clone(),
             initial: self.initial,
             thereafter: self.thereafter,
-            counter: AtomicU64::new(0),
+            state: Arc::clone(&self.state),
             window_ticks: self.window_ticks,
-            window_start: AtomicU64::new(0),
         })
     }
 
@@ -159,18 +168,32 @@ mod tests {
     }
 
     #[test]
-    fn clone_box_resets_counter() {
+    fn clone_box_shares_counter() {
         let mock = Mock::new();
-        let s1 = Sampling::new(mock.clone(), 1, 100, 1000);
-        // Consume the initial slot
-        let r = arc_record(Level::Info, "first");
-        s1.handle(&r).unwrap();
+        // initial=0, thereafter=100: records at local_count 0, 100, 200... pass
+        let s1 = Sampling::new(mock.clone(), 0, 100, 10000);
+        // Record 0 (counter=0, local=0): 0.is_multiple_of(100) = true → passes
+        // Records 1-49: not multiples of 100 → sampled out
+        for _ in 0..50 {
+            let _ = s1.handle(&arc_record(Level::Info, "s1"));
+        }
+        assert_eq!(mock.count(), 1, "only counter=0 passes in first 50");
+
+        // Clone shares counter via Arc — counter is now at 50
+        let s2 = s1.clone_box();
+        // If clone had reset counter, the next record would have counter=0 → passes.
+        // With shared counter, counter continues from 50.
+        for _ in 0..49 {
+            let _ = s2.handle(&arc_record(Level::Info, "s2"));
+        }
+        assert_eq!(mock.count(), 1, "counter shared, no new pass at 50..98");
+
+        // counter=99 → local=99, not multiple of 100
+        let _ = s2.handle(&arc_record(Level::Info, "99"));
         assert_eq!(mock.count(), 1);
 
-        // Clone resets counter
-        let s2 = s1.clone_box();
-        let r2 = arc_record(Level::Info, "cloned first");
-        s2.handle(&r2).unwrap();
-        assert_eq!(mock.count(), 2);
+        // counter=100 → local=100, 100.is_multiple_of(100) → passes
+        let _ = s2.handle(&arc_record(Level::Info, "100th"));
+        assert_eq!(mock.count(), 2, "100th record passes via shared counter");
     }
 }

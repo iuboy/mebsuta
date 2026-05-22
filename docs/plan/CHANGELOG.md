@@ -19,7 +19,7 @@
 - Rust: `rust/vX.Y.Z`
 - 整仓发布: `vX.Y.Z`
 
-## Unreleased
+## [Unreleased] — go/v0.4.0-beta.1 / rust/v0.1.0-beta.1
 
 ### Repository
 
@@ -33,7 +33,14 @@
 
 ### Rust
 
-- 暂无
+- 修复 Async handler 对 Error/Audit 级别记录未使用阻塞发送，违反 SPEC 合规要求
+- 修复 Database handler 对 Error/Audit 级别记录未使用阻塞发送
+- 修复 `compress_file` 临时文件未设置 `0600` 权限
+- 修复 `Sampling::clone_box` 重置计数器，改为共享计数器匹配 Go 行为
+- 添加 `Async` 包装 `Syslog`/`Database` 禁止组合的运行时检测
+- 对齐 `Syslog` Audit severity 为 2 (CRITICAL)，与 Go 实现一致
+- 优化 Async blocking send 使用 `sleep` 替代 `yield_now` 降低 CPU 占用
+- 移除未使用的 `SelfBuffered` marker trait，运行时检测改用 `Any` 类型检查
 
 ## [0.3.3] - 2026-04-16
 

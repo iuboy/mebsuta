@@ -1,12 +1,15 @@
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::error::Error;
 use crate::handler::{Handler, Middleware, recover_lock};
+use crate::level::Level;
 use crate::record::{Context, OwnedRecord};
 
 const DEFAULT_BUFFER_SIZE: usize = 256;
+const BLOCKING_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum AsyncMessage {
     Record(Arc<OwnedRecord>),
@@ -39,6 +42,14 @@ impl<H: Handler + Clone + 'static> Async<H> {
     }
 
     pub fn with_buffer_size(inner: H, buffer_size: usize) -> Self {
+        // SPEC: reject double-buffering (Async → Syslog/Database)
+        assert!(
+            !is_self_buffered(&inner),
+            "mebsuta: Async cannot wrap a self-buffered handler (Syslog or Database). \
+             These handlers maintain their own internal buffer; wrapping in Async \
+             creates double-buffering and can lose records during close."
+        );
+
         let (tx, rx) = mpsc::sync_channel(buffer_size);
 
         let inner_clone = inner.clone();
@@ -90,15 +101,40 @@ impl<H: Handler + Clone + 'static> Handler for Async<H> {
             return Ok(());
         };
 
-        match tx.try_send(AsyncMessage::Record(Arc::clone(record))) {
-            Ok(()) => Ok(()),
-            Err(mpsc::TrySendError::Full(_)) => {
-                self.shared.dropped.fetch_add(1, Ordering::Relaxed);
-                Ok(())
+        let msg = AsyncMessage::Record(Arc::clone(record));
+
+        if record.level.severity() >= Level::Error.severity() {
+            // Error/Audit: blocking send with timeout, never silently drop
+            let deadline = Instant::now() + BLOCKING_SEND_TIMEOUT;
+            let mut msg = Some(msg);
+            loop {
+                match tx.try_send(msg.take().unwrap()) {
+                    Ok(()) => return Ok(()),
+                    Err(mpsc::TrySendError::Full(m)) => {
+                        if Instant::now() >= deadline {
+                            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                            return Ok(());
+                        }
+                        msg = Some(m);
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                        return Ok(());
+                    }
+                }
             }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                self.shared.dropped.fetch_add(1, Ordering::Relaxed);
-                Ok(())
+        } else {
+            match tx.try_send(msg) {
+                Ok(()) => Ok(()),
+                Err(mpsc::TrySendError::Full(_)) => {
+                    self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    Ok(())
+                }
             }
         }
     }
@@ -175,6 +211,17 @@ impl<H: Handler + Clone + 'static> Middleware<H> for Async<H> {
     fn inner(&self) -> &H {
         &self.shared.inner
     }
+}
+
+/// Runtime check for self-buffered inner handlers.
+/// Uses Any type checking to detect SyslogHandler and DatabaseHandler at runtime,
+/// since the Handler trait doesn't expose type information through generics.
+fn is_self_buffered<H: Handler + 'static>(handler: &H) -> bool {
+    use std::any::Any;
+    let any: &dyn Any = handler;
+    // Check common wrapper types that might contain a self-buffered inner
+    any.is::<crate::syslog::SyslogHandler>()
+        || any.is::<crate::database::DatabaseHandler>()
 }
 
 #[cfg(test)]
@@ -264,5 +311,34 @@ mod tests {
         let r = arc_record(Level::Info, "after close");
         h.handle(&r).unwrap();
         assert_eq!(mock.count(), 0);
+    }
+
+    #[test]
+    fn async_error_record_not_dropped_on_full_buffer() {
+        use crate::record::EventType;
+
+        let mock = Mock::new();
+        let mut async_h = Async::with_buffer_size(mock.clone(), 1);
+
+        // Fill the buffer with info records so it's at capacity
+        for _ in 0..10 {
+            let r = arc_record(Level::Info, "filler");
+            let _ = async_h.handle(&r);
+        }
+
+        // Error and Audit records should still be delivered (blocking send)
+        let err = arc_record(Level::Error, "error msg");
+        async_h.handle(&err).unwrap();
+
+        let audit = arc_record(Level::Audit(EventType::Login), "audit msg");
+        async_h.handle(&audit).unwrap();
+
+        async_h.close_if_needed();
+
+        let total = mock.count();
+        assert!(
+            total >= 2,
+            "Error/Audit records must not be dropped, got {total} records"
+        );
     }
 }
