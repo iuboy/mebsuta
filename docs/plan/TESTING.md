@@ -71,14 +71,14 @@ cargo audit
 - **missing**: No test coverage exists for this behavior in one or both languages.
 - **not applicable**: This behavior does not apply to one language.
 
-## Go Coverage (commit 82d81c0 + round 2)
+## Go Coverage (latest)
 
 | Package | Coverage | Date |
 | --- | --- | --- |
-| go/ (main) | 80.7% | 2026-05-20 |
-| go/config/ | 91.5% | 2026-05-20 |
-| go/database/ | 76.5% | 2026-05-20 |
-| go/metrics/ | 90.6% | 2026-05-20 |
+| go/ (main) | 77.6% | 2026-05-21 |
+| go/config/ | 32.1% | 2026-05-21 |
+| go/database/ | 76.5% | 2026-05-21 |
+| go/metrics/ | 90.6% | 2026-05-21 |
 
 ### Key improvements (round 2)
 - Main package: 68.4% → 80.7% (+12.3pp)

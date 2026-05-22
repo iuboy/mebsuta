@@ -25,7 +25,7 @@ type SamplingHandler struct {
 
 // WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
 func WithSampling(inner slog.Handler, cfg *config.SamplingConfig) slog.Handler {
-	if !cfg.Enabled() || inner == nil {
+	if cfg == nil || !cfg.Enabled() || inner == nil {
 		return inner
 	}
 	if cfg.Window() <= 0 {

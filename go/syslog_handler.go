@@ -115,7 +115,7 @@ func (h *SyslogHandler) Handle(ctx context.Context, r slog.Record) error {
 	entry := RecordToLogEntry(r)
 	msg := h.formatMessage(entry)
 	data := []byte(msg)
-	return h.safeSend(data)
+	return h.safeSend(data, r.Level)
 }
 
 func (h *SyslogHandler) Close() error {
@@ -317,16 +317,31 @@ func (h *SyslogHandler) processQueue() {
 	}
 }
 
-func (h *SyslogHandler) safeSend(data []byte) (err error) {
+func (h *SyslogHandler) safeSend(data []byte, level slog.Level) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
 		}
 	}()
+
+	// Error and Audit records: blocking send with 5s timeout, never silently dropped.
+	if level >= slog.LevelError {
+		select {
+		case h.buffer <- data:
+			return nil
+		case <-time.After(5 * time.Second):
+			ReportError(loadErrorHandler(&h.errorHandler), "syslog",
+				fmt.Errorf("buffer full timeout for %v record, dropped", level))
+			return fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
+		}
+	}
+
 	select {
 	case h.buffer <- data:
 		return nil
 	default:
+		ReportError(loadErrorHandler(&h.errorHandler), "syslog",
+			fmt.Errorf("buffer full, log dropped"))
 		return fmt.Errorf("mebsuta/syslog: buffer full")
 	}
 }
@@ -374,7 +389,7 @@ func (h *SyslogHandler) formatJSONMessage(entry LogEntry, ts time.Time, priority
 	}
 	cleaned := string(jsonBytes)
 	if len(cleaned) > maxSyslogMsgSize {
-		cleaned = truncateUTF8(cleaned, maxSyslogMsgSize)
+		cleaned = truncateJSON(cleaned, maxSyslogMsgSize)
 	}
 
 	if h.cfg.RFC5424() {
@@ -393,18 +408,16 @@ func (h *SyslogHandler) formatStructuredMessage(entry LogEntry, ts time.Time, pr
 
 	if h.cfg.RFC5424() {
 		var sd strings.Builder
-		sd.WriteByte('[')
-		for i, attr := range entry.Attrs {
-			if i > 0 {
-				sd.WriteByte(' ')
+		if len(entry.Attrs) == 0 {
+			sd.WriteByte('-')
+		} else {
+			sd.WriteString("[mebsuta")
+			for _, attr := range entry.Attrs {
+				fmt.Fprintf(&sd, " %s=\"%s\"", sanitizeSDName(attr.Key), escapeSDValue(attr.Value.String()))
 			}
-			fmt.Fprintf(&sd, "%s=\"%s\"", attr.Key, escapeSDValue(attr.Value.String()))
+			sd.WriteByte(']')
 		}
-		sd.WriteByte(']')
 		sdStr := sd.String()
-		if sdStr == "[]" {
-			sdStr = "-"
-		}
 
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - %s %s`,
 			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag(), procid, sdStr, msgContent) + "\n"
@@ -498,6 +511,23 @@ func escapeSDValue(s string) string {
 	return b.String()
 }
 
+// sanitizeSDName replaces characters invalid in RFC5424 structured-data
+// parameter names (only printable ASCII 33-126 except '=', ']', '"', space)
+// with underscores.
+func sanitizeSDName(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
 func safeMessageForLog(msg string) string {
 	cleaned := strings.Map(func(r rune) rune {
 		if r >= 0 && r <= 31 {
@@ -506,6 +536,76 @@ func safeMessageForLog(msg string) string {
 		return r
 	}, msg)
 	return strings.TrimSpace(spaceRe.ReplaceAllString(cleaned, " "))
+}
+
+// truncateJSON truncates a JSON string to at most maxBytes bytes while keeping
+// it valid JSON. It truncates at a UTF-8 boundary and appends "..." plus the
+// necessary closing braces/brackets/quotes to keep the document parseable.
+func truncateJSON(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	// Reserve space for "..." + closing chars (up to 10: `..."}]}`  etc.)
+	budget := maxBytes - 13 // "..." + up to 10 closing chars
+	if budget < 10 {
+		budget = 10
+	}
+	truncated := s[:lastRuneBoundary(s, budget)]
+
+	// Count unclosed braces and brackets
+	var stack []byte
+	inStr := false
+	escaped := false
+	for i := 0; i < len(truncated); i++ {
+		c := truncated[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inStr {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inStr = !inStr
+			continue
+		}
+		if inStr {
+			continue
+		}
+		switch c {
+		case '{', '[':
+			stack = append(stack, c)
+		case '}':
+			if len(stack) > 0 && stack[len(stack)-1] == '{' {
+				stack = stack[:len(stack)-1]
+			}
+		case ']':
+			if len(stack) > 0 && stack[len(stack)-1] == '[' {
+				stack = stack[:len(stack)-1]
+			}
+		}
+	}
+
+	var suffix strings.Builder
+	suffix.WriteString("...")
+	if inStr {
+		suffix.WriteByte('"')
+	}
+	// Close in reverse order
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			suffix.WriteByte('}')
+		} else {
+			suffix.WriteByte(']')
+		}
+	}
+	result := truncated + suffix.String()
+	// Final safety: if still too long, hard truncate with UTF-8 safety
+	if len(result) > maxBytes {
+		result = truncateUTF8(result, maxBytes)
+	}
+	return result
 }
 
 // truncateUTF8 safely truncates s to at most maxBytes bytes, never splitting

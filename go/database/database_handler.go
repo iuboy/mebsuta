@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -249,12 +250,13 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 
 	fields := make(map[string]any)
 	r.Attrs(func(attr slog.Attr) bool {
-		fields[attr.Key] = attr.Value
+		fields[attr.Key] = resolveSlogValue(attr.Value)
 		return true
 	})
 	if len(fields) > 0 {
 		data, err := json.Marshal(fields)
 		if err != nil {
+			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database", fmt.Errorf("marshal fields: %w", err))
 			data = []byte("{}")
 		}
 		entry.Fields = json.RawMessage(data)
@@ -269,6 +271,43 @@ func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
 
 // SelfBuffered marks DatabaseHandler as having built-in async buffering.
 func (*DatabaseHandler) SelfBuffered() {}
+
+// resolveSlogValue extracts the Go native value from a slog.Value so that
+// json.Marshal produces the expected representation (string, int, bool, etc.)
+// instead of the internal slog.Value struct.
+func resolveSlogValue(v slog.Value) any {
+	switch v.Kind() {
+	case slog.KindString:
+		return v.String()
+	case slog.KindInt64:
+		return v.Int64()
+	case slog.KindUint64:
+		return v.Uint64()
+	case slog.KindFloat64:
+		f := v.Float64()
+		if math.IsInf(f, 0) || math.IsNaN(f) {
+			return fmt.Sprintf("%g", f)
+		}
+		return f
+	case slog.KindBool:
+		return v.Bool()
+	case slog.KindDuration:
+		return v.Duration().String()
+	case slog.KindTime:
+		return v.Time().Format(time.RFC3339Nano)
+	case slog.KindGroup:
+		groupAttrs := v.Group()
+		m := make(map[string]any, len(groupAttrs))
+		for _, a := range groupAttrs {
+			m[a.Key] = resolveSlogValue(a.Value)
+		}
+		return m
+	case slog.KindLogValuer:
+		return resolveSlogValue(v.Resolve())
+	default:
+		return v.Any()
+	}
+}
 
 var (
 	_ slog.Handler                = (*DatabaseHandler)(nil)

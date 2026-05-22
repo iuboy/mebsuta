@@ -484,7 +484,7 @@ func TestSyslogHandler_BufferFull(t *testing.T) {
 	h.buffer <- []byte("first")
 
 	// Next send should return buffer full error
-	err := h.safeSend([]byte("overflow"))
+	err := h.safeSend([]byte("overflow"), slog.LevelInfo)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "buffer full")
 }

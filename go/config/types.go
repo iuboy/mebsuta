@@ -80,12 +80,12 @@ func WithRotateInterval(d time.Duration) FileConfigOption {
 }
 
 // Getter methods for FileConfig
-func (c *FileConfig) Path() string           { return c.path }
-func (c *FileConfig) MaxSizeMB() int          { return c.maxSizeMB }
-func (c *FileConfig) MaxBackups() int         { return c.maxBackups }
-func (c *FileConfig) MaxAgeDays() int         { return c.maxAgeDays }
-func (c *FileConfig) Compress() bool          { return c.compress }
-func (c *FileConfig) Format() string          { return c.format }
+func (c *FileConfig) Path() string                  { return c.path }
+func (c *FileConfig) MaxSizeMB() int                { return c.maxSizeMB }
+func (c *FileConfig) MaxBackups() int               { return c.maxBackups }
+func (c *FileConfig) MaxAgeDays() int               { return c.maxAgeDays }
+func (c *FileConfig) Compress() bool                { return c.compress }
+func (c *FileConfig) Format() string                { return c.format }
 func (c *FileConfig) RotateInterval() time.Duration { return c.rotateInterval }
 
 // DatabaseConfig holds configuration for database log output.
@@ -163,15 +163,15 @@ func WithRetryDelay(d time.Duration) DatabaseConfigOption {
 }
 
 // Getter methods for DatabaseConfig
-func (c *DatabaseConfig) DriverName() string      { return c.driverName }
-func (c *DatabaseConfig) DataSourceName() string  { return c.dataSourceName }
-func (c *DatabaseConfig) TableName() string       { return c.tableName }
-func (c *DatabaseConfig) BatchSize() int          { return c.batchSize }
-func (c *DatabaseConfig) BatchInterval() time.Duration { return c.batchInterval }
+func (c *DatabaseConfig) DriverName() string             { return c.driverName }
+func (c *DatabaseConfig) DataSourceName() string         { return c.dataSourceName }
+func (c *DatabaseConfig) TableName() string              { return c.tableName }
+func (c *DatabaseConfig) BatchSize() int                 { return c.batchSize }
+func (c *DatabaseConfig) BatchInterval() time.Duration   { return c.batchInterval }
 func (c *DatabaseConfig) MaxConnLifetime() time.Duration { return c.maxConnLifetime }
-func (c *DatabaseConfig) MaxOpenConns() int       { return c.maxOpenConns }
-func (c *DatabaseConfig) MaxIdleConns() int       { return c.maxIdleConns }
-func (c *DatabaseConfig) RetryDelay() time.Duration { return c.retryDelay }
+func (c *DatabaseConfig) MaxOpenConns() int              { return c.maxOpenConns }
+func (c *DatabaseConfig) MaxIdleConns() int              { return c.maxIdleConns }
+func (c *DatabaseConfig) RetryDelay() time.Duration      { return c.retryDelay }
 
 // SyslogConfig holds configuration for syslog output.
 type SyslogConfig struct {
@@ -277,19 +277,19 @@ func WithJSONInMessage(json bool) SyslogConfigOption {
 }
 
 // Getter methods for SyslogConfig
-func (c *SyslogConfig) Network() string       { return c.network }
-func (c *SyslogConfig) Address() string       { return c.address }
-func (c *SyslogConfig) Tag() string           { return c.tag }
-func (c *SyslogConfig) Facility() int          { return c.facility }
-func (c *SyslogConfig) Reconnect() bool       { return c.reconnect }
+func (c *SyslogConfig) Network() string           { return c.network }
+func (c *SyslogConfig) Address() string           { return c.address }
+func (c *SyslogConfig) Tag() string               { return c.tag }
+func (c *SyslogConfig) Facility() int             { return c.facility }
+func (c *SyslogConfig) Reconnect() bool           { return c.reconnect }
 func (c *SyslogConfig) RetryDelay() time.Duration { return c.retryDelay }
-func (c *SyslogConfig) TLSSkipVerify() bool   { return c.tlsSkipVerify }
-func (c *SyslogConfig) StaticHost() string    { return c.staticHost }
-func (c *SyslogConfig) Secure() bool          { return c.secure }
-func (c *SyslogConfig) RFC5424() bool         { return c.rfc5424 }
-func (c *SyslogConfig) BufferSize() int       { return c.bufferSize }
-func (c *SyslogConfig) TimeZone() string      { return c.timeZone }
-func (c *SyslogConfig) JSONInMessage() bool   { return c.jsonInMessage }
+func (c *SyslogConfig) TLSSkipVerify() bool       { return c.tlsSkipVerify }
+func (c *SyslogConfig) StaticHost() string        { return c.staticHost }
+func (c *SyslogConfig) Secure() bool              { return c.secure }
+func (c *SyslogConfig) RFC5424() bool             { return c.rfc5424 }
+func (c *SyslogConfig) BufferSize() int           { return c.bufferSize }
+func (c *SyslogConfig) TimeZone() string          { return c.timeZone }
+func (c *SyslogConfig) JSONInMessage() bool       { return c.jsonInMessage }
 
 // SamplingConfig holds configuration for log sampling.
 type SamplingConfig struct {
@@ -319,10 +319,10 @@ func NewSamplingConfig(enabled bool, initial, thereafter int, window time.Durati
 }
 
 // Getter methods for SamplingConfig
-func (c *SamplingConfig) Enabled() bool          { return c.enabled }
-func (c *SamplingConfig) Initial() int           { return c.initial }
-func (c *SamplingConfig) Thereafter() int        { return c.thereafter }
-func (c *SamplingConfig) Window() time.Duration  { return c.window }
+func (c *SamplingConfig) Enabled() bool         { return c.enabled }
+func (c *SamplingConfig) Initial() int          { return c.initial }
+func (c *SamplingConfig) Thereafter() int       { return c.thereafter }
+func (c *SamplingConfig) Window() time.Duration { return c.window }
 
 // ConfigError represents a configuration error.
 type ConfigError struct {
@@ -369,4 +369,3 @@ func MustNewSamplingConfig(enabled bool, initial, thereafter int, window time.Du
 	}
 	return cfg
 }
-

@@ -46,9 +46,9 @@ mebsuta.AuditEvent(
 | Handler | 构造函数 | 说明 |
 | --- | --- | --- |
 | StdoutHandler | `NewStdoutHandler(level, format)` | 控制台输出 |
-| FileHandler | `NewFileHandler(cfg, level)` | 文件输出，自研轮转 |
-| SyslogHandler | `NewSyslogHandler(cfg, level)` | Syslog 输出 |
-| DatabaseHandler | `database.NewDatabaseHandler(cfg, level)` | 数据库批量写入 |
+| FileHandler | `NewFileHandler(cfg, level) (*FileHandler, error)` | 文件输出，自研轮转 |
+| SyslogHandler | `NewSyslogHandler(cfg, level) (*SyslogHandler, error)` | Syslog 输出 |
+| DatabaseHandler | `database.NewDatabaseHandler(cfg, level) (*database.DatabaseHandler, error)` | 数据库批量写入 |
 
 ## 装饰器
 
@@ -58,6 +58,14 @@ mebsuta.AuditEvent(
 | AsyncHandler | `WithAsync(inner, cfg)` | 异步缓冲写入 |
 | MetricsHandler | `WithMetrics(inner, m, name)` | 指标收集 |
 | ContextExtractor | `WithContextExtractor(inner, fn)` | 上下文字段提取 |
+
+## 文档
+
+| 文档 | 描述 |
+| --- | --- |
+| [TLS Configuration](docs/TLS.md) | SyslogHandler TLS 安全配置指南 |
+| [Benchmarks](docs/BENCHMARKS.md) | 性能基准测试和优化建议 |
+| [Godoc](https://pkg.go.dev/github.com/iuboy/mebsuta/go) | 完整 API 文档和示例 |
 
 ## 示例
 

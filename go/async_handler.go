@@ -183,7 +183,7 @@ func (h *AsyncHandler) run() {
 	for ar := range h.ch {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
-		if err := ar.inner.Handle(context.Background(), r); err != nil {
+		if err := ar.inner.Handle(h.ctx, r); err != nil {
 			ReportError(loadErrorHandler(&h.errorHandler), "async", err)
 		}
 	}

@@ -2,8 +2,8 @@ package mebsuta
 
 import (
 	"compress/gzip"
-	"errors"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
