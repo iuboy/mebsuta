@@ -176,16 +176,15 @@ func (h *SyslogHandler) connect() error {
 	h.connMu.Lock()
 	defer h.connMu.Unlock()
 
+	conn, err := h.dialLocked()
+	if err != nil {
+		return err
+	}
+
 	if h.conn != nil {
 		if err := h.conn.Close(); err != nil {
 			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in connect: %w", err))
 		}
-		h.conn = nil
-	}
-
-	conn, err := h.dialLocked()
-	if err != nil {
-		return err
 	}
 	h.conn = conn
 	return nil
@@ -198,17 +197,16 @@ func (h *SyslogHandler) reconnect() {
 		return
 	}
 
-	if h.conn != nil {
-		if err := h.conn.Close(); err != nil {
-			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in connect: %w", err))
-		}
-		h.conn = nil
-	}
-
 	conn, err := h.dialLocked()
 	if err != nil {
 		ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("reconnect failed: %w", err))
 		return
+	}
+
+	if h.conn != nil {
+		if closeErr := h.conn.Close(); closeErr != nil {
+			ReportError(loadErrorHandler(&h.errorHandler), "syslog", fmt.Errorf("close old connection in reconnect: %w", closeErr))
+		}
 	}
 	h.conn = conn
 }

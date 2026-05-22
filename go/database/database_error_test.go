@@ -82,11 +82,11 @@ func TestDatabaseHandler_BatchRetryExhaustion(t *testing.T) {
 	count := reported.Load()
 	require.Greater(t, count, int64(0), "error handler should be called for batch failures")
 
-	// Verify the error message mentions batch insert failure.
+	// Verify the error message mentions records lost after exhausting retries.
 	errPtr := lastErr.Load()
 	require.NotNil(t, errPtr, "last error should not be nil")
-	require.Contains(t, (*errPtr).Error(), "batch insert failed",
-		"error should mention batch insert failure")
+	require.Contains(t, (*errPtr).Error(), "records lost",
+		"error should mention records lost after retry exhaustion")
 }
 
 // TestDatabaseHandler_ErrorHandlerCallback verifies that the error handler

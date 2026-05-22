@@ -62,6 +62,9 @@ func (dc *DatabaseConfig) Validate() error {
 		if !validTableNameRe.MatchString(dc.tableName) {
 			return fmt.Errorf("invalid table name: %s, only letters, digits and underscores allowed, must start with letter or underscore", dc.tableName)
 		}
+		if len(dc.tableName) > 64 {
+			return fmt.Errorf("table name too long: %d chars (max 64)", len(dc.tableName))
+		}
 	default:
 		return fmt.Errorf("unsupported database driver: %s", dc.driverName)
 	}

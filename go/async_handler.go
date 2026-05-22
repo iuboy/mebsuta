@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -119,17 +120,23 @@ func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 		}
 	}()
 
-	// Error and Audit records block until sent or timeout (5s).
+	// Error and Audit records: blocking send with retry loop (5s deadline).
 	// Other levels use non-blocking send and drop on buffer full.
 	if ar.Level >= slog.LevelError {
-		select {
-		case h.ch <- ar:
-			return nil
-		case <-time.After(5 * time.Second):
-			h.dropped.Add(1)
-			ReportError(loadErrorHandler(&h.errorHandler), "async", fmt.Errorf("buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load()))
-			return nil
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			select {
+			case h.ch <- ar:
+				return nil
+			default:
+			 runtime.Gosched()
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
+		h.dropped.Add(1)
+		err := fmt.Errorf("mebsuta: buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load())
+		ReportError(loadErrorHandler(&h.errorHandler), "async", err)
+		return err
 	}
 
 	select {

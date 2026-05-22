@@ -239,6 +239,8 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			time.Sleep(retryDelay)
 		}
 	}
+	mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), "database",
+		fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries))
 }
 
 func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {

@@ -30,6 +30,10 @@
 
 - 限制文件日志权限为 Unix `0600`，并补充权限测试
 - 移除 Syslog handler 中未真正约束重连行为的跨进程文件锁依赖
+- 修复 Async Error/Audit blocking send 使用重试循环替代单次超时，失败时返回 error
+- 修复 Syslog connect/reconnect 先建新连接后关旧连接，避免 dial 失败时无连接可用
+- 增强 Database flush 重试耗尽后的错误报告，明确记录丢失条数
+- 加固表名验证添加 64 字符长度限制
 
 ### Rust
 
