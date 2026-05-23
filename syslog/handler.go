@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/attrutil"
 )
 
 const (
@@ -405,7 +406,7 @@ func (h *Handler) formatMessage(entry mebsuta.LogEntry) string {
 func (h *Handler) formatJSONMessage(entry mebsuta.LogEntry, ts time.Time, priority int, host string, procid int) string {
 	attributes := make(map[string]any)
 	for _, attr := range entry.Attrs {
-		flattenAttr(attributes, "", attr)
+		attrutil.FlattenAttr(attributes, "", attr, attrutil.NaNSafe)
 	}
 	level := entry.Level.String()
 	if entry.Level == mebsuta.LevelAudit {
@@ -667,53 +668,6 @@ func lastRuneBoundary(s string, n int) int {
 	return n
 }
 
-func flattenAttr(out map[string]any, prefix string, attr slog.Attr) {
-	attr.Value = attr.Value.Resolve()
-	key := attr.Key
-	if prefix != "" {
-		key = prefix + "." + key
-	}
-	if key == "" {
-		return
-	}
-	if attr.Value.Kind() == slog.KindGroup {
-		for _, child := range attr.Value.Group() {
-			flattenAttr(out, key, child)
-		}
-		return
-	}
-	out[key] = slogValueAny(attr.Value)
-}
-
-func slogValueAny(v slog.Value) any {
-	switch v.Kind() {
-	case slog.KindString:
-		return v.String()
-	case slog.KindInt64:
-		return v.Int64()
-	case slog.KindUint64:
-		return v.Uint64()
-	case slog.KindFloat64:
-		return v.Float64()
-	case slog.KindBool:
-		return v.Bool()
-	case slog.KindDuration:
-		return v.Duration().String()
-	case slog.KindTime:
-		return v.Time().Format(time.RFC3339Nano)
-	case slog.KindGroup:
-		groupAttrs := v.Group()
-		m := make(map[string]any, len(groupAttrs))
-		for _, a := range groupAttrs {
-			m[a.Key] = slogValueAny(a.Value)
-		}
-		return m
-	case slog.KindLogValuer:
-		return slogValueAny(v.Resolve())
-	default:
-		return v.Any()
-	}
-}
 
 // SelfBuffered marks Handler as having built-in async buffering.
 func (*Handler) SelfBuffered() {}

@@ -28,6 +28,7 @@ type asyncRecord struct {
 	PC      uintptr
 	Attrs   []slog.Attr
 	inner   slog.Handler
+	ctx     context.Context
 }
 
 // AsyncHandler delegates log writes to a background goroutine.
@@ -97,6 +98,7 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		Message: r.Message,
 		PC:      r.PC,
 		inner:   h.inner,
+		ctx:     ctx,
 	}
 	r.Attrs(func(attr slog.Attr) bool {
 		ar.Attrs = append(ar.Attrs, attr)
@@ -183,7 +185,7 @@ func (h *AsyncHandler) run() {
 	for ar := range h.ch {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
-		if err := ar.inner.Handle(h.ctx, r); err != nil {
+		if err := ar.inner.Handle(ar.ctx, r); err != nil {
 			ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
 		}
 	}

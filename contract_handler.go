@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
+	"runtime"
 	"time"
+
+	"github.com/iuboy/mebsuta/attrutil"
 )
 
 type contractJSONHandler struct {
@@ -28,18 +30,11 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	attributes := make(map[string]any)
 	eventType, actor, success := "", "", (*bool)(nil)
 
-	addAttr := func(prefix string, attr slog.Attr) {
-		if attr.Equal(slog.Attr{}) {
-			return
-		}
-		flattenAttr(attributes, prefix, attr)
-	}
-
 	for _, attr := range h.attrs {
-		addAttr("", attr)
+		attrutil.FlattenAttr(attributes, "", attr, attrutil.NaNSafe)
 	}
 	r.Attrs(func(attr slog.Attr) bool {
-		addAttr(h.group, attr)
+		attrutil.FlattenAttr(attributes, h.group, attr, attrutil.NaNSafe)
 		return true
 	})
 
@@ -61,9 +56,18 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		level = "AUDIT"
 	}
 
+	var source string
+	if r.PC != 0 {
+		frames := runtime.CallersFrames([]uintptr{r.PC})
+		if f, ok := frames.Next(); ok {
+			source = fmt.Sprintf("%s:%d %s", f.File, f.Line, f.Function)
+		}
+	}
+
 	entry := struct {
 		Time       string         `json:"time"`
 		Level      string         `json:"level"`
+		Source     string         `json:"source,omitempty"`
 		EventType  string         `json:"event_type,omitempty"`
 		Message    string         `json:"message"`
 		Actor      string         `json:"actor,omitempty"`
@@ -72,6 +76,7 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	}{
 		Time:       r.Time.UTC().Format(time.RFC3339Nano),
 		Level:      level,
+		Source:     source,
 		EventType:  eventType,
 		Message:    r.Message,
 		Actor:      actor,
@@ -122,48 +127,4 @@ func prefixAttr(group string, attr slog.Attr) slog.Attr {
 	}
 	attr.Key = group + "." + attr.Key
 	return attr
-}
-
-func flattenAttr(out map[string]any, prefix string, attr slog.Attr) {
-	attr.Value = attr.Value.Resolve()
-	key := attr.Key
-	if prefix != "" {
-		key = prefix + "." + key
-	}
-	if key == "" {
-		return
-	}
-	if attr.Value.Kind() == slog.KindGroup {
-		for _, child := range attr.Value.Group() {
-			flattenAttr(out, key, child)
-		}
-		return
-	}
-	out[key] = slogValueAny(attr.Value)
-}
-
-func slogValueAny(v slog.Value) any {
-	v = v.Resolve()
-	switch v.Kind() {
-	case slog.KindString:
-		return v.String()
-	case slog.KindBool:
-		return v.Bool()
-	case slog.KindInt64:
-		return v.Int64()
-	case slog.KindUint64:
-		return v.Uint64()
-	case slog.KindFloat64:
-		f := v.Float64()
-		if math.IsNaN(f) || math.IsInf(f, 0) {
-			return nil
-		}
-		return f
-	case slog.KindDuration:
-		return v.Duration().String()
-	case slog.KindTime:
-		return v.Time().UTC().Format(time.RFC3339Nano)
-	default:
-		return v.Any()
-	}
 }

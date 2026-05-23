@@ -12,13 +12,14 @@ import (
 // SamplingHandler is a slog.Handler decorator that samples log records within a time window.
 // Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
 type SamplingHandler struct {
-	inner   slog.Handler
-	cfg     SamplingConfig
-	count   *atomic.Int64
-	ticker  *time.Ticker
-	stopCh  chan struct{}
-	wg      *sync.WaitGroup
-	stopped *atomic.Bool
+	inner        slog.Handler
+	cfg          SamplingConfig
+	count        *atomic.Int64
+	ticker       *time.Ticker
+	stopCh       chan struct{}
+	wg           *sync.WaitGroup
+	stopped      *atomic.Bool
+	errorHandler atomic.Pointer[ErrorHandler]
 }
 
 // WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
@@ -100,6 +101,10 @@ func (h *SamplingHandler) Close() error {
 
 func (h *SamplingHandler) unwrapHandler() slog.Handler {
 	return h.inner
+}
+
+func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler.Store(&fn)
 }
 
 func (h *SamplingHandler) resetLoop() {

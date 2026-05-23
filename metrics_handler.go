@@ -71,4 +71,8 @@ func (h *MetricsHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
+func (h *MetricsHandler) setErrorHandler(fn ErrorHandler) {
+	// MetricsHandler delegates error handling to its inner handler
+}
+
 var _ slog.Handler = (*MetricsHandler)(nil)

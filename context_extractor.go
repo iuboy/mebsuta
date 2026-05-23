@@ -60,6 +60,10 @@ func (h *contextExtractorHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
+func (h *contextExtractorHandler) setErrorHandler(fn ErrorHandler) {
+	// contextExtractorHandler delegates error handling to its inner handler
+}
+
 func joinGroup(parent, child string) string {
 	if parent == "" {
 		return child

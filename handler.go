@@ -242,6 +242,12 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 		errorHandler: h.errorHandler,
 	}
 }
+func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler = fn
+	for _, hh := range h.handlers {
+		propagateErrorHandler(hh, fn)
+	}
+}
 
 // errorHandlerSetter 是支持自定义错误处理的 Handler 的内部接口。
 type errorHandlerSetter interface {
