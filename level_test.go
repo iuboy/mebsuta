@@ -39,7 +39,8 @@ func TestStdoutHandler_DynamicLevel(t *testing.T) {
 	lv := &slog.LevelVar{}
 	lv.Set(slog.LevelWarn)
 
-	h := NewStdoutHandler(StdoutConfig{Level: lv})
+	h, err := NewStdoutHandler(StdoutConfig{Level: lv})
+	require.NoError(t, err)
 
 	require.False(t, h.Enabled(context.Background(), slog.LevelInfo))
 	require.True(t, h.Enabled(context.Background(), slog.LevelWarn))

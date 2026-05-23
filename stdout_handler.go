@@ -2,6 +2,7 @@ package mebsuta
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -11,42 +12,51 @@ import (
 // StdoutHandler writes log records to stdout.
 type StdoutHandler struct {
 	cfg   StdoutConfig
-	inner slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
+	inner slog.Handler // underlying slog.JSONHandler or slog.TextHandler
 	mu    *sync.Mutex
 }
 
 // NewStdoutHandler creates a StdoutHandler that writes to stdout using cfg.
 // cfg.Validate is called internally to apply defaults.
-func NewStdoutHandler(cfg StdoutConfig) *StdoutHandler {
-	cfg, _ = cfg.Validate()
+func NewStdoutHandler(cfg StdoutConfig) (*StdoutHandler, error) {
+	cfg, err := cfg.Validate()
+	if err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
+	}
 	h := &StdoutHandler{
 		cfg: cfg,
 		mu:  &sync.Mutex{},
 	}
 	h.inner = newInnerHandler(os.Stdout, EncodingType(cfg.Format))
-	return h
+	return h, nil
 }
 
-func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) *StdoutHandler {
-	cfg, _ = cfg.Validate()
+func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, error) {
+	cfg, err := cfg.Validate()
+	if err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
+	}
 	h := &StdoutHandler{
 		cfg: cfg,
 		mu:  &sync.Mutex{},
 	}
 	h.inner = newInnerHandler(w, EncodingType(cfg.Format))
-	return h
+	return h, nil
 }
 
+// Enabled implements slog.Handler.
 func (h *StdoutHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.cfg.level()
 }
 
+// Handle implements slog.Handler.
 func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.inner.Handle(ctx, r)
 }
 
+// WithAttrs implements slog.Handler.
 func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
 		cfg:   h.cfg,
@@ -55,6 +65,7 @@ func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup implements slog.Handler.
 func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
 		cfg:   h.cfg,
@@ -68,12 +79,17 @@ func (h *StdoutHandler) Close() error {
 	return nil
 }
 
+var (
+	_ slog.Handler = (*StdoutHandler)(nil)
+	_ io.Closer    = (*StdoutHandler)(nil)
+)
+
 // newInnerHandler creates the underlying slog handler for the given format.
 // JSON format uses a contract-enforcing JSON handler; Console uses slog.TextHandler.
 // Level filtering is done by the outer handler, so the inner handler accepts all levels.
 func newInnerHandler(w io.Writer, format EncodingType) slog.Handler {
 	opts := &slog.HandlerOptions{
-		Level: slog.LevelDebug, // level 过滤由外层 handler 控制
+		Level: slog.LevelDebug, // level filtering is controlled by the outer handler
 	}
 	switch format {
 	case Console:

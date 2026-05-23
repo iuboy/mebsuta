@@ -61,7 +61,7 @@ func (h *contextExtractorHandler) unwrapHandler() slog.Handler {
 }
 
 func (h *contextExtractorHandler) setErrorHandler(fn ErrorHandler) {
-	// contextExtractorHandler delegates error handling to its inner handler
+	// No-op: propagateErrorHandler recurses via unwrapHandler to reach the inner handler.
 }
 
 func joinGroup(parent, child string) string {
@@ -74,4 +74,7 @@ func joinGroup(parent, child string) string {
 	return parent + "." + child
 }
 
-var _ slog.Handler = (*contextExtractorHandler)(nil)
+var (
+	_ slog.Handler     = (*contextExtractorHandler)(nil)
+	_ handlerUnwrapper = (*contextExtractorHandler)(nil)
+)

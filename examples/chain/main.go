@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/iuboy/mebsuta"
 )
@@ -17,12 +18,12 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	logger, err := mebsuta.New(
-		mebsuta.WithHandler(mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{})),
+		mebsuta.UseStdout(mebsuta.StdoutConfig{}),
 		mebsuta.UseFile(mebsuta.FileConfig{
 			Path: filepath.Join(dir, "app.log"), Level: slog.LevelDebug,
 		}),
 		mebsuta.UseSampling(mebsuta.SamplingConfig{
-			Enabled: true, Initial: 100, Thereafter: 10, Window: 1e9,
+			Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second,
 		}),
 		mebsuta.UseAsync(mebsuta.AsyncConfig{BufferSize: 256}),
 	)

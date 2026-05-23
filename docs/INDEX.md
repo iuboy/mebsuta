@@ -5,10 +5,8 @@
 ## API 概览
 
 ```go
-// 创建 logger
-logger, err := mebsuta.New(
-    mebsuta.WithHandler(mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)),
-)
+// 创建 logger（零配置默认 JSON → stdout）
+logger, err := mebsuta.New()
 slog.SetDefault(logger)
 defer mebsuta.CloseAll(logger.Handler())
 
@@ -21,10 +19,10 @@ slog.WarnContext(ctx, "带上下文")
 
 | Handler | 构造函数 | 说明 |
 |---------|----------|------|
-| StdoutHandler | `NewStdoutHandler(level, format)` | 控制台输出 |
-| FileHandler | `NewFileHandler(cfg)` | 文件输出，自研轮转 |
-| SyslogHandler | `NewSyslogHandler(cfg)` | Syslog 输出 |
-| DatabaseHandler | `NewDatabaseHandler(cfg)` | 数据库批量写入 |
+| StdoutHandler | `NewStdoutHandler(cfg StdoutConfig)` | 控制台输出 |
+| FileHandler | `NewFileHandler(cfg FileConfig) (*FileHandler, error)` | 文件输出，自研轮转 |
+| SyslogHandler | `syslog.NewHandler(cfg syslog.Config) (*syslog.Handler, error)` | Syslog 输出 |
+| DatabaseHandler | `database.NewHandler(cfg database.Config) (*database.Handler, error)` | 数据库批量写入 |
 
 ## 装饰器列表
 
@@ -54,7 +52,7 @@ config.FileConfig{
 ### SamplingConfig
 
 ```go
-config.SamplingConfig{
+mebsuta.SamplingConfig{
     Enabled:    true,
     Initial:    100,   // 初始全部记录
     Thereafter: 10,    // 之后每 N 条记录 1 条
@@ -78,8 +76,8 @@ mebsuta.AsyncConfig{
 // Stdout -> Sampling -> Metrics
 h := mebsuta.WithMetrics(
     mebsuta.WithSampling(
-        mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON),
-        config.SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Minute},
+        mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{}),
+        mebsuta.SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Minute},
     ),
     myMetrics, "stdout",
 )
@@ -105,7 +103,7 @@ slog.InfoContext(ctx, "处理请求")
 
 ```go
 import (
-    mebmetrics "github.com/iuboy/mebsuta/go/metrics"
+    mebmetrics "github.com/iuboy/mebsuta/metrics"
     "github.com/prometheus/client_golang/prometheus"
 )
 

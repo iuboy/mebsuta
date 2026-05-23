@@ -12,6 +12,7 @@ import (
 // NaNBehavior controls how NaN and Inf float values are represented.
 type NaNBehavior int
 
+// NaN handling behaviors.
 const (
 	NaNSafe NaNBehavior = iota
 	NaNString
@@ -63,8 +64,17 @@ func SlogValueAny(v slog.Value, nan NaNBehavior) any {
 	}
 }
 
+const maxFlattenDepth = 16
+
 // FlattenAttr flattens a slog.Attr into out map with optional key prefix.
 func FlattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior) {
+	flattenAttr(out, prefix, attr, nan, 0)
+}
+
+func flattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior, depth int) {
+	if depth >= maxFlattenDepth {
+		return
+	}
 	attr.Value = attr.Value.Resolve()
 	key := attr.Key
 	if prefix != "" {
@@ -75,7 +85,7 @@ func FlattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehav
 	}
 	if attr.Value.Kind() == slog.KindGroup {
 		for _, child := range attr.Value.Group() {
-			FlattenAttr(out, key, child, nan)
+			flattenAttr(out, key, child, nan, depth+1)
 		}
 		return
 	}

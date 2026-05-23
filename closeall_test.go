@@ -36,12 +36,14 @@ func (h *closeCountHandler) Close() error {
 // TestCloseAll_SharedHandler_Dedup verifies that when fanout branches share the same
 // terminal handler, CloseAll calls Close only once (visited map dedup).
 func TestCloseAll_SharedHandler_Dedup(t *testing.T) {
-	shared := &closeCountHandler{inner: NewStdoutHandler(StdoutConfig{})}
+	inner, err := NewStdoutHandler(StdoutConfig{})
+	require.NoError(t, err)
+	shared := &closeCountHandler{inner: inner}
 
 	// Build: safeMulti([shared, shared])
 	multi := safeMultiHandler([]slog.Handler{shared, shared}, nil)
 
-	err := CloseAll(multi)
+	err = CloseAll(multi)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), shared.closeCount.Load(),
 		"shared handler should be closed exactly once, got %d", shared.closeCount.Load())

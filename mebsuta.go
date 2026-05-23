@@ -23,6 +23,58 @@ import (
 	"time"
 )
 
+// EncodingType defines the log output encoding format.
+type EncodingType string
+
+// Log encoding formats.
+const (
+	JSON    EncodingType = "json"
+	Console EncodingType = "console"
+)
+
+// EventType identifies the operation class for audit records.
+type EventType string
+
+// Audit event types.
+const (
+	EventLogin            EventType = "login"
+	EventLogout           EventType = "logout"
+	EventQuery            EventType = "query"
+	EventCreate           EventType = "create"
+	EventUpdate           EventType = "update"
+	EventDelete           EventType = "delete"
+	EventPermissionChange EventType = "permission_change"
+	EventConfigChange     EventType = "config_change"
+	EventKeyOperation     EventType = "key_operation"
+	EventCryptoOperation  EventType = "crypto_operation"
+	EventSystem           EventType = "system"
+)
+
+// LevelAudit 是审计日志级别（等保 2.0 GB/T 22239、密评 GM/T 0054）。
+// 严重性高于 Error，Error 级别的 handler 会接受 Audit 记录，采样器始终放行。
+const LevelAudit slog.Level = slog.LevelError + 4 // 12
+
+// Compile-time assertion: LevelAudit must be >= LevelError so that
+// all handlers' `level >= slog.LevelError` checks include Audit records.
+var _ [LevelAudit - slog.LevelError]struct{}
+
+// HandlerError is a structured error reported by handlers through ErrorHandler.
+type HandlerError struct {
+	Component string // "file", "syslog", "database", "async", "multi"
+	Operation string // "write", "rotate", "connect", "batch", "compress", "cleanup", "send"
+	Err       error
+	Dropped   int64     // records dropped in this operation (async buffer full)
+	Retryable bool      // caller can safely retry
+	Records   int       // records affected (batch level)
+	Time      time.Time // when the error occurred
+}
+
+func (e *HandlerError) Unwrap() error { return e.Err }
+
+func (e *HandlerError) Error() string {
+	return fmt.Sprintf("mebsuta/%s/%s: %v", e.Component, e.Operation, e.Err)
+}
+
 // New creates a *slog.Logger from the given HandlerOption list.
 // With zero options, returns a JSON-format stdout logger at Info level.
 func New(opts ...HandlerOption) (*slog.Logger, error) {
@@ -73,7 +125,10 @@ func AuditEvent(eventType EventType, msg string, args ...any) {
 
 // AuditEventContext logs an audit record with an explicit event type and context.
 func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
-	slog.Log(ctx, LevelAudit, msg, append(args, "event_type", string(eventType))...)
+	all := make([]any, len(args), len(args)+2)
+	copy(all, args)
+	all = append(all, "event_type", string(eventType))
+	slog.Log(ctx, LevelAudit, msg, all...)
 }
 
 // DebugContext logs at Debug level with the given context.
@@ -96,18 +151,18 @@ func ErrorContext(ctx context.Context, msg string, args ...any) {
 	slog.ErrorContext(ctx, msg, args...)
 }
 
-// LogEntry is a structured log entry extracted from a slog.Record, shared by DatabaseHandler and SyslogHandler.
-//
-// NOTE: This type is exported for cross-package use by the database sub-package; application code should use slog.Record directly.
+// LogEntry is a flat representation of a slog.Record, used by the syslog handler
+// to marshal structured log data. Fields are the same as slog.Record but Attrs is materialized as
+// a slice rather than a callback.
 type LogEntry struct {
-	Time    time.Time
-	Level   slog.Level
-	Message string
-	Attrs   []slog.Attr
+	Time    time.Time   // Timestamp of the log record.
+	Level   slog.Level  // Log severity level.
+	Message string      // Log message.
+	Attrs   []slog.Attr // All attributes attached to the record.
 }
 
-// RecordToLogEntry extracts a LogEntry from a slog.Record.
-// NOTE: Exported for the database sub-package; application code does not need to call this directly.
+// RecordToLogEntry converts a slog.Record into a LogEntry by materializing its attrs callback
+// into a concrete slice. Exported for use by sub-packages (database, syslog).
 func RecordToLogEntry(r slog.Record) LogEntry {
 	e := LogEntry{
 		Time:    r.Time,

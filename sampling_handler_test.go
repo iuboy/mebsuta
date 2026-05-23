@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
@@ -321,7 +323,8 @@ func TestAtomicSamplingCounter(t *testing.T) {
 
 func TestStdoutHandler_WithSampling(t *testing.T) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	sampled := WithSampling(h, SamplingConfig{Enabled: true, Initial: 5, Thereafter: 10, Window: time.Second})
 	defer closeSampling(t, sampled)

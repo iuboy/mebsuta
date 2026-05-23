@@ -1,6 +1,24 @@
 # Mebsuta Go
 
-基于 `log/slog` 的结构化日志库，核心差异化：审计级别 (LevelAudit) + 合规输出格式 (GB/T 22239, GM/T 0054)。
+> A production-grade structured logging library built on `log/slog`, with an **Audit level** and **compliance-ready JSON output** (GB/T 22239, GM/T 0054).
+>
+> 基于 `log/slog` 的结构化日志库，核心差异化：审计级别 (LevelAudit) + 合规输出格式 (GB/T 22239, GM/T 0054)。
+
+## Why Mebsuta?
+
+| | Mebsuta | slog (stdlib) | zap | zerolog |
+|---|---|---|---|---|
+| Audit level | ✅ `LevelAudit` + audit helpers | ❌ no audit level | ❌ no audit level | ❌ no audit level |
+| Compliance output | ✅ GB/T 22239 / GM/T 0054 | ❌ | ❌ | ❌ |
+| slog.Handler plugin | ✅ drop-in handler chain | ✅ (baseline) | ❌ separate API | ❌ separate API |
+| Multi-output fanout | ✅ safe multi-handler with panic recovery | ❌ | ❌ | ❌ |
+| Async + Sampling | ✅ built-in decorators | ❌ | ❌ | ❌ |
+| File rotation | ✅ size + time, gzip, crash-safe | ❌ | ❌ (need lumberjack) | ❌ |
+| Database output | ✅ batch write (MySQL/Postgres/SQLite) | ❌ | ❌ | ❌ |
+| Syslog (TLS) | ✅ RFC5424 + TLS | ❌ | ❌ | ❌ |
+| Prometheus metrics | ✅ per-handler counters/latency | ❌ | ❌ | ❌ |
+
+For teams that need **compliance audit trails** (Chinese cybersecurity standard GB/T 22239, cryptographic evaluation GM/T 0054), Mebsuta is the only Go logging library with a dedicated Audit level and structured audit output built in.
 
 ## 安装
 
@@ -66,8 +84,8 @@ logger, err := mebsuta.New(
 | --- | --- | --- |
 | StdoutHandler | `NewStdoutHandler(cfg StdoutConfig)` | 控制台输出 |
 | FileHandler | `NewFileHandler(cfg FileConfig) (*FileHandler, error)` | 文件输出，自研轮转 |
-| SyslogHandler | `NewSyslogHandler(cfg SyslogConfig) (*SyslogHandler, error)` | Syslog 输出 |
-| DatabaseHandler | `database.NewDatabaseHandler(cfg DatabaseConfig) (*DatabaseHandler, error)` | 数据库批量写入 |
+| SyslogHandler | `syslog.NewHandler(cfg syslog.Config) (*syslog.Handler, error)` | Syslog 输出 |
+| DatabaseHandler | `database.NewHandler(cfg database.Config) (*database.Handler, error)` | 数据库批量写入 |
 
 ## 装饰器
 

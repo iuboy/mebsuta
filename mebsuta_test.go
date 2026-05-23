@@ -19,7 +19,10 @@ import (
 
 func newTestHandler(level slog.Level, format EncodingType) (*StdoutHandler, *bytes.Buffer) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: level, Format: string(format)})
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: level, Format: string(format)})
+	if err != nil {
+		panic(err)
+	}
 	return h, &buf
 }
 
@@ -149,7 +152,8 @@ func TestStdoutHandler_Close(t *testing.T) {
 // =============================================================================
 
 func TestNew_SingleHandler(t *testing.T) {
-	handler := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	handler, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	logger, err := New(WithHandler(handler))
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -160,8 +164,10 @@ func TestNew_SingleHandler(t *testing.T) {
 }
 
 func TestNew_MultipleHandlers(t *testing.T) {
-	h1 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
-	h2 := NewStdoutHandler(StdoutConfig{Level: slog.LevelWarn})
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelWarn})
+	require.NoError(t, err)
 	logger, err := New(WithHandler(h1), WithHandler(h2))
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -200,7 +206,8 @@ func TestCloseAll_NilHandler(t *testing.T) {
 }
 
 func TestCloseAll_StdoutHandler(t *testing.T) {
-	h := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	h, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	// StdoutHandler.Close is nop, should succeed
 	if err := CloseAll(h); err != nil {
 		t.Errorf("CloseAll() error: %v", err)
@@ -208,8 +215,10 @@ func TestCloseAll_StdoutHandler(t *testing.T) {
 }
 
 func TestCloseAll_MultiHandler(t *testing.T) {
-	h1 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
-	h2 := NewStdoutHandler(StdoutConfig{Level: slog.LevelWarn})
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelWarn})
+	require.NoError(t, err)
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 
 	// safeMulti 实现了 io.Closer，应递归关闭子 handler
@@ -219,7 +228,8 @@ func TestCloseAll_MultiHandler(t *testing.T) {
 }
 
 func TestCloseAll_DecoratorChain(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	sampling := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 10, Thereafter: 1, Window: time.Second})
 
 	// CloseAll 应通过 unwrapHandler 递归关闭 inner
@@ -344,7 +354,8 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 }
 
 func TestAsyncHandler_GroupPrefix(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	grouped := ah.WithGroup("svc").WithAttrs([]slog.Attr{slog.String("id", "1")})
 
@@ -358,7 +369,8 @@ func TestAsyncHandler_GroupPrefix(t *testing.T) {
 }
 
 func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	chain := ah.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
 	attrsH, ok := chain.(*asyncAttrsHandler)
@@ -499,8 +511,10 @@ func TestAudit_DefaultEventType(t *testing.T) {
 // =============================================================================
 
 func TestSafeMulti_ConcurrentNoRace(t *testing.T) {
-	h1 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
-	h2 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 	logger := slog.New(multi)
 
@@ -546,7 +560,8 @@ func (m *mockMetrics) IncDropped(name string) {
 
 func TestMetricsHandler_Handle(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	mm := &mockMetrics{}
 	h := WithMetrics(inner, mm, "test")
 
@@ -559,7 +574,8 @@ func TestMetricsHandler_Handle(t *testing.T) {
 }
 
 func TestMetricsHandler_WithAttrs(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	mm := &mockMetrics{}
 	h := WithMetrics(inner, mm, "test")
 	child := h.WithAttrs([]slog.Attr{slog.String("k", "v")})
@@ -569,7 +585,8 @@ func TestMetricsHandler_WithAttrs(t *testing.T) {
 }
 
 func TestMetricsHandler_WithGroup(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	mm := &mockMetrics{}
 	h := WithMetrics(inner, mm, "test")
 	child := h.WithGroup("request")
@@ -579,7 +596,8 @@ func TestMetricsHandler_WithGroup(t *testing.T) {
 }
 
 func TestMetricsHandler_Unwrap(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	mm := &mockMetrics{}
 	h := WithMetrics(inner, mm, "test").(*MetricsHandler)
 	if h.unwrapHandler() != inner {
@@ -600,8 +618,10 @@ func TestMetricsHandler_NilInner(t *testing.T) {
 // =============================================================================
 
 func TestSafeMulti_WithAttrs(t *testing.T) {
-	h1 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
-	h2 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 	child := multi.WithAttrs([]slog.Attr{slog.String("preset", "val")})
 	if child == nil {
@@ -615,8 +635,10 @@ func TestSafeMulti_WithAttrs(t *testing.T) {
 }
 
 func TestSafeMulti_WithGroup(t *testing.T) {
-	h1 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
-	h2 := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 	child := multi.WithGroup("request")
 	if child == nil {
@@ -631,7 +653,8 @@ func TestSafeMulti_WithGroup(t *testing.T) {
 
 func TestSafeMulti_SingleHandlerFastPath(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	multi := safeMultiHandler([]slog.Handler{inner}, nil)
 	logger := slog.New(multi)
 	logger.Info("single handler fast path")

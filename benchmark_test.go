@@ -10,7 +10,10 @@ import (
 
 func BenchmarkStdoutHandler_JSON(b *testing.B) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	logger := slog.New(h)
 
 	b.ResetTimer()
@@ -22,7 +25,10 @@ func BenchmarkStdoutHandler_JSON(b *testing.B) {
 
 func BenchmarkStdoutHandler_Console(b *testing.B) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo, Format: "console"})
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo, Format: "console"})
+	if err != nil {
+		b.Fatal(err)
+	}
 	logger := slog.New(h)
 
 	b.ResetTimer()
@@ -34,7 +40,10 @@ func BenchmarkStdoutHandler_Console(b *testing.B) {
 
 func BenchmarkStdoutHandler_WithAttrs(b *testing.B) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	logger := slog.New(h.WithAttrs([]slog.Attr{
 		slog.String("service", "bench"),
 		slog.String("version", "1.0.0"),
@@ -49,7 +58,10 @@ func BenchmarkStdoutHandler_WithAttrs(b *testing.B) {
 
 func BenchmarkSamplingHandler_Pass(b *testing.B) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: b.N + 100, Thereafter: 1, Window: 10 * time.Second})
 	logger := slog.New(h)
 
@@ -62,7 +74,10 @@ func BenchmarkSamplingHandler_Pass(b *testing.B) {
 
 func BenchmarkSamplingHandler_Drop(b *testing.B) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 1, Thereafter: 1000000, Window: 10 * time.Second})
 	logger := slog.New(h)
 
@@ -75,7 +90,10 @@ func BenchmarkSamplingHandler_Drop(b *testing.B) {
 
 func BenchmarkAsyncHandler(b *testing.B) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	h := WithAsync(inner, AsyncConfig{BufferSize: 1024})
 	logger := slog.New(h)
 
@@ -85,7 +103,6 @@ func BenchmarkAsyncHandler(b *testing.B) {
 		logger.Info("benchmark", "key", "value", "n", 42)
 	}
 
-	// 等待所有异步写入完成
 	if closer, ok := h.(interface{ Close() error }); ok {
 		closer.Close()
 	}
@@ -93,7 +110,10 @@ func BenchmarkAsyncHandler(b *testing.B) {
 
 func BenchmarkMetricsHandler(b *testing.B) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	m := &nopMetrics{}
 	h := WithMetrics(inner, m, "stdout")
 	logger := slog.New(h)
@@ -107,7 +127,10 @@ func BenchmarkMetricsHandler(b *testing.B) {
 
 func BenchmarkContextExtractor(b *testing.B) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return []slog.Attr{slog.String("trace_id", "abc-123")}
 	})
@@ -124,8 +147,14 @@ func BenchmarkContextExtractor(b *testing.B) {
 
 func BenchmarkSafeMultiHandler_2Handlers(b *testing.B) {
 	var buf1, buf2 bytes.Buffer
-	h1 := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
-	h2 := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelInfo})
+	h1, err := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
+	h2, err := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 	logger := slog.New(multi)
 
@@ -138,10 +167,22 @@ func BenchmarkSafeMultiHandler_2Handlers(b *testing.B) {
 
 func BenchmarkSafeMultiHandler_4Handlers(b *testing.B) {
 	var buf1, buf2, buf3, buf4 bytes.Buffer
-	h1 := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
-	h2 := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelInfo})
-	h3 := newStdoutHandlerWithWriter(&buf3, StdoutConfig{Level: slog.LevelInfo})
-	h4 := newStdoutHandlerWithWriter(&buf4, StdoutConfig{Level: slog.LevelInfo})
+	h1, err := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
+	h2, err := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
+	h3, err := newStdoutHandlerWithWriter(&buf3, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
+	h4, err := newStdoutHandlerWithWriter(&buf4, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	multi := safeMultiHandler([]slog.Handler{h1, h2, h3, h4}, nil)
 	logger := slog.New(multi)
 
@@ -152,18 +193,18 @@ func BenchmarkSafeMultiHandler_4Handlers(b *testing.B) {
 	}
 }
 
-// nopMetrics 是 MetricsHandler 测试用的空实现。
 type nopMetrics struct{}
 
 func (nopMetrics) ObserveHandle(_ time.Duration) {}
 func (nopMetrics) IncError(_ string)             {}
 func (nopMetrics) IncDropped(_ string)           {}
 
-// Parallel benchmarks quantify goroutine contention overhead.
-
 func BenchmarkStdoutHandler_JSON_Parallel(b *testing.B) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	logger := slog.New(h)
 
 	b.ResetTimer()
@@ -177,8 +218,14 @@ func BenchmarkStdoutHandler_JSON_Parallel(b *testing.B) {
 
 func BenchmarkSafeMultiHandler_2Handlers_Parallel(b *testing.B) {
 	var buf1, buf2 bytes.Buffer
-	h1 := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
-	h2 := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelInfo})
+	h1, err := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
+	h2, err := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 	logger := slog.New(multi)
 
@@ -191,11 +238,12 @@ func BenchmarkSafeMultiHandler_2Handlers_Parallel(b *testing.B) {
 	})
 }
 
-// Handler chain: Sampling → Async → Stdout (common production config).
-
 func BenchmarkHandlerChain_SamplingAsyncStdout(b *testing.B) {
 	var buf bytes.Buffer
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	async := WithAsync(stdout, AsyncConfig{BufferSize: 4096})
 	sampled := WithSampling(async, SamplingConfig{Enabled: true, Initial: b.N + 100, Thereafter: 1, Window: 10 * time.Second})
 	logger := slog.New(sampled)
@@ -211,11 +259,12 @@ func BenchmarkHandlerChain_SamplingAsyncStdout(b *testing.B) {
 	}
 }
 
-// AsyncHandler with larger buffer to avoid drops under benchmark load.
-
 func BenchmarkAsyncHandler_LargeBuffer(b *testing.B) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	if err != nil {
+		b.Fatal(err)
+	}
 	h := WithAsync(inner, AsyncConfig{BufferSize: 65536})
 	logger := slog.New(h)
 

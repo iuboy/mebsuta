@@ -248,7 +248,7 @@ Database handler 必须：
 
 **Pass/fail criteria:**
 - 包含特殊字符的表名必须被 `Validate()` 拒绝
-- `Close()` 后，所有在 `Close()` 前提交的记录必须存在于数据库
+- `Close()` 后，所有在 `Close()` 前提交的记录必须存在于数据库（前提：数据库可达。若数据库不可达且 flush 重试耗尽，记录通过 ErrorHandler 报告丢失）
 - `Close()` 后，第二次 `Close()` 返回 nil
 
 ## Sampling

@@ -81,7 +81,8 @@ func parseJSONLines(t *testing.T, lines []string) []map[string]any {
 // correctly sampled output with async buffering.
 func TestChain_SamplingAsyncStdout(t *testing.T) {
 	var buf chainBuf
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	sampled := WithSampling(stdout, SamplingConfig{Enabled: true, Initial: 5, Thereafter: 3, Window: time.Second})
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
 	logger := slog.New(async)
@@ -148,7 +149,8 @@ func TestChain_SamplingAsyncFile(t *testing.T) {
 // records metrics correctly through the chain.
 func TestChain_MetricsSamplingAsync(t *testing.T) {
 	var buf chainBuf
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	mm := &mockMetrics{}
 
 	sampled := WithSampling(stdout, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 1, Window: time.Second})
@@ -174,7 +176,8 @@ func TestChain_MetricsSamplingAsync(t *testing.T) {
 // TestChain_MultiStdoutFile verifies Multi([Stdout, File]) fans out correctly.
 func TestChain_MultiStdoutFile(t *testing.T) {
 	var buf chainBuf
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	dir := t.TempDir()
 	cfg := FileConfig{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}
@@ -213,7 +216,8 @@ func TestChain_MultiStdoutFile(t *testing.T) {
 // still works correctly, though behavior differs from Sampling -> Async.
 func TestChain_ReverseOrderAsyncSampling(t *testing.T) {
 	var buf chainBuf
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	async := WithAsync(stdout, AsyncConfig{BufferSize: 64})
 	sampled := WithSampling(async, SamplingConfig{Enabled: true, Initial: 3, Thereafter: 100, Window: time.Second})
@@ -236,7 +240,8 @@ func TestChain_ReverseOrderAsyncSampling(t *testing.T) {
 // all decorator types without being dropped or sampled.
 func TestChain_AuditLevelNotDropped(t *testing.T) {
 	var buf chainBuf
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	sampled := WithSampling(stdout, SamplingConfig{Enabled: true, Initial: 3, Thereafter: 1000, Window: time.Second})
 	async := WithAsync(sampled, AsyncConfig{BufferSize: 64})
@@ -310,7 +315,8 @@ func TestChain_CloseAllPropagation(t *testing.T) {
 // use blocking send in Async, not the non-blocking fast path.
 func TestChain_AuditBypassesAsyncBuffer(t *testing.T) {
 	var buf chainBuf
-	stdout := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	stdout, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	// Tiny buffer to increase chance of drops for normal records
 	async := WithAsync(stdout, AsyncConfig{BufferSize: 1})

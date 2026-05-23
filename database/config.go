@@ -3,20 +3,12 @@ package database
 import (
 	"log/slog"
 	"time"
+
+	"github.com/iuboy/mebsuta"
 )
 
-// ConfigError represents a configuration validation error.
-type ConfigError struct {
-	Field string
-	Msg   string
-}
-
-func (e *ConfigError) Error() string {
-	return e.Field + ": " + e.Msg
-}
-
-// DatabaseConfig holds configuration for database log output.
-type DatabaseConfig struct {
+// Config holds configuration for database log output.
+type Config struct {
 	Driver          string        // Required: "mysql" or "postgres".
 	DSN             string        // Required: database connection string.
 	Table           string        // Required: log table name.
@@ -30,15 +22,18 @@ type DatabaseConfig struct {
 }
 
 // Validate checks required fields and returns a normalized copy with defaults applied.
-func (c DatabaseConfig) Validate() (DatabaseConfig, error) {
+func (c Config) Validate() (Config, error) {
 	if c.Driver == "" {
-		return DatabaseConfig{}, &ConfigError{Field: "Driver", Msg: "driver is required"}
+		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "driver is required"}
+	}
+	if c.Driver != "mysql" && c.Driver != "postgres" && c.Driver != "sqlite" {
+		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "unsupported driver: " + c.Driver + " (supported: mysql, postgres, sqlite)"}
 	}
 	if c.DSN == "" {
-		return DatabaseConfig{}, &ConfigError{Field: "DSN", Msg: "data source name is required"}
+		return Config{}, &mebsuta.ConfigError{Field: "DSN", Msg: "data source name is required"}
 	}
 	if c.Table == "" {
-		return DatabaseConfig{}, &ConfigError{Field: "Table", Msg: "table name is required"}
+		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name is required"}
 	}
 	if c.Level == nil {
 		c.Level = slog.LevelInfo

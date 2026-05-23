@@ -11,39 +11,39 @@ import (
 
 // Metrics collects all observability metrics for the mebsuta logging system.
 type Metrics struct {
-	// 日志写入计数器（按级别）
+	// Log write counters (by level)
 	logWrites  *prometheus.CounterVec
 	logDropped *prometheus.CounterVec
 	logErrors  *prometheus.CounterVec
 
-	// 批量写入指标
+	// Batch write metrics
 	batchWrites   prometheus.Counter
 	batchSize     prometheus.Histogram
 	batchLatency  prometheus.Histogram
 	batchFailures prometheus.Counter
 
-	// 缓冲区指标
+	// Buffer metrics
 	bufferUsage prometheus.Gauge
 	bufferFull  prometheus.Counter
 
-	// 连接池指标
+	// Connection pool metrics
 	activeConns prometheus.Gauge
 	idleConns   prometheus.Gauge
 
-	// 写入延迟指标
+	// Write latency metrics
 	writeLatency prometheus.Histogram
 
-	// Goroutine状态
+	// Goroutine status
 	activeGoroutines prometheus.Gauge
 	goroutineCount   atomic.Int64
 }
 
 var (
-	// 全局metrics实例
+	// Global metrics instance
 	globalMetrics *Metrics
 	once          sync.Once
-	registryOnce  sync.Once // 防止重复注册
-	registerErr   error     // 保存首次注册错误
+	registryOnce  sync.Once // prevent double registration
+	registerErr   error     // stores first registration error
 )
 
 // NewMetrics creates a new Metrics collector without registering it with Prometheus.
@@ -52,7 +52,7 @@ func NewMetrics() *Metrics {
 		logWrites: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mebsuta_log_writes_total",
-				Help: "日志写入总数",
+				Help: "Total number of log writes",
 			},
 			[]string{"level", "output"},
 		),
@@ -60,7 +60,7 @@ func NewMetrics() *Metrics {
 		logDropped: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mebsuta_log_dropped_total",
-				Help: "日志丢弃总数",
+				Help: "Total number of dropped log records",
 			},
 			[]string{"reason", "output"},
 		),
@@ -68,7 +68,7 @@ func NewMetrics() *Metrics {
 		logErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mebsuta_log_errors_total",
-				Help: "日志错误总数",
+				Help: "Total number of log errors",
 			},
 			[]string{"error_type", "output"},
 		),
@@ -76,14 +76,14 @@ func NewMetrics() *Metrics {
 		batchWrites: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "mebsuta_batch_writes_total",
-				Help: "批量写入总数",
+				Help: "Total number of batch writes",
 			},
 		),
 
 		batchSize: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name:    "mebsuta_batch_size",
-				Help:    "批量写入大小分布",
+				Help:    "Batch write size distribution",
 				Buckets: prometheus.ExponentialBuckets(1, 2, 10), // 1, 2, 4, 8, 16, 32, 64, 128, 256, 512
 			},
 		),
@@ -91,7 +91,7 @@ func NewMetrics() *Metrics {
 		batchLatency: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name:    "mebsuta_batch_latency_seconds",
-				Help:    "批量写入延迟分布",
+				Help:    "Batch write latency distribution",
 				Buckets: prometheus.ExponentialBuckets(0.001, 2, 10), // 1ms, 2ms, 4ms, ... 512ms
 			},
 		),
@@ -99,42 +99,42 @@ func NewMetrics() *Metrics {
 		batchFailures: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "mebsuta_batch_failures_total",
-				Help: "批量写入失败总数",
+				Help: "Total number of batch write failures",
 			},
 		),
 
 		bufferUsage: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_buffer_usage",
-				Help: "缓冲区使用情况（已用/总容量）",
+				Help: "Buffer usage ratio (used/total capacity)",
 			},
 		),
 
 		bufferFull: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "mebsuta_buffer_full_total",
-				Help: "缓冲区满事件总数",
+				Help: "Total number of buffer-full events",
 			},
 		),
 
 		activeConns: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_active_connections",
-				Help: "活跃连接数",
+				Help: "Number of active connections",
 			},
 		),
 
 		idleConns: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_idle_connections",
-				Help: "空闲连接数",
+				Help: "Number of idle connections",
 			},
 		),
 
 		writeLatency: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name:    "mebsuta_write_latency_seconds",
-				Help:    "写入延迟分布",
+				Help:    "Write latency distribution",
 				Buckets: prometheus.ExponentialBuckets(0.0001, 2, 10), // 0.1ms, 0.2ms, ... 51.2ms
 			},
 		),
@@ -142,7 +142,7 @@ func NewMetrics() *Metrics {
 		activeGoroutines: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_active_goroutines",
-				Help: "活跃 goroutine 数量",
+				Help: "Number of active goroutines",
 			},
 		),
 	}
@@ -248,6 +248,7 @@ func (m *Metrics) IncDropped(handlerName string) {
 	m.logDropped.WithLabelValues("overflow", handlerName).Inc()
 }
 
+// Describe implements prometheus.Collector.
 func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.logWrites.Describe(ch)
 	m.logDropped.Describe(ch)
@@ -263,6 +264,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.writeLatency.Describe(ch)
 }
 
+// Collect implements prometheus.Collector.
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.logWrites.Collect(ch)
 	m.logDropped.Collect(ch)

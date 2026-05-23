@@ -2,6 +2,7 @@ package mebsuta
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -31,7 +32,10 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner
 	}
-	cfg, _ = cfg.Validate()
+	cfg, err := cfg.Validate()
+	if err != nil {
+		ReportError(DefaultErrorHandler, HandlerError{Component: "sampling", Operation: "init", Err: fmt.Errorf("invalid config: %w", err)})
+	}
 
 	s := &samplingState{
 		ticker: time.NewTicker(cfg.Window),
@@ -47,6 +51,7 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	}
 }
 
+// Enabled implements slog.Handler.
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	if level >= slog.LevelError {
 		return true
@@ -54,6 +59,7 @@ func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
+// Handle implements slog.Handler.
 func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	if r.Level >= slog.LevelError {
 		return h.inner.Handle(ctx, r)
@@ -69,6 +75,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
+// WithAttrs implements slog.Handler.
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
 		inner: h.inner.WithAttrs(attrs),
@@ -77,6 +84,7 @@ func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup implements slog.Handler.
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
 		inner: h.inner.WithGroup(name),
@@ -85,6 +93,7 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
+// Close implements io.Closer.
 func (h *SamplingHandler) Close() error {
 	if !h.state.stopped.CompareAndSwap(false, true) {
 		return nil
@@ -118,4 +127,5 @@ func (s *samplingState) resetLoop() {
 var (
 	_ slog.Handler = (*SamplingHandler)(nil)
 	_ io.Closer    = (*SamplingHandler)(nil)
+	_ handlerUnwrapper = (*SamplingHandler)(nil)
 )

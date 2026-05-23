@@ -17,16 +17,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// newFailingDBHandler creates a DatabaseHandler whose database will fail all writes.
+// newFailingDBHandler creates a Handler whose database will fail all writes.
 // We use a closed *gorm.DB to force errors on every operation.
-func newFailingDBHandler(t *testing.T) (*DatabaseHandler, func()) {
+func newFailingDBHandler(t *testing.T) (*Handler, func()) {
 	t.Helper()
 
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err, "gorm open")
 
 	// Create the table first so migrations are fine, then we'll sabotage writes.
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}), "auto migrate")
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}), "auto migrate")
 
 	// Close the underlying SQL DB so all subsequent operations fail.
 	sqlDB, err := gdb.DB()
@@ -34,7 +34,7 @@ func newFailingDBHandler(t *testing.T) (*DatabaseHandler, func()) {
 	sqlDB.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelDebug,
 		db:      gdb,
 		table:   "logs",
@@ -53,9 +53,9 @@ func newFailingDBHandler(t *testing.T) (*DatabaseHandler, func()) {
 	return h, cleanup
 }
 
-// TestDatabaseHandler_BatchRetryExhaustion verifies that when the DB is
+// TestHandler_BatchRetryExhaustion verifies that when the DB is
 // unavailable, flush retries 3 times (finalFlushRetries) and reports errors.
-func TestDatabaseHandler_BatchRetryExhaustion(t *testing.T) {
+func TestHandler_BatchRetryExhaustion(t *testing.T) {
 	h, cleanup := newFailingDBHandler(t)
 	defer cleanup()
 
@@ -91,9 +91,9 @@ func TestDatabaseHandler_BatchRetryExhaustion(t *testing.T) {
 		"error should mention records lost after retry exhaustion")
 }
 
-// TestDatabaseHandler_ErrorHandlerCallback verifies that the error handler
+// TestHandler_ErrorHandlerCallback verifies that the error handler
 // receives the correct component name ("database") and a non-nil error.
-func TestDatabaseHandler_ErrorHandlerCallback(t *testing.T) {
+func TestHandler_ErrorHandlerCallback(t *testing.T) {
 	h, cleanup := newFailingDBHandler(t)
 	defer cleanup()
 
@@ -128,41 +128,41 @@ func TestDatabaseHandler_ErrorHandlerCallback(t *testing.T) {
 	require.NotNil(t, gotErr, "error should not be nil")
 }
 
-// TestDatabaseHandler_WithAttrsReturnsCorrectType verifies that WithAttrs
-// returns *AttrsSub[*DatabaseHandler].
-func TestDatabaseHandler_WithAttrsReturnsCorrectType(t *testing.T) {
+// TestHandler_WithAttrsReturnsCorrectType verifies that WithAttrs
+// returns *AttrsSub[*Handler].
+func TestHandler_WithAttrsReturnsCorrectType(t *testing.T) {
 	h, cleanup := newFailingDBHandler(t)
 	defer cleanup()
 
 	result := h.WithAttrs([]slog.Attr{slog.String("key", "value")})
 
-	// Should be *AttrsSub[*DatabaseHandler]
-	_, ok := result.(*mebsuta.AttrsSub[*DatabaseHandler])
-	require.True(t, ok, "WithAttrs should return *AttrsSub[*DatabaseHandler]")
+	// Should be *AttrsSub[*Handler]
+	_, ok := result.(*mebsuta.AttrsSub[*Handler])
+	require.True(t, ok, "WithAttrs should return *AttrsSub[*Handler]")
 
 	// Should also satisfy slog.Handler.
 	var _ slog.Handler = result
 }
 
-// TestDatabaseHandler_WithGroupReturnsCorrectType verifies that WithGroup
-// returns *GroupSub[*DatabaseHandler].
-func TestDatabaseHandler_WithGroupReturnsCorrectType(t *testing.T) {
+// TestHandler_WithGroupReturnsCorrectType verifies that WithGroup
+// returns *GroupSub[*Handler].
+func TestHandler_WithGroupReturnsCorrectType(t *testing.T) {
 	h, cleanup := newFailingDBHandler(t)
 	defer cleanup()
 
 	result := h.WithGroup("mygroup")
 
-	// Should be *GroupSub[*DatabaseHandler]
-	_, ok := result.(*mebsuta.GroupSub[*DatabaseHandler])
-	require.True(t, ok, "WithGroup should return *GroupSub[*DatabaseHandler]")
+	// Should be *GroupSub[*Handler]
+	_, ok := result.(*mebsuta.GroupSub[*Handler])
+	require.True(t, ok, "WithGroup should return *GroupSub[*Handler]")
 
 	// Should also satisfy slog.Handler.
 	var _ slog.Handler = result
 }
 
-// TestDatabaseHandler_RecordToDBEntry verifies field mapping: Time, Level,
+// TestHandler_RecordToDBEntry verifies field mapping: Time, Level,
 // Message, and Attrs (serialized as JSON Fields).
-func TestDatabaseHandler_RecordToDBEntry(t *testing.T) {
+func TestHandler_RecordToDBEntry(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 	// No need to defer close, we only use recordToDBEntry which is stateless.
 
@@ -194,9 +194,9 @@ func TestDatabaseHandler_RecordToDBEntry(t *testing.T) {
 	require.NotNil(t, intVal, "int_key value should not be nil")
 }
 
-// TestDatabaseHandler_RecordToDBEntry_NoAttrs verifies that a record with no
+// TestHandler_RecordToDBEntry_NoAttrs verifies that a record with no
 // attrs produces an entry with empty Fields.
-func TestDatabaseHandler_RecordToDBEntry_NoAttrs(t *testing.T) {
+func TestHandler_RecordToDBEntry_NoAttrs(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "no attrs", 0)
@@ -206,11 +206,11 @@ func TestDatabaseHandler_RecordToDBEntry_NoAttrs(t *testing.T) {
 	require.Empty(t, entry.Fields, "fields should be empty when no attrs")
 }
 
-// TestDatabaseHandler_AuditLevelNotDropped verifies that audit-level records
+// TestHandler_AuditLevelNotDropped verifies that audit-level records
 // (LevelAudit) are not filtered out by the handler. Even with a handler level
 // set to slog.LevelError, Audit records should still be accepted because
 // LevelAudit > LevelError.
-func TestDatabaseHandler_AuditLevelNotDropped(t *testing.T) {
+func TestHandler_AuditLevelNotDropped(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 	// Set handler level to Error — Audit is above Error so Enabled returns true.
 	h.leveler = slog.LevelError
@@ -226,18 +226,18 @@ func TestDatabaseHandler_AuditLevelNotDropped(t *testing.T) {
 	require.NoError(t, h.Close())
 }
 
-// TestDatabaseHandler_AuditLevelPersisted uses file-based SQLite to verify
+// TestHandler_AuditLevelPersisted uses file-based SQLite to verify
 // that Audit records survive Close().
-func TestDatabaseHandler_AuditLevelPersisted(t *testing.T) {
+func TestHandler_AuditLevelPersisted(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/audit.db"
 
 	gdb, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}))
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelError,
 		db:      gdb,
 		table:   "logs",
@@ -272,21 +272,21 @@ func TestDatabaseHandler_AuditLevelPersisted(t *testing.T) {
 	sqlDB.Close()
 }
 
-// TestDatabaseHandler_LevelFiltering verifies that records below the handler's
+// TestHandler_LevelFiltering verifies that records below the handler's
 // level are not dropped by Handle — the handler checks level via Enabled() but
 // Handle itself does not check level. The caller (slog.Logger) is responsible
 // for checking Enabled. This test documents the actual behavior: Handle
 // processes all records it receives regardless of level.
-func TestDatabaseHandler_LevelFiltering(t *testing.T) {
+func TestHandler_LevelFiltering(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/level.db"
 
 	gdb, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}))
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelWarn,
 		db:      gdb,
 		table:   "logs",
@@ -321,18 +321,18 @@ func TestDatabaseHandler_LevelFiltering(t *testing.T) {
 	sqlDB.Close()
 }
 
-// TestDatabaseHandler_BufferFullDropsInfoRecord verifies that when the entry
+// TestHandler_BufferFullDropsInfoRecord verifies that when the entry
 // channel is full, non-error/non-audit records are dropped and the error
 // handler is called.
-func TestDatabaseHandler_BufferFullDropsInfoRecord(t *testing.T) {
+func TestHandler_BufferFullDropsInfoRecord(t *testing.T) {
 	// Create a handler with a tiny channel (capacity 1) and no batch goroutine
 	// consuming from it, so it fills up quickly.
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}))
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelDebug,
 		db:      gdb,
 		table:   "logs",
@@ -379,9 +379,9 @@ func TestDatabaseHandler_BufferFullDropsInfoRecord(t *testing.T) {
 	sqlDB.Close()
 }
 
-// TestDatabaseHandler_ConcurrentWrites verifies that multiple goroutines can
+// TestHandler_ConcurrentWrites verifies that multiple goroutines can
 // write concurrently without races or panics.
-func TestDatabaseHandler_ConcurrentWrites(t *testing.T) {
+func TestHandler_ConcurrentWrites(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 
 	const numGoroutines = 20
@@ -409,15 +409,15 @@ func TestDatabaseHandler_ConcurrentWrites(t *testing.T) {
 	require.NoError(t, h.Close())
 }
 
-// TestDatabaseHandler_ErrorRecordRetryPath verifies that Error-level records
+// TestHandler_ErrorRecordRetryPath verifies that Error-level records
 // take the retry path with a deadline when the channel is full.
-func TestDatabaseHandler_ErrorRecordRetryPath(t *testing.T) {
+func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}))
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelDebug,
 		db:      gdb,
 		table:   "logs",
@@ -471,9 +471,9 @@ func TestDatabaseHandler_ErrorRecordRetryPath(t *testing.T) {
 	sqlDB.Close()
 }
 
-// TestDatabaseHandler_HandleAfterClosedReturnsNil verifies that Handle returns
+// TestHandler_HandleAfterClosedReturnsNil verifies that Handle returns
 // nil (no error) when called after Close, and does not block.
-func TestDatabaseHandler_HandleAfterClosedReturnsNil(t *testing.T) {
+func TestHandler_HandleAfterClosedReturnsNil(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 	require.NoError(t, h.Close())
 
@@ -482,12 +482,12 @@ func TestDatabaseHandler_HandleAfterClosedReturnsNil(t *testing.T) {
 		"Handle after close should return nil")
 }
 
-// TestDatabaseHandler_FlushRetries verifies the exact retry count by counting
+// TestHandler_FlushRetries verifies the exact retry count by counting
 // error handler invocations during flush failures.
-func TestDatabaseHandler_FlushRetries(t *testing.T) {
+func TestHandler_FlushRetries(t *testing.T) {
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}))
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
 
 	// Close the underlying connection to force flush errors.
 	sqlDB, err := gdb.DB()
@@ -495,7 +495,7 @@ func TestDatabaseHandler_FlushRetries(t *testing.T) {
 	sqlDB.Close()
 
 	var retryCount atomic.Int64
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelDebug,
 		db:      gdb,
 		table:   "logs",
@@ -520,15 +520,15 @@ func TestDatabaseHandler_FlushRetries(t *testing.T) {
 		"flush should retry exactly %d times", finalFlushRetries)
 }
 
-// TestDatabaseHandler_ErrCountTracksDrops verifies that errCount is incremented
+// TestHandler_ErrCountTracksDrops verifies that errCount is incremented
 // when records are dropped.
-func TestDatabaseHandler_ErrCountTracksDrops(t *testing.T) {
+func TestHandler_ErrCountTracksDrops(t *testing.T) {
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, gdb.AutoMigrate(&dbLogEntry{}))
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelDebug,
 		db:      gdb,
 		table:   "logs",
@@ -562,11 +562,11 @@ func TestDatabaseHandler_ErrCountTracksDrops(t *testing.T) {
 	sqlDB.Close()
 }
 
-// TestDatabaseHandler_NewDatabaseHandler_ConnectFailure verifies that
-// NewDatabaseHandler returns an error when the database connection fails.
-func TestDatabaseHandler_NewDatabaseHandler_ConnectFailure(t *testing.T) {
+// TestHandler_NewHandler_ConnectFailure verifies that
+// NewHandler returns an error when the database connection fails.
+func TestHandler_NewHandler_ConnectFailure(t *testing.T) {
 	// MySQL with invalid DSN should fail to connect.
-	_, err := NewDatabaseHandler(DatabaseConfig{Driver: "mysql", DSN: "invalid:invalid@tcp(localhost:99999)/nonexistent", Table: "logs"})
+	_, err := NewHandler(Config{Driver: "mysql", DSN: "invalid:invalid@tcp(localhost:99999)/nonexistent", Table: "logs"})
 	require.Error(t, err, "should fail to connect to invalid MySQL DSN")
 	require.True(t, errors.Is(err, nil) || err != nil,
 		"error should be non-nil for connection failure")

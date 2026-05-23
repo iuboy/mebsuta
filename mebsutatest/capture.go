@@ -42,10 +42,12 @@ func NewCaptureHandlerAt(min slog.Level) *CaptureHandler {
 	return &CaptureHandler{enabled: min}
 }
 
+// Enabled implements slog.Handler.
 func (h *CaptureHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.enabled
 }
 
+// Handle implements slog.Handler.
 func (h *CaptureHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -62,10 +64,12 @@ func (h *CaptureHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
+// WithAttrs implements slog.Handler.
 func (h *CaptureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &captureAttrsHandler{parent: h, attrs: attrs}
 }
 
+// WithGroup implements slog.Handler.
 func (h *CaptureHandler) WithGroup(name string) slog.Handler {
 	return &captureGroupHandler{parent: h, group: name}
 }
@@ -106,6 +110,7 @@ func (h *CaptureHandler) Last() (CapturedRecord, bool) {
 type captureAttrsHandler struct {
 	parent *CaptureHandler
 	attrs  []slog.Attr
+	group  string
 }
 
 func (h *captureAttrsHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -113,21 +118,30 @@ func (h *captureAttrsHandler) Enabled(ctx context.Context, level slog.Level) boo
 }
 
 func (h *captureAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h.group != "" {
+		prefixed := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+		r.Attrs(func(a slog.Attr) bool {
+			prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+			return true
+		})
+		r = prefixed
+	}
 	r.AddAttrs(h.attrs...)
 	return h.parent.Handle(ctx, r)
 }
 
 func (h *captureAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &captureAttrsHandler{parent: h.parent, attrs: append(h.attrs[:], attrs...)}
+	return &captureAttrsHandler{parent: h.parent, attrs: append(h.attrs[:], attrs...), group: h.group}
 }
 
 func (h *captureAttrsHandler) WithGroup(name string) slog.Handler {
-	return &captureGroupHandler{parent: h.parent, group: name}
+	return &captureGroupHandler{parent: h.parent, group: name, attrs: h.attrs}
 }
 
 type captureGroupHandler struct {
 	parent *CaptureHandler
 	group  string
+	attrs  []slog.Attr
 }
 
 func (h *captureGroupHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -140,13 +154,20 @@ func (h *captureGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 		return true
 	})
+	prefixed.AddAttrs(h.attrs...)
 	return h.parent.Handle(ctx, prefixed)
 }
 
 func (h *captureGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &captureAttrsHandler{parent: h.parent, attrs: attrs}
+	return &captureAttrsHandler{parent: h.parent, attrs: attrs, group: h.group}
 }
 
 func (h *captureGroupHandler) WithGroup(name string) slog.Handler {
-	return &captureGroupHandler{parent: h.parent, group: h.group + "." + name}
+	return &captureGroupHandler{parent: h.parent, group: h.group + "." + name, attrs: h.attrs}
 }
+
+var (
+	_ slog.Handler = (*CaptureHandler)(nil)
+	_ slog.Handler = (*captureAttrsHandler)(nil)
+	_ slog.Handler = (*captureGroupHandler)(nil)
+)

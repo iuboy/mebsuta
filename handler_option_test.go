@@ -23,8 +23,8 @@ func TestHandlerError_Unwrap(t *testing.T) {
 
 func TestHandlerError_Error(t *testing.T) {
 	inner := errors.New("something failed")
-	he := HandlerError{Err: inner}
-	require.Equal(t, "something failed", he.Error())
+	he := HandlerError{Component: "file", Operation: "write", Err: inner}
+	require.Equal(t, "mebsuta/file/write: something failed", he.Error())
 }
 
 func TestHandlerError_Fields(t *testing.T) {

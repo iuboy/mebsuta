@@ -32,7 +32,8 @@ type FileConfig struct {
 	RotateInterval time.Duration // Time-based rotation interval. 0 = size-only.
 }
 
-func boolPtr(b bool) *bool { return &b }
+// BoolPtr returns a pointer to the given bool value.
+func BoolPtr(b bool) *bool { return &b }
 
 // Validate checks required fields and returns a normalized copy with defaults applied.
 // The original config is not modified.
@@ -59,16 +60,9 @@ func (c FileConfig) Validate() (FileConfig, error) {
 		c.MaxAgeDays = 30
 	}
 	if c.Compress == nil {
-		c.Compress = boolPtr(true)
+		c.Compress = BoolPtr(true)
 	}
 	return c, nil
-}
-
-func (c *FileConfig) level() slog.Level {
-	if lv, ok := c.Level.(slog.Level); ok {
-		return lv
-	}
-	return c.Level.Level()
 }
 
 func (c *FileConfig) compress() bool {
@@ -83,6 +77,7 @@ type StdoutConfig struct {
 	Format string       // "json" or "console". Defaults to "json".
 }
 
+// Validate checks required fields and returns a normalized copy with defaults applied.
 func (c StdoutConfig) Validate() (StdoutConfig, error) {
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
@@ -107,6 +102,7 @@ type AsyncConfig struct {
 	BufferSize int // Channel buffer size. 0 → 256.
 }
 
+// Validate checks required fields and returns a normalized copy with defaults applied.
 func (c AsyncConfig) Validate() (AsyncConfig, error) {
 	if c.BufferSize <= 0 {
 		c.BufferSize = 256
@@ -124,6 +120,7 @@ type SamplingConfig struct {
 	Window     time.Duration // Sampling window duration. 0 → 1s.
 }
 
+// Validate checks required fields and returns a normalized copy with defaults applied.
 func (c SamplingConfig) Validate() (SamplingConfig, error) {
 	if !c.Enabled {
 		return c, nil

@@ -4,15 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/iuboy/mebsuta"
 )
-
-// ConfigError represents a configuration validation error.
-type ConfigError struct {
-	Field string
-	Msg   string
-}
-
-func (e *ConfigError) Error() string { return e.Field + ": " + e.Msg }
 
 // Config holds configuration for syslog output.
 type Config struct {
@@ -32,15 +26,13 @@ type Config struct {
 	JSONInMessage bool          // Include JSON structure in message field.
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 // Validate checks required fields and returns a normalized copy with defaults applied.
 func (c Config) Validate() (Config, error) {
 	if c.Network == "" {
 		c.Network = "tcp"
 	}
 	if c.Address == "" {
-		return Config{}, &ConfigError{Field: "Address", Msg: "syslog address is required"}
+		return Config{}, &mebsuta.ConfigError{Field: "Address", Msg: "syslog address is required"}
 	}
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
@@ -49,18 +41,18 @@ func (c Config) Validate() (Config, error) {
 		c.Tag = "mebsuta"
 	}
 	if len(c.Tag) > 48 {
-		return Config{}, &ConfigError{Field: "Tag", Msg: fmt.Sprintf("syslog tag too long: %d chars (max 48)", len(c.Tag))}
+		return Config{}, &mebsuta.ConfigError{Field: "Tag", Msg: fmt.Sprintf("syslog tag too long: %d chars (max 48)", len(c.Tag))}
 	}
 	for _, r := range c.Tag {
 		if r < 33 || r > 126 {
-			return Config{}, &ConfigError{Field: "Tag", Msg: fmt.Sprintf("syslog tag contains non-printable character: %q", r)}
+			return Config{}, &mebsuta.ConfigError{Field: "Tag", Msg: fmt.Sprintf("syslog tag contains non-printable character: %q", r)}
 		}
 	}
 	if c.Facility < 0 || c.Facility > 23 {
-		return Config{}, &ConfigError{Field: "Facility", Msg: fmt.Sprintf("invalid syslog facility: %d, must be 0-23", c.Facility)}
+		return Config{}, &mebsuta.ConfigError{Field: "Facility", Msg: fmt.Sprintf("invalid syslog facility: %d, must be 0-23", c.Facility)}
 	}
 	if c.Reconnect == nil {
-		c.Reconnect = boolPtr(true)
+		c.Reconnect = mebsuta.BoolPtr(true)
 	}
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = 500 * time.Millisecond
@@ -70,7 +62,7 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.TimeZone != "" {
 		if _, err := time.LoadLocation(c.TimeZone); err != nil {
-			return Config{}, &ConfigError{Field: "TimeZone", Msg: fmt.Sprintf("invalid timezone: %s", c.TimeZone)}
+			return Config{}, &mebsuta.ConfigError{Field: "TimeZone", Msg: fmt.Sprintf("invalid timezone: %s", c.TimeZone)}
 		}
 	}
 	return c, nil

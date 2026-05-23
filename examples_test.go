@@ -10,21 +10,21 @@ import (
 
 // ExampleNewStdoutHandler demonstrates basic stdout JSON logging.
 func ExampleNewStdoutHandler() {
-	handler := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	logger := slog.New(handler)
 	logger.Info("hello", "key", "value")
 }
 
 // ExampleNewStdoutHandler_text demonstrates text format logging.
 func ExampleNewStdoutHandler_text() {
-	handler := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo, Format: "console"})
+	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo, Format: "console"})
 	logger := slog.New(handler)
 	logger.Info("hello", "key", "value")
 }
 
 // ExampleWithAsync demonstrates asynchronous logging with buffering.
 func ExampleWithAsync() {
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	async := mebsuta.WithAsync(stdout, mebsuta.AsyncConfig{
 		BufferSize: 100,
 	})
@@ -36,7 +36,7 @@ func ExampleWithAsync() {
 
 // ExampleWithSampling demonstrates log sampling to reduce volume.
 func ExampleWithSampling() {
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	cfg := mebsuta.SamplingConfig{Enabled: true, Initial: 5, Thereafter: 2, Window: time.Second}
 	sampled := mebsuta.WithSampling(stdout, cfg)
 
@@ -49,7 +49,7 @@ func ExampleWithSampling() {
 
 // ExampleAuditEvent demonstrates audit logging for compliance.
 func ExampleAuditEvent() {
-	handler := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
@@ -64,7 +64,7 @@ func ExampleAuditEvent() {
 
 // ExampleNew demonstrates creating a logger with a handler.
 func ExampleNew() {
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	logger, err := mebsuta.New(mebsuta.WithHandler(stdout))
 	if err != nil {
 		panic(err)
@@ -93,7 +93,7 @@ func ExampleNew_fileHandler() {
 
 // ExampleWithMetrics demonstrates metrics collection for logging.
 func ExampleWithMetrics() {
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	m := &testMetrics{}
 
 	withMetrics := mebsuta.WithMetrics(stdout, m, "myapp")
@@ -111,7 +111,7 @@ func (m *testMetrics) IncDropped(handlerName string)        {}
 
 // ExampleCloseAll demonstrates proper handler cleanup.
 func ExampleCloseAll() {
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	async := mebsuta.WithAsync(stdout, mebsuta.AsyncConfig{
 		BufferSize: 100,
 	})
@@ -127,7 +127,7 @@ func ExampleCloseAll() {
 // Example_withHandlerChain demonstrates a complete production handler chain.
 func Example_withHandlerChain() {
 	// Build chain: Sampling → Async → Stdout
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	samplingCfg := mebsuta.SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second}
 	sampled := mebsuta.WithSampling(stdout, samplingCfg)
 	async := mebsuta.WithAsync(sampled, mebsuta.AsyncConfig{
@@ -142,7 +142,7 @@ func Example_withHandlerChain() {
 
 // ExampleAsyncDropped demonstrates checking for dropped log records.
 func ExampleAsyncDropped() {
-	stdout := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	async := mebsuta.WithAsync(stdout, mebsuta.AsyncConfig{
 		BufferSize: 5, // small buffer
 	})
@@ -159,7 +159,7 @@ func ExampleAsyncDropped() {
 
 // ExampleEventLogin is a predefined event type for login actions.
 func ExampleEventLogin() {
-	handler := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 

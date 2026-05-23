@@ -37,10 +37,12 @@ func WithMetrics(inner slog.Handler, m HandlerMetrics, handlerName string) slog.
 	}
 }
 
+// Enabled implements slog.Handler.
 func (h *MetricsHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
+// Handle implements slog.Handler.
 func (h *MetricsHandler) Handle(ctx context.Context, r slog.Record) error {
 	start := time.Now()
 	err := h.inner.Handle(ctx, r)
@@ -51,6 +53,7 @@ func (h *MetricsHandler) Handle(ctx context.Context, r slog.Record) error {
 	return err
 }
 
+// WithAttrs implements slog.Handler.
 func (h *MetricsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &MetricsHandler{
 		inner:       h.inner.WithAttrs(attrs),
@@ -59,6 +62,7 @@ func (h *MetricsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup implements slog.Handler.
 func (h *MetricsHandler) WithGroup(name string) slog.Handler {
 	return &MetricsHandler{
 		inner:       h.inner.WithGroup(name),
@@ -72,7 +76,10 @@ func (h *MetricsHandler) unwrapHandler() slog.Handler {
 }
 
 func (h *MetricsHandler) setErrorHandler(fn ErrorHandler) {
-	// MetricsHandler delegates error handling to its inner handler
+	// No-op: propagateErrorHandler recurses via unwrapHandler to reach the inner handler.
 }
 
-var _ slog.Handler = (*MetricsHandler)(nil)
+var (
+	_ slog.Handler     = (*MetricsHandler)(nil)
+	_ handlerUnwrapper = (*MetricsHandler)(nil)
+)

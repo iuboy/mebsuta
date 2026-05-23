@@ -32,9 +32,9 @@ func TestConfig_EmptyAddress(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for empty address")
 	}
-	cerr, ok := err.(*ConfigError)
+	cerr, ok := err.(*mebsuta.ConfigError)
 	if !ok {
-		t.Fatalf("expected *ConfigError, got %T", err)
+		t.Fatalf("expected *mebsuta.ConfigError, got %T", err)
 	}
 	if cerr.Field != "Address" {
 		t.Errorf("field = %q, want Address", cerr.Field)
@@ -117,9 +117,9 @@ func TestConfig_InvalidTag(t *testing.T) {
 			if err == nil {
 				t.Error("expected error")
 			}
-			cerr, ok := err.(*ConfigError)
+			cerr, ok := err.(*mebsuta.ConfigError)
 			if !ok {
-				t.Fatalf("expected *ConfigError, got %T", err)
+				t.Fatalf("expected *mebsuta.ConfigError, got %T", err)
 			}
 			if cerr.Field != "Tag" {
 				t.Errorf("field = %q, want Tag", cerr.Field)
@@ -731,7 +731,7 @@ func TestHandler_SelfBuffered(t *testing.T) {
 // =============================================================================
 
 func TestConfigError_Format(t *testing.T) {
-	err := &ConfigError{Field: "Address", Msg: "is required"}
+	err := &mebsuta.ConfigError{Field: "Address", Msg: "is required"}
 	if !strings.Contains(err.Error(), "Address") {
 		t.Error("should contain field name")
 	}

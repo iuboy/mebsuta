@@ -12,24 +12,24 @@ import (
 	"gorm.io/gorm"
 )
 
-// newSQLiteHandler creates a DatabaseHandler backed by SQLite memory for testing.
+// newSQLiteHandler creates a Handler backed by SQLite memory for testing.
 // The caller must call Close() when done.
-func newSQLiteHandler(t *testing.T) (*DatabaseHandler, *gorm.DB) {
+func newSQLiteHandler(t *testing.T) (*Handler, *gorm.DB) {
 	t.Helper()
 	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("gorm open: %v", err)
 	}
-	// AutoMigrate uses dbLogEntry.TableName() which returns "logs"
-	if err := gdb.AutoMigrate(&dbLogEntry{}); err != nil {
+	// Create the "logs" table explicitly; the handler uses cfg.Table for all writes.
+	if err := gdb.Table("logs").AutoMigrate(&dbLogEntry{}); err != nil {
 		t.Fatalf("auto migrate: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelInfo,
 		db:      gdb,
-		table:   "logs", // must match dbLogEntry.TableName()
+		table:   "logs",
 		entries: make(chan dbLogEntry, 1000),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -42,9 +42,9 @@ func newSQLiteHandler(t *testing.T) (*DatabaseHandler, *gorm.DB) {
 }
 
 // SPEC P0: After Close(), all records submitted before Close() must be present.
-// Full verification is in TestDatabaseHandler_RecordsDeliveredBeforeClose (file-based SQLite).
+// Full verification is in TestHandler_RecordsDeliveredBeforeClose (file-based SQLite).
 // This test verifies Close() succeeds after writes without error.
-func TestDatabaseHandler_Close_FlushesRecords(t *testing.T) {
+func TestHandler_Close_FlushesRecords(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 
 	for i := range 3 {
@@ -61,7 +61,7 @@ func TestDatabaseHandler_Close_FlushesRecords(t *testing.T) {
 }
 
 // SPEC P0: After Close(), second Close() returns nil (idempotent).
-func TestDatabaseHandler_Close_Idempotent(t *testing.T) {
+func TestHandler_Close_Idempotent(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 
 	if err := h.Close(); err != nil {
@@ -73,7 +73,7 @@ func TestDatabaseHandler_Close_Idempotent(t *testing.T) {
 }
 
 // SPEC P0: Writes after close do not panic.
-func TestDatabaseHandler_WriteAfterClose(t *testing.T) {
+func TestHandler_WriteAfterClose(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 
 	if err := h.Close(); err != nil {
@@ -88,7 +88,7 @@ func TestDatabaseHandler_WriteAfterClose(t *testing.T) {
 }
 
 // SPEC P0: Concurrent Handle/Close must not panic or race.
-func TestDatabaseHandler_ConcurrentCloseWrite(t *testing.T) {
+func TestHandler_ConcurrentCloseWrite(t *testing.T) {
 	h, _ := newSQLiteHandler(t)
 
 	var wg sync.WaitGroup
@@ -119,7 +119,7 @@ func TestDatabaseHandler_ConcurrentCloseWrite(t *testing.T) {
 }
 
 // SPEC P0: Records written before Close are delivered (file-based SQLite for verification).
-func TestDatabaseHandler_RecordsDeliveredBeforeClose(t *testing.T) {
+func TestHandler_RecordsDeliveredBeforeClose(t *testing.T) {
 	// Use file-based SQLite so we can re-open and verify
 	dir := t.TempDir()
 	path := dir + "/test.db"
@@ -128,12 +128,12 @@ func TestDatabaseHandler_RecordsDeliveredBeforeClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	if err := gdb.AutoMigrate(&dbLogEntry{}); err != nil {
+	if err := gdb.Table("logs").AutoMigrate(&dbLogEntry{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelInfo,
 		db:      gdb,
 		table:   "logs",
@@ -171,7 +171,7 @@ func TestDatabaseHandler_RecordsDeliveredBeforeClose(t *testing.T) {
 }
 
 // SPEC P1: Batch write triggers when batch is full.
-func TestDatabaseHandler_BatchWrite(t *testing.T) {
+func TestHandler_BatchWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/test.db"
 
@@ -179,12 +179,12 @@ func TestDatabaseHandler_BatchWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := gdb.AutoMigrate(&dbLogEntry{}); err != nil {
+	if err := gdb.Table("logs").AutoMigrate(&dbLogEntry{}); err != nil {
 		t.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: slog.LevelInfo,
 		db:      gdb,
 		table:   "logs",

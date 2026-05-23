@@ -12,7 +12,8 @@ import (
 // TestWithContextExtractor_WithGroup verifies extracted attrs are prefixed with group.
 func TestWithContextExtractor_WithGroup(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return []slog.Attr{slog.String("trace_id", "abc123")}
@@ -30,7 +31,8 @@ func TestWithContextExtractor_WithGroup(t *testing.T) {
 // TestWithContextExtractor_NestedGroups verifies nested WithGroup chains prefix correctly.
 func TestWithContextExtractor_NestedGroups(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return []slog.Attr{slog.String("trace_id", "xyz")}
@@ -47,7 +49,8 @@ func TestWithContextExtractor_NestedGroups(t *testing.T) {
 // TestWithContextExtractor_WithGroupThenAttrs verifies WithGroup + WithAttrs chain.
 func TestWithContextExtractor_WithGroupThenAttrs(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return []slog.Attr{slog.String("trace_id", "t1")}
@@ -65,7 +68,8 @@ func TestWithContextExtractor_WithGroupThenAttrs(t *testing.T) {
 // TestWithContextExtractor_EmptyGroupPassesThrough verifies no group = no prefix.
 func TestWithContextExtractor_EmptyGroupPassesThrough(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return []slog.Attr{slog.String("plain", "val")}
@@ -82,7 +86,8 @@ func TestWithContextExtractor_EmptyGroupPassesThrough(t *testing.T) {
 // TestWithContextExtractor_ContextPropagation verifies context is passed to extractor.
 func TestWithContextExtractor_ContextPropagation(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		if v, ok := ctx.Value(ctxKey("tenant")).(string); ok {
@@ -117,9 +122,12 @@ func TestUseContextExtractor_OptionWithGroup(t *testing.T) {
 		return []slog.Attr{slog.String("trace_id", "from-ctx")}
 	}
 
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})
+	require.NoError(t, err)
+
 	logger, err := New(
 		UseContextExtractor(extract),
-		WithHandler(newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelDebug})),
+		WithHandler(inner),
 	)
 	require.NoError(t, err)
 
@@ -141,7 +149,8 @@ func TestJoinGroup(t *testing.T) {
 
 // TestWithContextExtractor_UnwrapHandler verifies handlerUnwrapper is implemented.
 func TestWithContextExtractor_UnwrapHandler(t *testing.T) {
-	inner := NewStdoutHandler(StdoutConfig{})
+	inner, err := NewStdoutHandler(StdoutConfig{})
+	require.NoError(t, err)
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr { return nil })
 	uw, ok := h.(handlerUnwrapper)
 	require.True(t, ok, "should implement handlerUnwrapper")

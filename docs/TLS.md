@@ -13,7 +13,7 @@ The SyslogHandler supports TLS encryption for secure log delivery. TLS is enable
 The safest approach uses default certificate verification:
 
 ```go
-syslogH, err := mebsuta.NewSyslogHandler(mebsuta.SyslogConfig{
+syslogH, err := syslog.NewHandler(syslog.Config{
     Network: "tcp",
     Address: "logs.example.com:6514",
     Secure:  true,
@@ -37,7 +37,7 @@ logger.Info("message sent over TLS")
 For testing or internal networks with self-signed certificates:
 
 ```go
-syslogH, err := mebsuta.NewSyslogHandler(mebsuta.SyslogConfig{
+syslogH, err := syslog.NewHandler(syslog.Config{
     Network:        "tcp",
     Address:        "internal-logs:6514",
     Secure:         true,
@@ -63,16 +63,17 @@ import (
     "time"
 
     "github.com/iuboy/mebsuta"
+    "github.com/iuboy/mebsuta/syslog"
 )
 
 func main() {
-    syslogH, err := mebsuta.NewSyslogHandler(mebsuta.SyslogConfig{
+    syslogH, err := syslog.NewHandler(syslog.Config{
         Network:     "tcp",
         Address:     "logs.example.com:6514",
         Secure:      true,
         Tag:         "myapp",
         Facility:    1,
-        Reconnect:   true,
+        Reconnect:   mebsuta.BoolPtr(true),
         RetryDelay:  500 * time.Millisecond,
         RFC5424:     true,
     })
@@ -81,11 +82,7 @@ func main() {
     }
 
     logger, err := mebsuta.New(
-        mebsuta.UseSyslog(mebsuta.SyslogConfig{
-            Network: "tcp",
-            Address: "logs.example.com:6514",
-            Secure:  true,
-        }),
+        mebsuta.WithHandler(syslogH),
     )
     if err != nil {
         log.Fatal(err)
@@ -106,7 +103,7 @@ func main() {
 | `TLSSkipVerify` | bool | `false` | Skip certificate verification (not recommended) |
 | `Tag` | string | `"mebsuta"` | Syslog tag identifier |
 | `Facility` | int | `1` | Syslog facility (1=user-level) |
-| `Reconnect` | bool | `true` | Auto-reconnect on connection loss |
+| `Reconnect` | `*bool` | `true` | Auto-reconnect on connection loss |
 | `RetryDelay` | `time.Duration` | `500ms` | Delay between reconnection attempts |
 | `RFC5424` | bool | `false` | Use RFC5424 protocol (vs RFC3164) |
 
@@ -138,7 +135,7 @@ For environments with custom certificate authorities, the Go runtime must be con
 
 1. **Always enable certificate verification in production**
    ```go
-   mebsuta.SyslogConfig{Secure: true}
+   syslog.Config{Secure: true}
    ```
 
 2. **Use the standard TLS port (6514)**
@@ -148,13 +145,13 @@ For environments with custom certificate authorities, the Go runtime must be con
 
 3. **Enable reconnection for reliability**
    ```go
-   mebsuta.SyslogConfig{Reconnect: true}
+   syslog.Config{Reconnect: mebsuta.BoolPtr(true)}
    ```
 
 4. **Monitor connection errors**
    ```go
    // SyslogHandler reports errors via the configured error handler
-   syslogH, _ := mebsuta.NewSyslogHandler(mebsuta.SyslogConfig{
+   syslogH, _ := syslog.NewHandler(syslog.Config{
        Network: "tcp", Address: "logs:6514", Secure: true,
    })
    // Errors are available through metrics or custom error handlers
@@ -196,10 +193,11 @@ For environments with custom certificate authorities, the Go runtime must be con
 
 ```go
 // Correct - Syslog without Async
+syslogH, _ := syslog.NewHandler(syslog.Config{
+    Network: "tcp", Address: "logs:6514", Secure: true,
+})
 logger, _ := mebsuta.New(
-    mebsuta.UseSyslog(mebsuta.SyslogConfig{
-        Network: "tcp", Address: "logs:6514", Secure: true,
-    }),
+    mebsuta.WithHandler(syslogH),
 )
 
 // Incorrect - Async wrapping Syslog (double buffering)

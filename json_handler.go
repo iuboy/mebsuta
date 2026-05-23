@@ -14,14 +14,14 @@ import (
 )
 
 type contractJSONHandler struct {
-	mu    sync.Mutex
+	mu    *sync.Mutex
 	w     io.Writer
 	attrs []slog.Attr
 	group string
 }
 
 func newContractJSONHandler(w io.Writer) slog.Handler {
-	return &contractJSONHandler{w: w}
+	return &contractJSONHandler{w: w, mu: &sync.Mutex{}}
 }
 
 func (h *contractJSONHandler) Enabled(context.Context, slog.Level) bool {
@@ -100,6 +100,7 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *contractJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	next := &contractJSONHandler{
 		w:     h.w,
+		mu:    h.mu,
 		attrs: make([]slog.Attr, 0, len(h.attrs)+len(attrs)),
 		group: h.group,
 	}
@@ -121,6 +122,7 @@ func (h *contractJSONHandler) WithGroup(name string) slog.Handler {
 	}
 	return &contractJSONHandler{
 		w:     h.w,
+		mu:    h.mu,
 		attrs: append([]slog.Attr(nil), h.attrs...),
 		group: group,
 	}
@@ -133,3 +135,5 @@ func prefixAttr(group string, attr slog.Attr) slog.Attr {
 	attr.Key = group + "." + attr.Key
 	return attr
 }
+
+var _ slog.Handler = (*contractJSONHandler)(nil)

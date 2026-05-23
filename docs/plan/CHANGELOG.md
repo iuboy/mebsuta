@@ -18,6 +18,13 @@
 
 ## [Unreleased] — v0.4.0-beta.1
 
+### ⚠️ BREAKING CHANGES
+
+- **Module path 变更**: `github.com/iuboy/mebsuta/go` → `github.com/iuboy/mebsuta`。所有 import 路径需更新。
+- **项目结构重组**: Go 代码从 `go/` 子目录提升到项目根目录。`config/` 子包已删除，Config 类型提升到主包。
+- **删除接口**: `LevelHandler` struct、自定义 `Handler` interface、`FullHandler`/`Flusher` 接口已移除。
+- **Rust 独立**: 项目从双语言 monorepo 拆分为独立 Go 仓库（Rust 版本移至 mebsuta-rust）。
+
 ### Added
 
 - API 契约优化：Config exported 字段 + `Validate()` 返回规范化副本
@@ -26,14 +33,6 @@
 - Handler 存储 `slog.Leveler`（支持 `*slog.LevelVar` 动态级别调整）
 - `CloseAll` 使用 visited map 防止共享 handler 双重关闭
 - `HandlerError` 结构化错误（Dropped/Retryable/Records/Time 字段）
-
-### Changed
-
-- 项目从双语言 monorepo 拆分为独立 Go 仓库（Rust 版本移至 mebsuta-rust）
-- Go 代码从 `go/` 子目录提升到项目根目录
-- Module path 从 `github.com/iuboy/mebsuta/go` 改为 `github.com/iuboy/mebsuta`
-- 删除 `config/` 子包，Config 类型提升到主包
-- 删除 `LevelHandler` struct、自定义 `Handler` interface、`FullHandler`/`Flusher` 接口
 
 ### Fixed
 

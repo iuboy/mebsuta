@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
@@ -17,7 +19,8 @@ import (
 
 func TestAsyncHandler_Basic(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	logger := slog.New(h)
 
@@ -54,7 +57,8 @@ func TestAsyncHandler_DropOnFull(t *testing.T) {
 
 func TestAsyncHandler_Close(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	logger := slog.New(h)
 
@@ -84,7 +88,8 @@ func TestAsyncHandler_NilHandler(t *testing.T) {
 
 func TestAsyncHandler_WithAttrs(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
 	logger := slog.New(child)
@@ -102,7 +107,8 @@ func TestAsyncHandler_WithAttrs(t *testing.T) {
 
 func TestAsyncHandler_WithGroup(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	child := h.WithGroup("request")
 	logger := slog.New(child)
@@ -232,7 +238,8 @@ func (m *testMetrics) IncDropped(name string)        { m.droppedCount.Add(1) }
 func TestWithMetrics_Basic(t *testing.T) {
 	m := &testMetrics{}
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithMetrics(inner, m, "stdout")
 	logger := slog.New(h)
 
@@ -252,7 +259,8 @@ func TestWithMetrics_NilInputs(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	// nil metrics
 	h = WithMetrics(inner, nil, "test")
 	if h != inner {
@@ -263,7 +271,8 @@ func TestWithMetrics_NilInputs(t *testing.T) {
 func TestWithMetrics_WithAttrs(t *testing.T) {
 	m := &testMetrics{}
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithMetrics(inner, m, "stdout")
 	child := h.WithAttrs([]slog.Attr{slog.String("k", "v")})
 	logger := slog.New(child)
@@ -283,7 +292,8 @@ type ctxKey string
 
 func TestWithContextExtractor_Basic(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		if reqID, ok := ctx.Value(ctxKey("request_id")).(string); ok {
@@ -303,7 +313,8 @@ func TestWithContextExtractor_Basic(t *testing.T) {
 
 func TestWithContextExtractor_NilInputs(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	// nil handler
 	h := WithContextExtractor(nil, func(ctx context.Context) []slog.Attr { return nil })
@@ -320,7 +331,8 @@ func TestWithContextExtractor_NilInputs(t *testing.T) {
 
 func TestWithContextExtractor_NoContextValue(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return nil // 没有提取到任何字段
@@ -336,7 +348,8 @@ func TestWithContextExtractor_NoContextValue(t *testing.T) {
 
 func TestWithContextExtractor_WithAttrs(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
 		return []slog.Attr{slog.String("ctx_field", "ctx_value")}
@@ -405,8 +418,10 @@ func TestSafeMultiHandler_AllEnabled(t *testing.T) {
 func TestSafeMultiHandler_LevelFilter(t *testing.T) {
 	// 用 StdoutHandler 作为有级别过滤的 handler
 	var buf1, buf2 bytes.Buffer
-	infoH := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
-	warnH := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelWarn})
+	infoH, err := newStdoutHandlerWithWriter(&buf1, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	warnH, err := newStdoutHandlerWithWriter(&buf2, StdoutConfig{Level: slog.LevelWarn})
+	require.NoError(t, err)
 
 	multi := safeMultiHandler([]slog.Handler{infoH, warnH}, nil)
 	logger := slog.New(multi)
@@ -432,7 +447,8 @@ func TestSafeMultiHandler_LevelFilter(t *testing.T) {
 func TestDecoratorChain_Stdout_Sampling_Metrics(t *testing.T) {
 	m := &testMetrics{}
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
 	// Stdout -> Sampling -> Metrics
 	h := WithMetrics(
@@ -457,7 +473,8 @@ func TestDecoratorChain_Stdout_Sampling_Metrics(t *testing.T) {
 
 func TestDecoratorChain_Async_Stdout(t *testing.T) {
 	var buf bytes.Buffer
-	inner := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	h := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	logger := slog.New(h)
 

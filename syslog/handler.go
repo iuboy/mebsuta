@@ -111,10 +111,12 @@ func NewHandler(cfg Config) (*Handler, error) {
 	return h, nil
 }
 
+// Enabled implements slog.Handler.
 func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.leveler.Level()
 }
 
+// Handle implements slog.Handler.
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closing.Load() {
 		return nil
@@ -126,6 +128,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	return h.safeSend(data, r.Level)
 }
 
+// Close implements io.Closer.
 func (h *Handler) Close() error {
 	if !h.closing.CompareAndSwap(false, true) {
 		return nil
@@ -169,7 +172,10 @@ func (h *Handler) Flush(timeout time.Duration) error {
 func (h *Handler) drainBuffer() {
 	for {
 		select {
-		case msg := <-h.buffer:
+		case msg, ok := <-h.buffer:
+			if !ok {
+				return
+			}
 			h.writeWithRetry(msg)
 		default:
 			return
@@ -177,10 +183,12 @@ func (h *Handler) drainBuffer() {
 	}
 }
 
+// WithAttrs implements slog.Handler.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &mebsuta.AttrsSub[*Handler]{Parent: h, Attrs: attrs}
 }
 
+// WithGroup implements slog.Handler.
 func (h *Handler) WithGroup(name string) slog.Handler {
 	return &mebsuta.GroupSub[*Handler]{Parent: h, Group: name}
 }
@@ -213,7 +221,9 @@ func (h *Handler) dialLocked() (net.Conn, error) {
 			conn.Close()
 			return nil, fmt.Errorf("set keep-alive: %w", err)
 		}
-		_ = tc.SetKeepAlivePeriod(3 * time.Minute)
+		if err := tc.SetKeepAlivePeriod(3 * time.Minute); err != nil {
+			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive period: %w", err)})
+		}
 	}
 	return conn, nil
 }

@@ -166,6 +166,26 @@ func TestFileHandler_FilePermissionsRestricted(t *testing.T) {
 	assertRestrictedLogFileMode(t, path)
 }
 
+func TestFileHandler_RotatedFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not meaningful on Windows")
+	}
+	h, path := newTestFileHandler(t, func(c *FileConfig) {
+		c.MaxSizeMB = 1
+		c.Format = "json"
+	})
+	defer h.Close()
+
+	logger := slog.New(h)
+	msg := strings.Repeat("x", 1024)
+	for range 1200 {
+		logger.Info("fill", "data", msg)
+	}
+
+	h.Close()
+	assertRestrictedLogFileMode(t, path)
+}
+
 // =============================================================================
 // Level 过滤
 // =============================================================================

@@ -3,8 +3,8 @@ package mebsuta
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,8 +19,8 @@ type SelfBufferedHandler interface {
 	SelfBuffered()
 }
 
-// asyncRecord 是 slog.Record 的异步拷贝。
-// slog.Record 的 Attr 只能遍历一次，Handle 中必须同步复制。
+// asyncRecord is an async copy of slog.Record.
+// slog.Record Attrs can only be iterated once; they must be copied synchronously in Handle.
 type asyncRecord struct {
 	Time    time.Time
 	Level   slog.Level
@@ -32,7 +32,7 @@ type asyncRecord struct {
 }
 
 // AsyncHandler delegates log writes to a background goroutine.
-// Do not wrap SyslogHandler or DatabaseHandler — they have built-in async mechanisms.
+// Do not wrap syslog.Handler or database.Handler — they have built-in async mechanisms.
 type AsyncHandler struct {
 	inner        slog.Handler
 	ch           chan asyncRecord
@@ -44,7 +44,7 @@ type AsyncHandler struct {
 	errorHandler atomic.Pointer[ErrorHandler]
 }
 
-// findSelfBuffered 递归检查 handler 链中是否有 SelfBufferedHandler。
+// findSelfBuffered recursively checks whether the handler chain contains a SelfBufferedHandler.
 func findSelfBuffered(h slog.Handler) bool {
 	if _, ok := h.(SelfBufferedHandler); ok {
 		return true
@@ -84,10 +84,12 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	return h
 }
 
+// Enabled implements slog.Handler.
 func (h *AsyncHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
+// Handle implements slog.Handler.
 func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return fmt.Errorf("async handler is closed, log dropped")
@@ -108,35 +110,29 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
-	defer func() {
-		if r := recover(); r != nil {
-			h.dropped.Add(1)
-			ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("send on closed channel, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
-		}
-	}()
-
-	// Error and Audit records: blocking send with retry loop (5s deadline).
+	// Error and Audit records: blocking send with 5s timeout.
 	// Other levels use non-blocking send and drop on buffer full.
 	if ar.Level >= slog.LevelError {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			select {
-			case h.ch <- ar:
-				return nil
-			default:
-				runtime.Gosched()
-			}
-			time.Sleep(10 * time.Millisecond)
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case h.ch <- ar:
+			return nil
+		case <-h.ctx.Done():
+			return fmt.Errorf("async handler is closed, log dropped")
+		case <-timer.C:
+			h.dropped.Add(1)
+			err := fmt.Errorf("mebsuta: buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load())
+			ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
+			return err
 		}
-		h.dropped.Add(1)
-		err := fmt.Errorf("mebsuta: buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load())
-		ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
-		return err
 	}
 
 	select {
 	case h.ch <- ar:
 		return nil
+	case <-h.ctx.Done():
+		return fmt.Errorf("async handler is closed, log dropped")
 	default:
 		h.dropped.Add(1)
 		ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
@@ -144,6 +140,7 @@ func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 	}
 }
 
+// WithAttrs implements slog.Handler.
 func (h *AsyncHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &asyncAttrsHandler{
 		AsyncHandler: h,
@@ -151,6 +148,7 @@ func (h *AsyncHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
+// WithGroup implements slog.Handler.
 func (h *AsyncHandler) WithGroup(name string) slog.Handler {
 	return &asyncGroupHandler{
 		AsyncHandler: h,
@@ -158,6 +156,7 @@ func (h *AsyncHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
+// Close implements io.Closer.
 func (h *AsyncHandler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
@@ -176,6 +175,7 @@ func (h *AsyncHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
+// Dropped returns the total number of records dropped due to buffer overflow.
 func (h *AsyncHandler) Dropped() int64 {
 	return h.dropped.Load()
 }
@@ -237,6 +237,7 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		Message: r.Message,
 		PC:      r.PC,
 		inner:   h.inner.WithGroup(h.group),
+		ctx:     ctx,
 	}
 	r.Attrs(func(attr slog.Attr) bool {
 		ar.Attrs = append(ar.Attrs, attr)
@@ -274,4 +275,12 @@ func AsyncDropped(h slog.Handler) int64 {
 	}
 }
 
-var _ slog.Handler = (*AsyncHandler)(nil)
+var (
+	_ slog.Handler      = (*AsyncHandler)(nil)
+	_ slog.Handler      = (*asyncAttrsHandler)(nil)
+	_ slog.Handler      = (*asyncGroupHandler)(nil)
+	_ io.Closer         = (*AsyncHandler)(nil)
+	_ handlerUnwrapper  = (*AsyncHandler)(nil)
+	_ handlerUnwrapper  = (*asyncAttrsHandler)(nil)
+	_ handlerUnwrapper  = (*asyncGroupHandler)(nil)
+)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,14 +37,10 @@ type dbLogEntry struct {
 	Fields  json.RawMessage `gorm:"type:json"`
 }
 
-func (dbLogEntry) TableName() string {
-	return "logs"
-}
-
-// DatabaseHandler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
-type DatabaseHandler struct {
+// Handler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
+type Handler struct {
 	leveler      slog.Leveler
-	cfg          DatabaseConfig
+	cfg          Config
 	db           *gorm.DB
 	table        string
 	entries      chan dbLogEntry
@@ -58,8 +53,8 @@ type DatabaseHandler struct {
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
 
-// NewDatabaseHandler creates a DatabaseHandler that connects to the database specified in cfg.
-func NewDatabaseHandler(cfg DatabaseConfig) (*DatabaseHandler, error) {
+// NewHandler creates a Handler that connects to the database specified in cfg.
+func NewHandler(cfg Config) (*Handler, error) {
 	cfg, err := cfg.Validate()
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
@@ -91,7 +86,7 @@ func NewDatabaseHandler(cfg DatabaseConfig) (*DatabaseHandler, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h := &DatabaseHandler{
+	h := &Handler{
 		leveler: cfg.Level,
 		cfg:     cfg,
 		db:      gdb,
@@ -109,11 +104,13 @@ func NewDatabaseHandler(cfg DatabaseConfig) (*DatabaseHandler, error) {
 	return h, nil
 }
 
-func (h *DatabaseHandler) Enabled(_ context.Context, level slog.Level) bool {
+// Enabled implements slog.Handler.
+func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.leveler.Level()
 }
 
-func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
+// Handle implements slog.Handler.
+func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return nil
 	}
@@ -121,53 +118,50 @@ func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
 	entry := h.recordToDBEntry(r)
 
 	if r.Level >= slog.LevelError {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			h.sendMu.Lock()
-			if h.closed.Load() {
-				h.sendMu.Unlock()
-				return nil
-			}
-			select {
-			case h.entries <- entry:
-				h.sendMu.Unlock()
-				return nil
-			default:
-				h.sendMu.Unlock()
-				runtime.Gosched()
-			}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		h.sendMu.Lock()
+		defer h.sendMu.Unlock()
+		if h.closed.Load() {
+			return nil
 		}
-		h.errCount.Add(1)
-		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", r.Level), Dropped: 1})
-		return nil
+		select {
+		case h.entries <- entry:
+			return nil
+		case <-timer.C:
+			h.errCount.Add(1)
+			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", r.Level), Dropped: 1})
+			return nil
+		}
 	}
 
 	h.sendMu.Lock()
+	defer h.sendMu.Unlock()
 	if h.closed.Load() {
-		h.sendMu.Unlock()
 		return nil
 	}
 	select {
 	case h.entries <- entry:
-		h.sendMu.Unlock()
 		return nil
 	default:
-		h.sendMu.Unlock()
 		h.errCount.Add(1)
 		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
 		return nil
 	}
 }
 
-func (h *DatabaseHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &mebsuta.AttrsSub[*DatabaseHandler]{Parent: h, Attrs: attrs}
+// WithAttrs implements slog.Handler.
+func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &mebsuta.AttrsSub[*Handler]{Parent: h, Attrs: attrs}
 }
 
-func (h *DatabaseHandler) WithGroup(name string) slog.Handler {
-	return &mebsuta.GroupSub[*DatabaseHandler]{Parent: h, Group: name}
+// WithGroup implements slog.Handler.
+func (h *Handler) WithGroup(name string) slog.Handler {
+	return &mebsuta.GroupSub[*Handler]{Parent: h, Group: name}
 }
 
-func (h *DatabaseHandler) Close() error {
+// Close implements io.Closer.
+func (h *Handler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
@@ -184,7 +178,7 @@ func (h *DatabaseHandler) Close() error {
 	return sqlDB.Close()
 }
 
-func (h *DatabaseHandler) run(batchSize int, batchInterval, retryDelay time.Duration) {
+func (h *Handler) run(batchSize int, batchInterval, retryDelay time.Duration) {
 	defer h.wg.Done()
 
 	ticker := time.NewTicker(batchInterval)
@@ -219,7 +213,7 @@ func (h *DatabaseHandler) run(batchSize int, batchInterval, retryDelay time.Dura
 	}
 }
 
-func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
+func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 	if len(batch) == 0 {
 		return
 	}
@@ -241,7 +235,7 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 	mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
 }
 
-func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
+func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	entry := dbLogEntry{
 		Time:    r.Time,
 		Level:   r.Level.String(),
@@ -265,15 +259,15 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 	return entry
 }
 
-func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
+func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-// SelfBuffered marks DatabaseHandler as having built-in async buffering.
-func (*DatabaseHandler) SelfBuffered() {}
+// SelfBuffered marks Handler as having built-in async buffering.
+func (*Handler) SelfBuffered() {}
 
 var (
-	_ slog.Handler                = (*DatabaseHandler)(nil)
-	_ io.Closer                   = (*DatabaseHandler)(nil)
-	_ mebsuta.SelfBufferedHandler = (*DatabaseHandler)(nil)
+	_ slog.Handler                = (*Handler)(nil)
+	_ io.Closer                   = (*Handler)(nil)
+	_ mebsuta.SelfBufferedHandler = (*Handler)(nil)
 )
