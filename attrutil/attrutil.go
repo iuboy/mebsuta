@@ -13,17 +13,12 @@ import (
 type NaNBehavior int
 
 const (
-	// NaNSafe returns nil for NaN/Inf (JSON-safe).
-	NaNSafe NaNBehavior = iota
-	// NaNString returns a formatted string like "NaN" or "+Inf".
+	NaNSafe  NaNBehavior = iota
 	NaNString
-	// NaNRaw returns the raw float64 value (may produce invalid JSON).
 	NaNRaw
 )
 
 // SlogValueAny converts a slog.Value to a Go any value.
-// KindGroup is recursively expanded into map[string]any.
-// KindLogValuer is resolved before conversion.
 func SlogValueAny(v slog.Value, nan NaNBehavior) any {
 	switch v.Kind() {
 	case slog.KindGroup:
@@ -69,7 +64,6 @@ func SlogValueAny(v slog.Value, nan NaNBehavior) any {
 }
 
 // FlattenAttr flattens a slog.Attr into out map with optional key prefix.
-// Group attrs are recursively expanded using dot-separated keys.
 func FlattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior) {
 	attr.Value = attr.Value.Resolve()
 	key := attr.Key
@@ -89,8 +83,6 @@ func FlattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehav
 }
 
 // FlattenAttrsToMap converts a slice of slog.Attr into a flat map[string]any.
-// Group attrs use dot-separated keys. Time values are formatted with the given
-// function (pass nil to use time.Time.String()).
 func FlattenAttrsToMap(attrs []slog.Attr, nan NaNBehavior) map[string]any {
 	out := make(map[string]any, len(attrs))
 	for _, attr := range attrs {

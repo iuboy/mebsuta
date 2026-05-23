@@ -312,7 +312,6 @@ func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
 }
 
 // MergeAttrs merges existing and newAttrs, prefixing newAttrs keys with the given group.
-// NOTE: Exported for the database sub-package; application code does not need to call this directly.
 func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 	merged := make([]slog.Attr, len(existing), len(existing)+len(newAttrs))
 	copy(merged, existing)
@@ -321,7 +320,6 @@ func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 }
 
 // RecordWithGroupAttrs creates a new slog.Record with group-prefixed attrs from the original record plus extraAttrs.
-// NOTE: Exported for the database sub-package; application code does not need to call this directly.
 func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
 	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
 	r.Attrs(func(attr slog.Attr) bool {
@@ -333,7 +331,6 @@ func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) s
 }
 
 // AttrsSub is a generic sub-handler for WithAttrs/WithGroup chains, eliminating duplicate sub-types across handlers.
-// NOTE: Exported for the database sub-package; application code does not need to use this directly.
 type AttrsSub[H slog.Handler] struct {
 	Parent H
 	Attrs  []slog.Attr
@@ -373,7 +370,6 @@ func (h *AttrsSub[H]) unwrapHandler() slog.Handler {
 }
 
 // GroupSub is a generic sub-handler for WithGroup chains, prefixing all record attrs with the group name before forwarding to the parent.
-// NOTE: Exported for the database sub-package; application code does not need to use this directly.
 type GroupSub[H slog.Handler] struct {
 	Parent H
 	Group  string

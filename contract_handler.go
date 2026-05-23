@@ -7,12 +7,14 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/iuboy/mebsuta/attrutil"
 )
 
 type contractJSONHandler struct {
+	mu    sync.Mutex
 	w     io.Writer
 	attrs []slog.Attr
 	group string
@@ -88,6 +90,9 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	if err != nil {
 		return err
 	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	_, err = fmt.Fprintln(h.w, string(data))
 	return err
 }
