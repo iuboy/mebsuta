@@ -94,3 +94,8 @@ mem.prof
 debug
 debug.test
 __debug_bin
+async
+basic
+chain
+file
+sampling

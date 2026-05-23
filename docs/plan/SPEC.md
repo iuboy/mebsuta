@@ -1,54 +1,48 @@
-# Mebsuta Cross-Language Specification
+# Mebsuta Behavior Specification
 
-This document defines the behavior that both the Go and Rust implementations must preserve. Language-specific APIs may differ, but observable logging behavior should stay aligned unless a section explicitly marks a language exception.
+本文档定义 Mebsuta Go 实现必须保持的行为契约。
 
 ## Scope
 
-Mebsuta is maintained as a dual-language monorepo:
+Mebsuta 是基于 `log/slog` Handler 构建的 Go 结构化日志库。核心差异化：审计级别 (LevelAudit) + 合规输出格式 (GB/T 22239, GM/T 0054)。
 
-- Go implementation: `go/`
-- Rust implementation: `rust/`
-- Repository governance, shared policy, and compatibility rules: repository root
-
-The specification covers handler behavior, output formats, safety properties, and lifecycle semantics. It is the source of truth for cross-language consistency.
+规范覆盖 handler 行为、输出格式、安全属性和生命周期语义。
 
 ## API Contract Design Notes
 
-The machine-readable JSON contract intentionally uses one stable envelope across Go and Rust instead of mirroring language defaults.
+JSON 契约使用一个稳定的 envelope：
 
-Reference points:
-
-- OpenTelemetry Logs Data Model separates timestamp, severity, body/message, and attributes.
-- Go `log/slog` built-in JSON output uses `time`, `level`, and `msg`; Mebsuta uses `message` instead of `msg` for cross-language clarity.
-- Elastic Common Schema treats log level and message as first-class log fields and keeps transport-specific syslog details separate.
-- RFC 5424 syslog transport remains transport-specific; when JSON is embedded in syslog message content, it must use the same Mebsuta JSON record contract.
+- `time`, `level`, `message`, `attributes` 为必选字段
+- `event_type`, `actor`, `success` 为审计可选字段
+- Mebsuta 使用 `message` 而非 `msg`，与 OpenTelemetry Logs Data Model 对齐
+- RFC 5424 syslog transport 保持独立；嵌入 syslog 的 JSON 使用相同契约
 
 ## Contract Evolution
 
 `Required`
 
-Machine-readable contracts are allowed to change only with an explicit major-version release. This includes JSON field names, level ordering, database column names, and syslog JSON payload shape.
+机器可读契约仅在 major version 时可变更。包括 JSON 字段名、级别顺序、数据库列名和 syslog JSON payload 格式。
 
 `Allowed without a major version`
 
-- adding optional top-level fields
-- adding optional attributes
-- adding new `event_type` values
-- adding new handler configuration options with defaults that preserve behavior
+- 添加可选的顶层字段
+- 添加可选的 attributes
+- 添加新的 `event_type` 值
+- 添加新的 handler 配置选项（带保留行为的默认值）
 
 `Requires a major version`
 
-- removing or renaming required JSON fields
-- moving a field between top-level JSON and `attributes`
-- changing level ordering or filtering semantics
-- changing close/flush durability guarantees
-- changing database schema columns used for persisted records
+- 删除或重命名必选 JSON 字段
+- 在顶层 JSON 和 `attributes` 之间移动字段
+- 改变级别顺序或过滤语义
+- 改变 close/flush 持久化保证
+- 改变数据库 schema 列
 
 ## Levels
 
 `Required`
 
-Both implementations must order levels by severity:
+级别按严重性排序：
 
 1. `Trace`
 2. `Debug`
@@ -58,35 +52,35 @@ Both implementations must order levels by severity:
 6. `Audit`
 
 **Pass/fail criteria:**
-- A handler configured at `Warn` must drop `Debug` and `Info` records and accept `Warn`, `Error`, and `Audit` records.
-- `Audit` records must pass through a handler configured at `Error` level (Audit >= Error severity).
+- 配置为 `Warn` 的 handler 必须丢弃 `Debug` 和 `Info` 记录，接受 `Warn`、`Error` 和 `Audit` 记录
+- `Audit` 记录必须通过配置为 `Error` 级别的 handler（Audit >= Error severity）
 
 ## Structured Records
 
 `Required`
 
-Records must include:
+记录必须包含：
 
 - timestamp
 - level
 - message
-- user-provided attributes
+- 用户提供的 attributes
 
 `Recommended`
 
-- caller/module data when supported by the implementation
-- audit metadata when the record is an audit event
+- caller/module 数据
+- 审计元数据
 
 **Pass/fail criteria:**
-- JSON output must contain `time`, `level`, `message`, and `attributes` keys.
-- User-provided attributes must appear under `attributes` with correct values.
-- Attribute keys must remain stable after handler decoration (a record passed through Sampling or Async must retain its original attributes).
+- JSON 输出必须包含 `time`, `level`, `message`, `attributes` 键
+- 用户提供的 attributes 必须出现在 `attributes` 下且值正确
+- 通过 Sampling 或 Async 后 attributes 保持不变
 
 ## JSON Output
 
 `Required`
 
-JSON output must be line-delimited: one JSON object per record.
+JSON 输出必须是 line-delimited：每条记录一个 JSON 对象。
 
 Required keys:
 
@@ -101,17 +95,17 @@ Optional top-level keys:
 - `actor` for audit actor identity
 - `success` for audit success state
 
-Top-level keys are reserved by Mebsuta. User attributes with reserved names are promoted to top-level fields when they have the expected type:
+顶层键由 Mebsuta 保留。具有预留名称的用户 attributes 在类型匹配时提升为顶层字段：
 
 - `event_type`: string
 - `actor`: string
 - `success`: boolean
 
-All other user attributes must remain under `attributes`. Grouped attributes are flattened with dot-separated keys, for example `request.id`.
+其他用户 attributes 必须保留在 `attributes` 下。分组 attributes 使用点分隔键扁平化，例如 `request.id`。
 
 ### JSON Schema
 
-The canonical log record shape is:
+Canonical log record shape:
 
 ```json
 {
@@ -151,181 +145,171 @@ Audit record:
 ```
 
 **Pass/fail criteria:**
-- Output parses as valid JSON (one object per line) for all supported value types including strings, integers, floats, booleans, and nil/null.
-- Non-finite floating-point values (NaN, +Inf, -Inf) must not produce invalid JSON.
-- Audit helpers must set `event_type`; compatibility helpers may default to `system`.
+- 输出解析为有效 JSON（每行一个对象），支持 string, int, float, bool, nil
+- 非有限浮点值（NaN, +Inf, -Inf）不能产生 invalid JSON
+- Audit helpers 必须设置 `event_type`；兼容 helpers 默认为 `system`
 
 ## Text Output
 
 `Required`
 
-Text output must include at least:
+Text 输出必须包含：
 
-- timestamp or equivalent record time
+- timestamp
 - level
 - message
-- attributes in a readable key-value form
+- attributes（可读的 key-value 形式）
 
-`Language-specific`
-
-Text format details (key-value separator, timestamp format, attribute ordering) are not a stable machine contract. Implementations may differ.
+Text 格式细节（分隔符、时间戳格式、attribute 排序）不是稳定的机器契约。
 
 **Pass/fail criteria:**
-- Text output contains the record message string.
-- Text output contains a string representation of the level.
-- Text output contains at least one user-provided attribute.
+- Text 输出包含记录消息字符串
+- Text 输出包含级别字符串表示
+- Text 输出包含至少一个用户提供的 attribute
 
 ## File Handler
 
 `Required`
 
-File handlers must:
+File handler 必须：
 
-- create parent directories when possible
-- append to existing log files
-- write one record at a time without interleaving bytes from concurrent writers
-- use restricted file permissions on Unix-like platforms: `0600`
-- keep `Close` idempotent (second and subsequent calls return nil error)
-- ignore writes after close without panicking
+- 尽可能创建父目录
+- 追加到现有日志文件
+- 每次写入一条记录，并发写入不交错
+- Unix 平台使用受限文件权限：`0600`
+- `Close` 幂等（后续调用返回 nil error）
+- 关闭后忽略写入，不 panic
 
 **Pass/fail criteria:**
-- After `Close()`, a second `Close()` returns nil.
-- After `Close()`, calling `Handle()` returns nil (no panic).
-- Concurrent `Handle()` calls from multiple goroutines/threads must not lose records.
-- `stat()` on the log file must show mode `0600` on Unix.
+- `Close()` 后，第二次 `Close()` 返回 nil
+- `Close()` 后，`Handle()` 返回 nil（不 panic）
+- 多 goroutine 并发 `Handle()` 不丢失记录
+- `stat()` 日志文件在 Unix 上显示 mode `0600`
 
 Rotation:
 
 `Required`
 
-- support size-based rotation
-- create a fresh active log file after rotation
-- keep the fresh active log file at `0600` on Unix-like platforms
-- support maximum backup count cleanup
+- 支持按大小轮转
+- 轮转后创建新的活跃日志文件
+- 新活跃文件保持 `0600` 权限
+- 支持最大备份数清理
 
 `Recommended`
 
-- support time-based rotation when configured
-- support maximum age cleanup
-- support gzip compression when configured
+- 支持按时间轮转
+- 支持最大保留天数
+- 支持 gzip 压缩
 
 **Pass/fail criteria:**
-- After writing beyond `MaxSizeBytes`, a backup file exists and the active file is fresh (size < MaxSizeBytes).
-- Backup count must not exceed `MaxBackups`.
-- Compressed backup must be valid gzip and decompress to the original content.
-- The fresh active file after rotation must have `0600` permissions on Unix.
+- 写入超过 `MaxSizeBytes` 后，存在备份文件且活跃文件是新的（size < MaxSizeBytes）
+- 备份数不超过 `MaxBackups`
+- 压缩备份必须是有效 gzip 并解压为原始内容
+- 轮转后的新文件在 Unix 上有 `0600` 权限
 
 ## Syslog Handler
 
 `Required`
 
-Messages must:
+消息必须：
 
-- derive priority from facility and level
-- avoid invalid UTF-8 output
-- truncate oversized messages without splitting UTF-8 grapheme clusters where practical
+- 从 facility 和 level 推导 priority
+- 避免 invalid UTF-8 输出
+- 截断超长消息时不破坏 UTF-8
 
 `Recommended`
 
-- sanitize hostname and tag values to protocol-safe forms
-- support RFC3164 and RFC5424 formatting where implemented
+- 清理 hostname 和 tag 值为协议安全形式
+- 支持 RFC3164 和 RFC5424 格式化
 
-`Language-specific`
-
-Go currently supports TLS transport and network delivery. Rust currently focuses on formatting and send behavior. Rust TLS transport is a planned feature.
-
-Go uses UTF-8 rune-boundary-safe truncation (`truncateUTF8`); Rust uses grapheme-cluster-safe truncation (`unicode_segmentation`). Both guarantee no partial multi-byte sequences in output. Rust provides stronger guarantees for combining characters and ZWJ sequences.
+Go 支持 TLS 传输和网络发送。
 
 **Pass/fail criteria:**
-- Truncated output must be valid UTF-8 (no partial multi-byte sequences).
-- Priority value must equal `facility * 8 + severity` for the configured facility and record level.
+- 截断输出必须是有效 UTF-8
+- Priority 值必须等于 `facility * 8 + severity`
 
 ## Database Handler
 
 `Required`
 
-Database handlers must:
+Database handler 必须：
 
-- validate table names before using them in SQL (only letters, digits, underscores; must start with letter or underscore)
-- batch writes when configured
-- flush queued records on close
-- make `Close` idempotent
-- avoid panics during concurrent close/write races
-- surface internal failures through the configured error handler
+- 使用前验证表名（仅允许字母、数字、下划线，必须以字母或下划线开头）
+- 配置时批量写入
+- 关闭时刷新队列中的记录
+- `Close` 幂等
+- 并发 close/write 时避免 panic
+- 通过配置的 error handler 上报内部失败
 
 `Recommended`
 
-- include time, level, message, and structured fields in output
-- include audit metadata where supported
+- 输出包含 time, level, message, 结构化字段
+- 支持审计元数据
 
 **Pass/fail criteria:**
-- Table name containing special characters (spaces, semicolons, dashes) must be rejected by `Validate()`.
-- After `Close()`, all records submitted before `Close()` must be present in the database.
-- After `Close()`, a second `Close()` must return nil.
+- 包含特殊字符的表名必须被 `Validate()` 拒绝
+- `Close()` 后，所有在 `Close()` 前提交的记录必须存在于数据库
+- `Close()` 后，第二次 `Close()` 返回 nil
 
 ## Sampling
 
 `Required`
 
-Sampling must:
+Sampling 必须：
 
-- pass through an initial number of records in each window
-- sample later records according to the configured thereafter value
-- reset counters when the sampling window expires
-- always preserve error-level and audit-level records unless explicitly documented otherwise
+- 每个窗口中通过初始数量的记录
+- 按配置的 thereafter 值采样后续记录
+- 窗口过期时重置计数器
+- 始终保留 error-level 和 audit-level 记录
 
 **Pass/fail criteria:**
-- First `Initial` records in a window must all be delivered.
-- Records beyond `Initial` must be sampled at approximately `1/Thereafter` rate.
-- Error and Audit records must not be dropped regardless of sampling state.
+- 窗口中前 `Initial` 条记录必须全部送达
+- 超过 `Initial` 的记录以约 `1/Thereafter` 的速率采样
+- Error 和 Audit 记录无论采样状态都不被丢弃
 
 ## Async Handler
 
 `Required`
 
-Async handlers must:
+Async handler 必须：
 
-- enqueue records into a bounded buffer
-- drop rather than block indefinitely when the buffer is full
-- keep `Close` idempotent
-- flush queued records on close
-- ignore writes after close without panicking
+- 将记录入队到有界缓冲区
+- 缓冲区满时丢弃而非无限阻塞
+- `Close` 幂等
+- 关闭时刷新队列中的记录
+- 关闭后忽略写入，不 panic
 
 `Recommended`
 
-- expose dropped-count visibility where supported
-
-`Language-specific`
-
-Flush may be best-effort unless the API explicitly promises persistence. Close is the persistence boundary for queued records.
+- 提供丢弃计数可见性
 
 **Pass/fail criteria:**
-- Records written before `Close()` must be delivered to the inner handler.
-- When the buffer is full, additional writes must not block (they are dropped).
-- After `Close()`, calling `Handle()` returns nil (no panic).
-- After `Close()`, a second `Close()` returns nil.
+- `Close()` 前写入的记录必须送达 inner handler
+- 缓冲区满时，额外写入不阻塞（被丢弃）
+- `Close()` 后，`Handle()` 返回 nil（不 panic）
+- `Close()` 后，第二次 `Close()` 返回 nil
 
 ## Multi Handler
 
 `Required`
 
-Multi-output handlers must:
+Multi-output handler 必须：
 
-- fan out a record to all enabled child handlers
-- isolate child handler failures where practical
-- avoid mutating a shared record in a way that causes data races
-- close all closeable children and aggregate errors where supported
+- 将记录扇出到所有启用的子 handler
+- 隔离子 handler 失败
+- 不以导致数据竞争的方式修改共享记录
+- 关闭所有可关闭的子 handler 并聚合错误
 
 **Pass/fail criteria:**
-- Each child handler receives the same record content.
-- A panic in one child handler must not prevent other children from receiving the record.
-- Concurrent writes through a multi-handler must not cause data races (verified by race detector).
+- 每个子 handler 接收相同的记录内容
+- 一个子 handler 的 panic 不阻止其他子 handler 接收记录
+- 通过 multi-handler 的并发写入不导致数据竞争（race detector 验证）
 
 ## Handler Chain Composition
 
 `Required`
 
-When multiple handler decorators are combined, their ordering determines correctness of buffering, sampling, and delivery guarantees.
+当多个 handler 装饰器组合时，它们的顺序决定缓冲、采样和送达保证的正确性。
 
 ### Recommended Chain Order
 
@@ -341,97 +325,95 @@ Syslog/Database destination (no Async wrapping):
 safeMulti → Metrics → Sampling → Syslog|Database
 ```
 
-Each decorator wraps the next as its inner handler. Records flow outward-in through `Handle()`; `Close()` propagates inward-out via `CloseAll`.
+每个装饰器将下一个作为 inner handler 包装。记录通过 `Handle()` 从外到内流动；`Close()` 通过 `CloseAll` 从内到外传播。
 
 ### Prohibited Combinations
 
 `Required`
 
-The following decorator combinations are prohibited and must be documented with a runtime warning or build-time check where practical:
+以下装饰器组合被禁止，必须在运行时警告或构建时检查：
 
-1. **Async wrapping Syslog (`Async → Syslog`)**: Syslog handlers maintain their own internal network buffer and delivery queue. Wrapping Syslog in Async creates double-buffering. On `Close()`, Async drains its channel into Syslog, but if Syslog's own buffer is also flushing, records can be lost in the gap between Async channel drain and Syslog network flush. The Async handler has no visibility into Syslog's internal delivery state.
+1. **Async wrapping Syslog (`Async → Syslog`)**: Syslog handler 维护自己的内部网络缓冲和发送队列。用 Async 包装 Syslog 会创建双重缓冲。`Close()` 时，Async 排干 channel 到 Syslog，但如果 Syslog 自己的缓冲也在刷新，记录可能在 Async channel 排干和 Syslog 网络刷新之间丢失。
 
-2. **Async wrapping Database (`Async → Database`)**: Database handlers maintain their own batch buffer and flush on close. Wrapping Database in Async creates double-buffering with the same loss scenario: Async drains its channel into Database's `Handle()`, but Database may batch and not persist until its own `Close()`. If the process exits between Async drain and Database flush, queued records are lost.
+2. **Async wrapping Database (`Async → Database`)**: Database handler 维护自己的批量缓冲并在关闭时刷新。用 Async 包装 Database 会创建双重缓冲，有相同的丢失场景。
 
-Both cases share the same root cause: the inner handler already provides asynchronous buffering, so an outer Async layer adds latency without adding reliability.
+两种情况共享同一根本原因：inner handler 已提供异步缓冲，外层 Async 增加延迟而不增加可靠性。
 
 ### Audit Level Semantics in Chains
 
 `Required`
 
-Audit-level records (`LevelAudit = Error + 4`) receive special treatment at each decorator:
+Audit-level 记录 (`LevelAudit = Error + 4`) 在每个装饰器中受到特殊处理：
 
 | Decorator | Audit Behavior | Mechanism |
 |-----------|---------------|-----------|
-| Sampling | Always recorded, never sampled | `r.Level >= slog.LevelError` bypasses counter check |
-| Async | Blocking send with 5s timeout, never dropped | `ar.Level >= slog.LevelError` uses blocking channel send; non-audit records use non-blocking send and drop on buffer full |
-| Metrics | Recorded like any other record | No level-based special case |
-| safeMulti | Fanned out to all children like any other record | No level-based special case |
+| Sampling | 始终记录，从不采样 | `r.Level >= slog.LevelError` 绕过计数器检查 |
+| Async | 阻塞发送带 5s 超时，永不丢弃 | `ar.Level >= slog.LevelError` 使用阻塞 channel send |
+| Metrics | 像其他记录一样记录 | 无级别特殊处理 |
+| safeMulti | 扇出到所有子 handler | 无级别特殊处理 |
 
-Audit records do **not** bypass the Async buffer entirely — they are enqueued into the same channel but use a blocking send strategy rather than the non-blocking drop strategy used for lower severity levels.
+Audit 记录**不**完全绕过 Async 缓冲 — 它们进入同一个 channel 但使用阻塞发送策略。
 
 ### Close() Propagation
 
 `Required`
 
-`CloseAll` recursively unwraps decorator chains via the `handlerUnwrapper` interface and calls `Close()` on each layer that implements `io.Closer`, from outermost to innermost:
+`CloseAll` 通过 `handlerUnwrapper` 接口递归解包装饰器链，对每层实现 `io.Closer` 的调用 `Close()`，从最外层到最内层：
 
-1. **Async**: Sets closed flag, cancels background context, closes the channel, waits for background goroutine to drain remaining records, then propagates to inner handler.
-2. **Sampling**: Stops the reset ticker, signals the background reset goroutine to exit, waits for goroutine completion. Does not propagate to inner handler (no `Close()` on inner).
-3. **Metrics**: No `Close()` implementation. Transparent to close propagation.
-4. **safeMulti**: Calls `CloseAll()` on each child handler individually, aggregates errors.
+1. **Async**: 设置 closed 标志，取消 background context，关闭 channel，等待后台 goroutine 排干剩余记录，然后传播到 inner handler。
+2. **Sampling**: 停止 reset ticker，通知后台 reset goroutine 退出，等待 goroutine 完成。
+3. **Metrics**: 无 `Close()` 实现。对 close 传播透明。
+4. **safeMulti**: 对每个子 handler 调用 `CloseAll()`，聚合错误。
 
-`CloseAll` visits each decorator's own `Close()` before recursing into the unwrapped inner handler. This ensures outer layers (Async drain) complete before inner layers (File/Database flush) are closed.
+`CloseAll` 在递归到 unwrapped inner handler 前访问每个装饰器自己的 `Close()`。这确保外层（Async drain）在内层（File/Database flush）关闭前完成。
 
 **Pass/fail criteria:**
-- Records written before `CloseAll()` must be delivered to the final destination handler.
-- `Async → Syslog` and `Async → Database` combinations must produce a warning or be rejected.
-- Audit-level records must not be dropped by Sampling regardless of sampling state.
-- Audit-level records sent through Async must be delivered (blocking send), not silently dropped.
-- `CloseAll()` on a chain must return the first error encountered without skipping remaining closes.
-- Each decorator's `Close()` must be idempotent (second call returns nil).
+- `CloseAll()` 前写入的记录必须送达最终目标 handler
+- `Async → Syslog` 和 `Async → Database` 组合必须产生警告或被拒绝
+- Audit-level 记录无论采样状态都不被 Sampling 丢弃
+- 通过 Async 发送的 Audit-level 记录必须被送达（阻塞发送），不静默丢弃
+- 链上的 `CloseAll()` 返回遇到的第一个错误但不跳过剩余关闭
+- 每个装饰器的 `Close()` 必须幂等（第二次调用返回 nil）
 
 ## Error Handling
 
 `Required`
 
-- A nil or disabled error handler must not cause a panic.
+- nil 或禁用的 error handler 不能导致 panic
 
 `Recommended`
 
-- Internal handler errors should be reported through a configurable error handler.
-- Handler write failures may be returned to the caller when the language API supports that behavior.
-- Silent drops must be documented and counted where practical.
+- 内部 handler 错误应通过可配置的 error handler 报告
+- Handler 写入失败可在 API 支持时返回给调用方
+- 静默丢弃必须有文档记录并尽可能计数
 
 **Pass/fail criteria:**
-- Setting error handler to nil must not panic on subsequent handler errors.
+- 设置 error handler 为 nil 后续 handler 错误不 panic
 
 ## Security
 
 `Required`
 
-Both implementations must:
-
-- avoid logging raw database passwords in sanitized config output
-- validate database table identifiers
-- use restricted log file permissions on Unix-like platforms (`0600`)
-- avoid invalid JSON output for unusual values
+- 避免 sanitized config 输出中记录原始数据库密码
+- 验证数据库表标识符
+- Unix 平台使用受限日志文件权限 (`0600`)
+- 避免异常值产生 invalid JSON
 
 `Recommended`
 
-- TLS certificate verification should be enabled by default when TLS is supported. Any skip-verify option must be explicit in configuration.
+- TLS 证书验证默认启用。任何 skip-verify 选项必须在配置中显式声明
 
 **Pass/fail criteria:**
-- `Sanitize()` or equivalent config output must not contain raw DSN passwords.
-- Table name validation must reject strings containing characters outside `[a-zA-Z0-9_]`.
-- Log files must have `0600` mode on Unix.
-- JSON output containing NaN, +Inf, -Inf must produce valid JSON.
+- `Sanitize()` 或等效 config 输出不能包含原始 DSN 密码
+- 表名验证必须拒绝包含 `[a-zA-Z0-9_]` 外字符的字符串
+- 日志文件在 Unix 上必须有 `0600` mode
+- 包含 NaN, +Inf, -Inf 的 JSON 输出必须产生有效 JSON
 
 ## Compatibility
 
-The shared behavior in this document is a compatibility contract. Changing it requires:
+本文档中的行为是兼容性契约。修改需要：
 
-- a changelog entry
-- a versioning assessment
-- test updates in both languages when applicable
-- documentation updates in language README files if user-facing behavior changes
+- changelog 条目
+- 版本评估
+- 测试更新
+- 用户可见行为变更时的文档更新

@@ -7,26 +7,35 @@
 
 ## 维护规则
 
-本仓库包含 Go 和 Rust 两个实现。新条目应按影响范围归类：
+新条目应按影响范围归类：
 
-- `Go`: 仅影响 `go/` 模块
-- `Rust`: 仅影响 `rust/` workspace
-- `Repository`: 影响仓库治理、CI、文档、发布策略或共享规范
+- `Added`: 新功能
+- `Changed`: 行为变更
+- `Fixed`: Bug 修复
+- `Removed`: 移除的功能
 
-发布标签遵循 `VERSIONING.md`：
+发布标签遵循 `VERSIONING.md`：`vX.Y.Z`
 
-- Go: `go/vX.Y.Z`
-- Rust: `rust/vX.Y.Z`
-- 整仓发布: `vX.Y.Z`
+## [Unreleased] — v0.4.0-beta.1
 
-## [Unreleased] — go/v0.4.0-beta.1 / rust/v0.1.0-beta.1
+### Added
 
-### Repository
+- API 契约优化：Config exported 字段 + `Validate()` 返回规范化副本
+- `New()` 零配置默认 stdout JSON 输出，`Init()` 同步设置 `slog.SetDefault()`
+- `UseFile`/`UseSyslog`/`UseAsync` 等 `Option` 替代旧的 `WithHandler` 模式
+- Handler 存储 `slog.Leveler`（支持 `*slog.LevelVar` 动态级别调整）
+- `CloseAll` 使用 visited map 防止共享 handler 双重关闭
+- `HandlerError` 结构化错误（Dropped/Retryable/Records/Time 字段）
 
-- 明确双语言 monorepo 管理方式，新增共享行为规范 `SPEC.md` 和测试矩阵 `TESTING.md`
-- 更新 CI/release 策略，准备按 Go/Rust 路径和 tag 独立验证
+### Changed
 
-### Go
+- 项目从双语言 monorepo 拆分为独立 Go 仓库（Rust 版本移至 mebsuta-rust）
+- Go 代码从 `go/` 子目录提升到项目根目录
+- Module path 从 `github.com/iuboy/mebsuta/go` 改为 `github.com/iuboy/mebsuta`
+- 删除 `config/` 子包，Config 类型提升到主包
+- 删除 `LevelHandler` struct、自定义 `Handler` interface、`FullHandler`/`Flusher` 接口
+
+### Fixed
 
 - 限制文件日志权限为 Unix `0600`，并补充权限测试
 - 移除 Syslog handler 中未真正约束重连行为的跨进程文件锁依赖
@@ -34,17 +43,6 @@
 - 修复 Syslog connect/reconnect 先建新连接后关旧连接，避免 dial 失败时无连接可用
 - 增强 Database flush 重试耗尽后的错误报告，明确记录丢失条数
 - 加固表名验证添加 64 字符长度限制
-
-### Rust
-
-- 修复 Async handler 对 Error/Audit 级别记录未使用阻塞发送，违反 SPEC 合规要求
-- 修复 Database handler 对 Error/Audit 级别记录未使用阻塞发送
-- 修复 `compress_file` 临时文件未设置 `0600` 权限
-- 修复 `Sampling::clone_box` 重置计数器，改为共享计数器匹配 Go 行为
-- 添加 `Async` 包装 `Syslog`/`Database` 禁止组合的运行时检测
-- 对齐 `Syslog` Audit severity 为 2 (CRITICAL)，与 Go 实现一致
-- 优化 Async blocking send 使用 `sleep` 替代 `yield_now` 降低 CPU 占用
-- 移除未使用的 `SelfBuffered` marker trait，运行时检测改用 `Any` 类型检查
 
 ## [0.3.3] - 2026-04-16
 

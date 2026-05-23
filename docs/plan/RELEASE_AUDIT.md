@@ -37,9 +37,11 @@
 
 **分支**: dev -> main (fast-forward merge)
 **范围**: 30 commits, 103 files changed, +18,645/-3,812 lines
-**产品**: 双语言日志库 (Rust + Go)
+**产品**: Go 结构化日志库 (Rust 版本已移至独立仓库 mebsuta-rust)
 **审计类型**: 发布前全面代码审计
 **审计日期**: 2026-05-22
+
+> **Note**: 本文档为历史审计记录，审计时项目为双语言 monorepo。Rust 相关发现已迁移至 mebsuta-rust 仓库跟踪。
 
 ---
 

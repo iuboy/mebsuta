@@ -2,48 +2,40 @@
 
 v0.2 从 zap 封装全面转向 `log/slog` Handler 插件架构。
 
-## Rust 版本策略
+## v0.3.x → 项目独立
 
-Rust 实现（`rust/`）从 v0.1.0 起步，尚无迁移历史。API 遵循 `SPEC.md` 定义的跨语言行为契约，但使用 Rust 惯用模式（serde-deserializable 配置、`Result` 返回值、trait-based Handler）而非镜像 Go 的 functional options 模式。
-
-标签格式：`rust/vX.Y.Z`（如 `rust/v0.1.0`）。
-
-## v0.3.x → Monorepo Split
-
-仓库从单语言 Go 项目拆分为双语言 monorepo（`go/` + `rust/`）。
+项目从双语言 monorepo 拆分为独立 Go 仓库。Rust 版本移至独立仓库 `mebsuta-rust`。
 
 ### Import Path 变更
 
 ```go
-// before
-import "github.com/iuboy/mebsuta"
-import "github.com/iuboy/mebsuta/config"
-import "github.com/iuboy/mebsuta/metrics"
-
-// after
+// before (monorepo)
 import "github.com/iuboy/mebsuta/go"
 import "github.com/iuboy/mebsuta/go/config"
 import "github.com/iuboy/mebsuta/go/metrics"
+
+// after (独立仓库)
+import "github.com/iuboy/mebsuta"
+import "github.com/iuboy/mebsuta/metrics"
 ```
 
 ### Install 命令变更
 
 ```bash
-# before
-go get github.com/iuboy/mebsuta@v0.3.4
-
-# after
+# before (monorepo)
 go get github.com/iuboy/mebsuta/go@go/v0.4.0
+
+# after (独立仓库)
+go get github.com/iuboy/mebsuta@v0.4.0
 ```
 
 ### Tag Scheme 变更
 
-| Period | Go Tag Format | Example |
-|--------|---------------|---------|
+| Period | Tag Format | Example |
+|--------|------------|---------|
 | Before monorepo split | `vX.Y.Z` (root) | `v0.3.4` |
-| After monorepo split | `go/vX.Y.Z` | `go/v0.4.0` |
-
-Root tags (`v0.1.0` through `v0.3.4`) remain available as legacy Go-only releases.
+| During monorepo | `go/vX.Y.Z` | `go/v0.4.0` |
+| After independent repo | `vX.Y.Z` | `v0.4.0` |
 
 ## 核心变化
 
@@ -63,9 +55,9 @@ mebsuta.Init(cfg)
 
 // v0.2
 logger, err := mebsuta.New(
-    mebsuta.WithHandler(mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)),
+    mebsuta.UseFile(mebsuta.FileConfig{Path: "/var/log/app.log"}),
 )
-slog.SetDefault(logger)
+mebsuta.Init()
 defer mebsuta.CloseAll(logger.Handler())
 ```
 
@@ -103,7 +95,7 @@ mebsuta.WithSampling(100, 10, time.Minute)
 
 // v0.2 — 装饰器
 mebsuta.WithSampling(inner, mebsuta.SamplingConfig{
-    Enabled: true, Initial: 100, Thereafter: 10, Window: time.Minute,
+    Initial: 100, Thereafter: 10, Window: time.Minute,
 })
 ```
 
@@ -116,7 +108,7 @@ mebsuta.WithWriter(aw, config.InfoLevel)
 
 // v0.2 — 装饰器
 h := mebsuta.WithAsync(inner, mebsuta.AsyncConfig{BufferSize: 1024})
-defer h.(*mebsuta.AsyncHandler).Close()
+defer mebsuta.CloseAll(h)
 ```
 
 ## 已移除
@@ -145,6 +137,7 @@ defer h.(*mebsuta.AsyncHandler).Close()
 | `internal/adapter/` | 被 slog Handler 替代 |
 | `errors/` | 使用标准 `fmt.Errorf` |
 | `examples/categraf/` | 配置方式已变更 |
+| `config/` | Config 类型提升到主包 |
 
 ## 已移除的依赖
 
@@ -157,17 +150,18 @@ defer h.(*mebsuta.AsyncHandler).Close()
 
 ```
 mebsuta/
-├── mebsuta.go              # New(), CloseAll, LogEntry, 包级日志函数
-├── handler.go              # buildHandler, safeMultiHandler, CloseAll
-├── types.go                # EncodingType (JSON, Console)
+├── mebsuta.go              # New(), Init(), Option
+├── handler.go              # CloseAll, handlerUnwrapper
+├── config.go               # FileConfig, StdoutConfig, SyslogConfig, AsyncConfig, SamplingConfig
+├── types.go                # EncodingType, EventType, LevelAudit, HandlerError
 ├── stdout_handler.go       # StdoutHandler
 ├── file_handler.go         # FileHandler (自研轮转)
 ├── syslog_handler.go       # SyslogHandler
-├── database_handler.go     # DatabaseHandler
-├── sampling_handler.go     # SamplingHandler 装饰器
-├── async_handler.go        # AsyncHandler 装饰器, AsyncConfig
-├── metrics_handler.go      # MetricsHandler 装饰器, HandlerMetrics 接口
-├── context_extractor.go    # ContextExtractor 装饰器
-├── config/                 # FileConfig, SyslogConfig, DatabaseConfig, SamplingConfig
-└── metrics/                # Prometheus 指标 (*Metrics 实现 HandlerMetrics)
+├── sampling_handler.go     # WithSampling 装饰器
+├── async_handler.go        # WithAsync 装饰器, AsyncConfig
+├── metrics_handler.go      # WithMetrics 装饰器, HandlerMetrics 接口
+├── context_extractor.go    # WithContextExtractor 装饰器
+├── contract_handler.go     # 合规 JSON encoder (GB/T 22239, GM/T 0054)
+├── database/               # DatabaseHandler (gorm 隔离)
+└── metrics/                # Prometheus 指标
 ```
