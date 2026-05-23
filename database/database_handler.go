@@ -250,7 +250,7 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 
 	fields := make(map[string]any)
 	r.Attrs(func(attr slog.Attr) bool {
-		fields[attr.Key] = attrutil.SlogValueAny(attr.Value, attrutil.NaNString)
+		attrutil.FlattenAttr(fields, "", attr, attrutil.NaNString)
 		return true
 	})
 	if len(fields) > 0 {

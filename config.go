@@ -3,10 +3,7 @@ package mebsuta
 import (
 	"fmt"
 	"log/slog"
-	"net/url"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 )
 
@@ -141,32 +138,4 @@ func (c SamplingConfig) Validate() (SamplingConfig, error) {
 		c.Window = time.Second
 	}
 	return c, nil
-}
-
-// --- Sanitization ---
-
-var (
-	reMySQLDSN   = regexp.MustCompile(`^([^:]+):([^@]+)@`)
-	reURIDSN     = regexp.MustCompile(`://([^:]+):([^@]+)@`)
-	rePasswordKV = regexp.MustCompile(`password=[^&]+`)
-)
-
-// MaskDSNPassword hides passwords in database connection strings.
-func MaskDSNPassword(dsn string) string {
-	if reMySQLDSN.MatchString(dsn) {
-		return reMySQLDSN.ReplaceAllString(dsn, "$1:****@")
-	}
-	if reURIDSN.MatchString(dsn) {
-		return reURIDSN.ReplaceAllString(dsn, "://$1:****@")
-	}
-	if rePasswordKV.MatchString(dsn) {
-		return rePasswordKV.ReplaceAllString(dsn, "password=****")
-	}
-	if u, err := url.Parse(dsn); err == nil {
-		if u.User != nil {
-			user := u.User.Username()
-			return strings.Replace(dsn, u.User.String()+"@", user+":****@", 1)
-		}
-	}
-	return "(redacted)"
 }

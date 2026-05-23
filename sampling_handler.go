@@ -9,16 +9,20 @@ import (
 	"time"
 )
 
+type samplingState struct {
+	count   atomic.Int64
+	ticker  *time.Ticker
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
+	stopped atomic.Bool
+}
+
 // SamplingHandler is a slog.Handler decorator that samples log records within a time window.
 // Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
 type SamplingHandler struct {
 	inner        slog.Handler
 	cfg          SamplingConfig
-	count        *atomic.Int64
-	ticker       *time.Ticker
-	stopCh       chan struct{}
-	wg           *sync.WaitGroup
-	stopped      *atomic.Bool
+	state        *samplingState
 	errorHandler atomic.Pointer[ErrorHandler]
 }
 
@@ -29,18 +33,18 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	}
 	cfg, _ = cfg.Validate()
 
-	h := &SamplingHandler{
-		inner:   inner,
-		cfg:     cfg,
-		count:   &atomic.Int64{},
-		ticker:  time.NewTicker(cfg.Window),
-		stopCh:  make(chan struct{}),
-		wg:      &sync.WaitGroup{},
-		stopped: &atomic.Bool{},
+	s := &samplingState{
+		ticker: time.NewTicker(cfg.Window),
+		stopCh: make(chan struct{}),
 	}
-	h.wg.Add(1)
-	go h.resetLoop()
-	return h
+	s.wg.Add(1)
+	go s.resetLoop()
+
+	return &SamplingHandler{
+		inner: inner,
+		cfg:   cfg,
+		state: s,
+	}
 }
 
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -55,7 +59,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 		return h.inner.Handle(ctx, r)
 	}
 
-	count := h.count.Add(1)
+	count := h.state.count.Add(1)
 	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
 	}
@@ -67,35 +71,27 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
-		inner:   h.inner.WithAttrs(attrs),
-		cfg:     h.cfg,
-		count:   h.count,
-		ticker:  h.ticker,
-		stopCh:  h.stopCh,
-		wg:      h.wg,
-		stopped: h.stopped,
+		inner: h.inner.WithAttrs(attrs),
+		cfg:   h.cfg,
+		state: h.state,
 	}
 }
 
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
-		inner:   h.inner.WithGroup(name),
-		cfg:     h.cfg,
-		count:   h.count,
-		ticker:  h.ticker,
-		stopCh:  h.stopCh,
-		wg:      h.wg,
-		stopped: h.stopped,
+		inner: h.inner.WithGroup(name),
+		cfg:   h.cfg,
+		state: h.state,
 	}
 }
 
 func (h *SamplingHandler) Close() error {
-	if !h.stopped.CompareAndSwap(false, true) {
+	if !h.state.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
-	h.ticker.Stop()
-	close(h.stopCh)
-	h.wg.Wait()
+	h.state.ticker.Stop()
+	close(h.state.stopCh)
+	h.state.wg.Wait()
 	return nil
 }
 
@@ -107,13 +103,13 @@ func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-func (h *SamplingHandler) resetLoop() {
-	defer h.wg.Done()
+func (s *samplingState) resetLoop() {
+	defer s.wg.Done()
 	for {
 		select {
-		case <-h.ticker.C:
-			h.count.Store(0)
-		case <-h.stopCh:
+		case <-s.ticker.C:
+			s.count.Store(0)
+		case <-s.stopCh:
 			return
 		}
 	}
