@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 )
 
 const defaultAsyncBufferSize = 256
@@ -125,7 +124,7 @@ func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 			case h.ch <- ar:
 				return nil
 			default:
-			 runtime.Gosched()
+				runtime.Gosched()
 			}
 			time.Sleep(10 * time.Millisecond)
 		}

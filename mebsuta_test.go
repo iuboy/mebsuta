@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-
 // =============================================================================
 // StdoutHandler 测试
 // =============================================================================
@@ -344,7 +343,6 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 	// 没有断言具体输出，只要不 panic 就行
 }
 
-
 func TestAsyncHandler_GroupPrefix(t *testing.T) {
 	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
 	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
@@ -358,7 +356,6 @@ func TestAsyncHandler_GroupPrefix(t *testing.T) {
 		t.Errorf("attr key = %q, want %q", attrsH.attrs[0].Key, "svc.id")
 	}
 }
-
 
 func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
 	inner := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
@@ -517,7 +514,6 @@ func TestSafeMulti_ConcurrentNoRace(t *testing.T) {
 	}
 	wg.Wait()
 }
-
 
 // =============================================================================
 // MetricsHandler 测试

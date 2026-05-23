@@ -171,7 +171,6 @@ func TestNew_UseFileInvalidConfig(t *testing.T) {
 	require.Contains(t, err.Error(), "file path is required")
 }
 
-
 func TestNew_MultipleUseFile_CreatesFanout(t *testing.T) {
 	dir := t.TempDir()
 	path1 := dir + "/app1.log"

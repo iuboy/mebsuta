@@ -355,4 +355,3 @@ func TestWithSampling_AuditAlwaysRecorded(t *testing.T) {
 		t.Errorf("all audit records should bypass sampling, got %d/10", inner.Count())
 	}
 }
-

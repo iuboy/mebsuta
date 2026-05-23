@@ -16,8 +16,12 @@ type closeCountHandler struct {
 	inner      slog.Handler
 }
 
-func (h *closeCountHandler) Enabled(ctx context.Context, lv slog.Level) bool { return h.inner.Enabled(ctx, lv) }
-func (h *closeCountHandler) Handle(ctx context.Context, r slog.Record) error { return h.inner.Handle(ctx, r) }
+func (h *closeCountHandler) Enabled(ctx context.Context, lv slog.Level) bool {
+	return h.inner.Enabled(ctx, lv)
+}
+func (h *closeCountHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.inner.Handle(ctx, r)
+}
 func (h *closeCountHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &closeCountHandler{inner: h.inner.WithAttrs(attrs)}
 }
@@ -51,7 +55,7 @@ type selfRefHandler struct {
 
 func (h *selfRefHandler) Enabled(context.Context, slog.Level) bool  { return false }
 func (h *selfRefHandler) Handle(context.Context, slog.Record) error { return nil }
-func (h *selfRefHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *selfRefHandler) WithAttrs(attrs []slog.Attr) slog.Handler  { return h }
 func (h *selfRefHandler) WithGroup(name string) slog.Handler        { return h }
 func (h *selfRefHandler) Close() error {
 	h.closed.Add(1)
@@ -75,7 +79,7 @@ type errorOnCloseHandler struct {
 
 func (h *errorOnCloseHandler) Enabled(context.Context, slog.Level) bool  { return false }
 func (h *errorOnCloseHandler) Handle(context.Context, slog.Record) error { return nil }
-func (h *errorOnCloseHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *errorOnCloseHandler) WithAttrs(attrs []slog.Attr) slog.Handler  { return h }
 func (h *errorOnCloseHandler) WithGroup(name string) slog.Handler        { return h }
 func (h *errorOnCloseHandler) Close() error                              { return h.err }
 
@@ -96,7 +100,7 @@ func TestCloseAll_ErrorAggregation(t *testing.T) {
 
 // unwrapSpy tracks whether unwrapHandler was called.
 type unwrapSpy struct {
-	inner    slog.Handler
+	inner     slog.Handler
 	unwrapped atomic.Int32
 }
 

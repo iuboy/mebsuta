@@ -28,11 +28,11 @@ func newSQLiteHandler(t *testing.T) (*DatabaseHandler, *gorm.DB) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelInfo,
-		db:           gdb,
-		table:        "logs", // must match dbLogEntry.TableName()
-		entries:      make(chan dbLogEntry, 1000),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs", // must match dbLogEntry.TableName()
+		entries: make(chan dbLogEntry, 1000),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -135,11 +135,11 @@ func TestDatabaseHandler_RecordsDeliveredBeforeClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelInfo,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1000),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1000),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -186,11 +186,11 @@ func TestDatabaseHandler_BatchWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelInfo,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1000),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1000),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)

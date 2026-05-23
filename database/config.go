@@ -17,16 +17,16 @@ func (e *ConfigError) Error() string {
 
 // DatabaseConfig holds configuration for database log output.
 type DatabaseConfig struct {
-	Driver         string        // Required: "mysql" or "postgres".
-	DSN            string        // Required: database connection string.
-	Table          string        // Required: log table name.
-	Level          slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	BatchSize      int           // Records per batch. 0 → 100.
-	BatchInterval  time.Duration // Flush interval. 0 → 5s.
+	Driver          string        // Required: "mysql" or "postgres".
+	DSN             string        // Required: database connection string.
+	Table           string        // Required: log table name.
+	Level           slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
+	BatchSize       int           // Records per batch. 0 → 100.
+	BatchInterval   time.Duration // Flush interval. 0 → 5s.
 	MaxConnLifetime time.Duration // Max connection lifetime. 0 = no limit.
-	MaxOpenConns   int           // Max open connections. 0 → 10.
-	MaxIdleConns   int           // Max idle connections. 0 → 5.
-	RetryDelay     time.Duration // Delay between retries. 0 → 500ms.
+	MaxOpenConns    int           // Max open connections. 0 → 10.
+	MaxIdleConns    int           // Max idle connections. 0 → 5.
+	RetryDelay      time.Duration // Delay between retries. 0 → 500ms.
 }
 
 // Validate checks required fields and returns a normalized copy with defaults applied.

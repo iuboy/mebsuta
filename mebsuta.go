@@ -21,8 +21,6 @@ import (
 	"log/slog"
 	"os"
 	"time"
-
-	
 )
 
 // New creates a *slog.Logger from the given HandlerOption list.

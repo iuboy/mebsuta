@@ -10,9 +10,9 @@ import (
 
 // StdoutHandler writes log records to stdout.
 type StdoutHandler struct {
-	cfg    StdoutConfig
-	inner  slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
-	mu     *sync.Mutex
+	cfg   StdoutConfig
+	inner slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
+	mu    *sync.Mutex
 }
 
 // NewStdoutHandler creates a StdoutHandler that writes to stdout using cfg.

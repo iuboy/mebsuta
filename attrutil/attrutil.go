@@ -13,7 +13,7 @@ import (
 type NaNBehavior int
 
 const (
-	NaNSafe  NaNBehavior = iota
+	NaNSafe NaNBehavior = iota
 	NaNString
 	NaNRaw
 )

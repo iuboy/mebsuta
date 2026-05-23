@@ -40,8 +40,8 @@ var _ [LevelAudit - slog.LevelError]struct{}
 
 // HandlerError is a structured error reported by handlers through ErrorHandler.
 type HandlerError struct {
-	Component string    // "file", "syslog", "database", "async", "multi"
-	Operation string    // "write", "rotate", "connect", "batch", "compress", "cleanup", "send"
+	Component string // "file", "syslog", "database", "async", "multi"
+	Operation string // "write", "rotate", "connect", "batch", "compress", "cleanup", "send"
 	Err       error
 	Dropped   int64     // records dropped in this operation (async buffer full)
 	Retryable bool      // caller can safely retry

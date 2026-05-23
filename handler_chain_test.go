@@ -354,11 +354,11 @@ func TestChain_AuditBypassesAsyncBuffer(t *testing.T) {
 // used to test the generic rejection logic in WithAsync.
 type mockSelfBuffered struct{}
 
-func (h *mockSelfBuffered) Enabled(_ context.Context, _ slog.Level) bool  { return true }
-func (*mockSelfBuffered) SelfBuffered()                                     {}
-func (*mockSelfBuffered) Handle(_ context.Context, _ slog.Record) error   { return nil }
-func (h *mockSelfBuffered) WithAttrs(attrs []slog.Attr) slog.Handler      { return h }
-func (h *mockSelfBuffered) WithGroup(name string) slog.Handler            { return h }
+func (h *mockSelfBuffered) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (*mockSelfBuffered) SelfBuffered()                                  {}
+func (*mockSelfBuffered) Handle(_ context.Context, _ slog.Record) error  { return nil }
+func (h *mockSelfBuffered) WithAttrs(attrs []slog.Attr) slog.Handler     { return h }
+func (h *mockSelfBuffered) WithGroup(name string) slog.Handler           { return h }
 
 // TestChain_AsyncWrappingSelfBufferedRejected verifies WithAsync rejects any
 // handler implementing SelfBufferedHandler.

@@ -36,11 +36,11 @@ func newFailingDBHandler(t *testing.T) (*DatabaseHandler, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelDebug,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 100),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 100),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -67,7 +67,10 @@ func TestDatabaseHandler_BatchRetryExhaustion(t *testing.T) {
 	// Replace error handler to capture calls.
 	h.setErrorHandler(func(he mebsuta.HandlerError) {
 		reported.Add(1)
-		{ e := he.Err; lastErr.Store(&e) }
+		{
+			e := he.Err
+			lastErr.Store(&e)
+		}
 	})
 
 	// Write a record so the batch goroutine has something to flush.
@@ -236,11 +239,11 @@ func TestDatabaseHandler_AuditLevelPersisted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelError,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1000),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1000),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -285,11 +288,11 @@ func TestDatabaseHandler_LevelFiltering(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelWarn,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1000),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1000),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -331,11 +334,11 @@ func TestDatabaseHandler_BufferFullDropsInfoRecord(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelDebug,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1), // tiny buffer
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1), // tiny buffer
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	// Do NOT start the run goroutine — the channel will fill up.
 
@@ -416,11 +419,11 @@ func TestDatabaseHandler_ErrorRecordRetryPath(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelDebug,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1), // tiny buffer
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1), // tiny buffer
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -494,11 +497,11 @@ func TestDatabaseHandler_FlushRetries(t *testing.T) {
 	var retryCount atomic.Int64
 	h := &DatabaseHandler{
 		leveler: slog.LevelDebug,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 100),
-		ctx:          context.Background(),
-		cancel:       func() {},
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 100),
+		ctx:     context.Background(),
+		cancel:  func() {},
 	}
 	h.setErrorHandler(func(he mebsuta.HandlerError) {
 		if strings.Contains(he.Err.Error(), "batch insert failed") {
@@ -527,11 +530,11 @@ func TestDatabaseHandler_ErrCountTracksDrops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &DatabaseHandler{
 		leveler: slog.LevelDebug,
-		db:           gdb,
-		table:        "logs",
-		entries:      make(chan dbLogEntry, 1),
-		ctx:          ctx,
-		cancel:       cancel,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
