@@ -32,6 +32,14 @@ func WithHandler(h slog.Handler) HandlerOption {
 	}
 }
 
+// UseStdout adds a StdoutHandler with the given config.
+func UseStdout(cfg StdoutConfig) HandlerOption {
+	return func(o *handlerOptions) error {
+		o.handlers = append(o.handlers, NewStdoutHandler(cfg))
+		return nil
+	}
+}
+
 // UseFile adds a FileHandler with the given config.
 func UseFile(cfg FileConfig) HandlerOption {
 	return func(o *handlerOptions) error {
