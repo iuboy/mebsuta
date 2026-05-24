@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/filerotate"
 )
 
 func main() {
@@ -17,11 +18,12 @@ func main() {
 	defer os.RemoveAll(dir)
 
 	logger, err := mebsuta.New(
-		mebsuta.UseFile(mebsuta.FileConfig{
+		mebsuta.UseFile(filerotate.Config{
 			Path:       filepath.Join(dir, "app.log"),
-			Level:      slog.LevelInfo,
 			MaxSizeMB:  1,
 			MaxBackups: 3,
+		}, mebsuta.FileConfig{
+			Level: slog.LevelInfo,
 		}),
 	)
 	if err != nil {

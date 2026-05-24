@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,7 +16,7 @@ func TestFileHandler_DynamicLevel(t *testing.T) {
 	lv := &slog.LevelVar{}
 	lv.Set(slog.LevelInfo)
 
-	h, err := NewFileHandler(FileConfig{Path: t.TempDir() + "/test.log", Level: lv})
+	h, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, FileConfig{Level: lv})
 	require.NoError(t, err)
 	defer h.Close()
 
@@ -31,7 +32,7 @@ func TestFileHandler_DynamicLevel(t *testing.T) {
 	lv.Set(slog.LevelError)
 	require.False(t, h.Enabled(context.Background(), slog.LevelInfo))
 	require.True(t, h.Enabled(context.Background(), slog.LevelError))
-	require.True(t, h.Enabled(context.Background(), LevelAudit))
+	require.True(t, h.Enabled(context.Background(), slog.LevelError+4))
 }
 
 // TestStdoutHandler_DynamicLevel verifies dynamic level for StdoutHandler.
@@ -55,7 +56,7 @@ func TestLevelVar_ConcurrentReadWrite(t *testing.T) {
 	lv := &slog.LevelVar{}
 	lv.Set(slog.LevelInfo)
 
-	h, err := NewFileHandler(FileConfig{Path: t.TempDir() + "/test.log", Level: lv})
+	h, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, FileConfig{Level: lv})
 	require.NoError(t, err)
 	defer h.Close()
 

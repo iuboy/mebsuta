@@ -1,11 +1,13 @@
 package mebsuta_test
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/filerotate"
 )
 
 // ExampleNewStdoutHandler demonstrates basic stdout JSON logging.
@@ -47,15 +49,16 @@ func ExampleWithSampling() {
 	// First 5 pass through, then 1 in 2 is sampled
 }
 
-// ExampleAuditEvent demonstrates audit logging for compliance.
-func ExampleAuditEvent() {
+// Example_auditLevel demonstrates audit-level logging.
+func Example_auditLevel() {
 	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
-	mebsuta.AuditEvent(
-		mebsuta.EventLogin,
-		"user login",
+	// Use audit package: audit.AuditEvent(audit.EventLogin, "user login", ...)
+	// This example uses slog.Log directly with the audit level.
+	logger.Log(context.Background(), slog.LevelError+4, "user login",
+		"event_type", "login",
 		"actor", "user:42",
 		"success", true,
 		"ip", "127.0.0.1",
@@ -77,14 +80,14 @@ func ExampleNew() {
 func ExampleNew_fileHandler() {
 	tmpDir := os.TempDir()
 	compress := true
-	cfg := mebsuta.FileConfig{
+	rotateCfg := filerotate.Config{
 		Path:       tmpDir + "/app-example.log",
 		MaxSizeMB:  1,
 		MaxBackups: 3,
 		Compress:   &compress,
 	}
 
-	fileH, _ := mebsuta.NewFileHandler(cfg)
+	fileH, _ := mebsuta.NewFileHandler(rotateCfg, mebsuta.FileConfig{})
 	logger, _ := mebsuta.New(mebsuta.WithHandler(fileH))
 
 	logger.Info("written to file")
@@ -157,15 +160,15 @@ func ExampleAsyncDropped() {
 	mebsuta.CloseAll(async)
 }
 
-// ExampleEventLogin is a predefined event type for login actions.
-func ExampleEventLogin() {
+// Example_loginAudit demonstrates login audit logging.
+func Example_loginAudit() {
 	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
-	mebsuta.AuditEvent(
-		mebsuta.EventLogin,
-		"user logged in",
+	// Use audit package: audit.AuditEvent(audit.EventLogin, ...)
+	logger.Log(context.Background(), slog.LevelError+4, "user logged in",
+		"event_type", "login",
 		"actor", "user:123",
 		"success", true,
 	)

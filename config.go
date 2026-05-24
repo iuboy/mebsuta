@@ -1,9 +1,7 @@
 package mebsuta
 
 import (
-	"fmt"
 	"log/slog"
-	"path/filepath"
 	"time"
 )
 
@@ -19,54 +17,30 @@ func (e *ConfigError) Error() string {
 
 // --- FileConfig ---
 
-// FileConfig holds configuration for file-based log output.
-// Zero values apply sensible defaults when passed to NewFileHandler.
+// Default configuration values.
+const (
+	DefaultAsyncBufferSize = 256
+
+	DefaultSamplingInitial    = 100
+	DefaultSamplingThereafter = 10
+)
+
+// FileConfig holds mebsuta-specific configuration for file log output (format and level).
+// Rotation configuration is handled by filerotate.Config.
 type FileConfig struct {
-	Path           string        // Required: absolute path to log file.
-	Level          slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	Format         string        // "json" or "console". Defaults to "json".
-	MaxSizeMB      int           // Max file size before rotation. 0 → 100.
-	MaxBackups     int           // Max number of rotated backups. 0 → 5.
-	MaxAgeDays     int           // Max age of rotated backups. 0 → 30.
-	Compress       *bool         // Gzip compress rotated backups. nil → true.
-	RotateInterval time.Duration // Time-based rotation interval. 0 = size-only.
+	Level  slog.Leveler // Log level filter. Defaults to slog.LevelInfo.
+	Format string       // "json" or "console". Defaults to "json".
 }
 
-// BoolPtr returns a pointer to the given bool value.
-func BoolPtr(b bool) *bool { return &b }
-
-// Validate checks required fields and returns a normalized copy with defaults applied.
-// The original config is not modified.
+// Validate returns a normalized copy with defaults applied.
 func (c FileConfig) Validate() (FileConfig, error) {
-	if c.Path == "" {
-		return FileConfig{}, &ConfigError{Field: "Path", Msg: "file path is required"}
-	}
-	if !filepath.IsAbs(c.Path) {
-		return FileConfig{}, &ConfigError{Field: "Path", Msg: fmt.Sprintf("file path must be absolute: %s", c.Path)}
-	}
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
 	}
 	if c.Format == "" {
 		c.Format = "json"
 	}
-	if c.MaxSizeMB <= 0 {
-		c.MaxSizeMB = 100
-	}
-	if c.MaxBackups <= 0 {
-		c.MaxBackups = 5
-	}
-	if c.MaxAgeDays <= 0 {
-		c.MaxAgeDays = 30
-	}
-	if c.Compress == nil {
-		c.Compress = BoolPtr(true)
-	}
 	return c, nil
-}
-
-func (c *FileConfig) compress() bool {
-	return c.Compress != nil && *c.Compress
 }
 
 // --- StdoutConfig ---
@@ -105,7 +79,7 @@ type AsyncConfig struct {
 // Validate checks required fields and returns a normalized copy with defaults applied.
 func (c AsyncConfig) Validate() (AsyncConfig, error) {
 	if c.BufferSize <= 0 {
-		c.BufferSize = 256
+		c.BufferSize = DefaultAsyncBufferSize
 	}
 	return c, nil
 }
@@ -126,10 +100,10 @@ func (c SamplingConfig) Validate() (SamplingConfig, error) {
 		return c, nil
 	}
 	if c.Initial <= 0 {
-		c.Initial = 100
+		c.Initial = DefaultSamplingInitial
 	}
 	if c.Thereafter <= 0 {
-		c.Thereafter = 10
+		c.Thereafter = DefaultSamplingThereafter
 	}
 	if c.Window <= 0 {
 		c.Window = time.Second

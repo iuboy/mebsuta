@@ -75,6 +75,8 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	sqlDB, err := gdb.DB()
 	if err != nil {
+		// gorm.Open succeeded but DB() failed — close the underlying connection.
+		closeSQLDB(gdb)
 		return nil, fmt.Errorf("mebsuta: get database connection: %w", err)
 	}
 
@@ -265,6 +267,12 @@ func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
 
 // SelfBuffered marks Handler as having built-in async buffering.
 func (*Handler) SelfBuffered() {}
+
+func closeSQLDB(gdb *gorm.DB) {
+	if db, err := gdb.DB(); err == nil {
+		_ = db.Close()
+	}
+}
 
 var (
 	_ slog.Handler                = (*Handler)(nil)

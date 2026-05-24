@@ -2,6 +2,7 @@ package mebsuta
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -290,8 +292,8 @@ func TestErrorHandler_WithErrorHandler(t *testing.T) {
 		fmt.Fprintf(&buf, "%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 
-	cfg := FileConfig{Path: t.TempDir() + "/test.log"}
-	fh, err := NewFileHandler(cfg)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -310,8 +312,8 @@ func TestErrorHandler_WithErrorHandler(t *testing.T) {
 }
 
 func TestErrorHandler_NilSilent(t *testing.T) {
-	cfg := FileConfig{Path: t.TempDir() + "/test.log"}
-	fh, err := NewFileHandler(cfg)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -331,8 +333,8 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 		fmt.Fprintf(&buf, "%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 
-	cfg := FileConfig{Path: t.TempDir() + "/test.log"}
-	fh, err := NewFileHandler(cfg)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -419,8 +421,8 @@ func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	var buf bytes.Buffer
 	// FileHandler 有 errorHandler 字段，默认是 DefaultErrorHandler
-	cfg := FileConfig{Path: t.TempDir() + "/test.log"}
-	fh, err := NewFileHandler(cfg)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 	DefaultErrorHandler = func(he HandlerError) {
@@ -441,28 +443,14 @@ func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 }
 
 // =============================================================================
-// SPEC: LevelAudit — 审计级别测试
+// SPEC: LevelAudit — 审计级别通过 JSON handler 输出 "AUDIT"
 // =============================================================================
 
-func TestLevelAudit_Value(t *testing.T) {
-	if LevelAudit < slog.LevelError {
-		t.Errorf("LevelAudit = %d, must be >= LevelError (%d)", LevelAudit, slog.LevelError)
-	}
-}
-
-func TestLevelAudit_EnabledAtError(t *testing.T) {
-	if LevelAudit < slog.LevelError {
-		t.Error("SPEC: Audit must pass through Error-level handler")
-	}
-}
-
-func TestAuditEvent_JSONContract(t *testing.T) {
+func TestLevelAudit_JSONLevelString(t *testing.T) {
 	h, buf := newTestHandler(slog.LevelInfo, JSON)
-	prev := slog.Default()
-	slog.SetDefault(slog.New(h))
-	defer slog.SetDefault(prev)
+	logger := slog.New(h)
 
-	AuditEvent(EventLogin, "user login", "actor", "user:42", "success", true, "ip", "127.0.0.1")
+	logger.Log(context.Background(), slog.LevelError+4, "audit test", "actor", "admin", "success", true)
 
 	var result map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
@@ -470,39 +458,6 @@ func TestAuditEvent_JSONContract(t *testing.T) {
 	}
 	if result["level"] != "AUDIT" {
 		t.Fatalf("level = %v, want AUDIT", result["level"])
-	}
-	if result["event_type"] != "login" {
-		t.Fatalf("event_type = %v, want login", result["event_type"])
-	}
-	if result["actor"] != "user:42" {
-		t.Fatalf("actor = %v, want user:42", result["actor"])
-	}
-	if result["success"] != true {
-		t.Fatalf("success = %v, want true", result["success"])
-	}
-	attrs := result["attributes"].(map[string]any)
-	if attrs["ip"] != "127.0.0.1" {
-		t.Fatalf("attributes.ip = %v, want 127.0.0.1", attrs["ip"])
-	}
-	if _, ok := attrs["event_type"]; ok {
-		t.Fatal("event_type must be promoted out of attributes")
-	}
-}
-
-func TestAudit_DefaultEventType(t *testing.T) {
-	h, buf := newTestHandler(slog.LevelInfo, JSON)
-	prev := slog.Default()
-	slog.SetDefault(slog.New(h))
-	defer slog.SetDefault(prev)
-
-	Audit("system audit")
-
-	var result map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	if result["event_type"] != "system" {
-		t.Fatalf("event_type = %v, want system", result["event_type"])
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -123,8 +124,7 @@ func TestChain_SamplingAsyncStdout(t *testing.T) {
 // correctly to a file with sampling applied.
 func TestChain_SamplingAsyncFile(t *testing.T) {
 	dir := t.TempDir()
-	cfg := FileConfig{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}
-	fileH, err := NewFileHandler(cfg)
+	fileH, err := NewFileHandler(filerotate.Config{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}, FileConfig{})
 	require.NoError(t, err)
 
 	sampled := WithSampling(fileH, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second})
@@ -180,8 +180,7 @@ func TestChain_MultiStdoutFile(t *testing.T) {
 	require.NoError(t, err)
 
 	dir := t.TempDir()
-	cfg := FileConfig{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}
-	fileH, err := NewFileHandler(cfg)
+	fileH, err := NewFileHandler(filerotate.Config{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}, FileConfig{})
 	require.NoError(t, err)
 
 	logger, err := New(
@@ -283,15 +282,14 @@ func TestChain_AuditLevelNotDropped(t *testing.T) {
 
 // AuditFunc logs at Audit level using the provided logger directly.
 func AuditFunc(logger *slog.Logger, msg string, args ...any) {
-	logger.Log(context.Background(), LevelAudit, msg, args...)
+	logger.Log(context.Background(), slog.LevelError+4, msg, args...)
 }
 
 // TestChain_CloseAllPropagation verifies CloseAll propagates through
 // the full decorator chain and closes all resources.
 func TestChain_CloseAllPropagation(t *testing.T) {
 	dir := t.TempDir()
-	cfg := FileConfig{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}
-	fileH, err := NewFileHandler(cfg)
+	fileH, err := NewFileHandler(filerotate.Config{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}, FileConfig{})
 	require.NoError(t, err)
 
 	sampled := WithSampling(fileH, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 1, Window: time.Second})
@@ -381,8 +379,7 @@ func TestChain_AsyncWrappingSelfBufferedRejected(t *testing.T) {
 // the inner handler through AttrsSub and GroupSub decorators.
 func TestChain_CloseAllThroughDecorators(t *testing.T) {
 	dir := t.TempDir()
-	cfg := FileConfig{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}
-	fileH, err := NewFileHandler(cfg)
+	fileH, err := NewFileHandler(filerotate.Config{Path: filepath.Join(dir, "test.log"), MaxSizeMB: 10}, FileConfig{})
 	require.NoError(t, err)
 
 	// Wrap in WithAttrs and WithGroup

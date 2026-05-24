@@ -158,6 +158,10 @@ func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
 	if handler == nil {
 		return nil
 	}
+	// Use reflect to get the interface's underlying pointer for identity comparison.
+	// This is necessary because slog.Handler is an interface — you can't take the
+	// address of an interface value directly. reflect.ValueOf is the standard Go
+	// approach for interface pointer identity.
 	ptr := reflect.ValueOf(handler).Pointer()
 	if visited[ptr] {
 		return nil

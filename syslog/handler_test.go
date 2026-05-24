@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/audit"
 )
 
 func listenTCP() (net.Listener, error) {
@@ -185,7 +186,7 @@ func TestLevelToSeverity(t *testing.T) {
 		{slog.LevelInfo, 6},
 		{slog.LevelWarn, 4},
 		{slog.LevelError, 3},
-		{mebsuta.LevelAudit, 2},
+		{audit.LevelAudit, 2},
 	}
 	for _, tt := range tests {
 		got := h.levelToSeverity(tt.level)
@@ -480,7 +481,7 @@ func TestFormatMessage_AuditLevel(t *testing.T) {
 
 	entry := mebsuta.LogEntry{
 		Time:    time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
-		Level:   mebsuta.LevelAudit,
+		Level:   audit.LevelAudit,
 		Message: "audit event",
 	}
 	msg := h.formatMessage(entry)

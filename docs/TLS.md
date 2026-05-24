@@ -1,16 +1,6 @@
-# Syslog TLS Configuration Guide
+# Syslog TLS 配置
 
-This guide explains how to configure TLS for secure syslog delivery.
-
-## Overview
-
-The SyslogHandler supports TLS encryption for secure log delivery. TLS is enabled via the `Secure` field in `SyslogConfig`, and certificate verification can be controlled with `TLSSkipVerify`.
-
-## Basic TLS Configuration
-
-### Enable TLS with Default Certificate Verification
-
-The safest approach uses default certificate verification:
+## 基本用法
 
 ```go
 syslogH, err := syslog.NewHandler(syslog.Config{
@@ -18,190 +8,46 @@ syslogH, err := syslog.NewHandler(syslog.Config{
     Address: "logs.example.com:6514",
     Secure:  true,
 })
-if err != nil {
-    log.Fatal(err)
-}
-
-logger := slog.New(syslogH)
-logger.Info("message sent over TLS")
 ```
 
-**Default behavior**:
-- TLS 1.2+ is used
-- System certificate pool is trusted
-- Server certificate hostname is verified
-- Certificate expiration is checked
+默认行为：TLS 1.2+、系统证书池信任、服务器主机名验证。
 
-### Skip Certificate Verification (Not Recommended for Production)
+## 跳过证书验证
 
-For testing or internal networks with self-signed certificates:
+仅用于开发或自签名证书环境：
+
+```go
+syslog.Config{
+    Network:       "tcp",
+    Address:       "internal-logs:6514",
+    Secure:        true,
+    TLSSkipVerify: true,
+}
+```
+
+## 完整配置
 
 ```go
 syslogH, err := syslog.NewHandler(syslog.Config{
-    Network:        "tcp",
-    Address:        "internal-logs:6514",
-    Secure:         true,
-    TLSSkipVerify:  true,
+    Network:    "tcp",
+    Address:    "logs.example.com:6514",
+    Secure:     true,
+    Tag:        "myapp",
+    Facility:   1,
+    Reconnect:  mebsuta.BoolPtr(true),
+    RetryDelay: 500 * time.Millisecond,
+    RFC5424:    true,
 })
 ```
 
-**Warning**: `TLSSkipVerify: true` disables:
-- Certificate chain validation
-- Hostname verification
-- Expiration checking
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `Secure` | bool | `false` | 启用 TLS |
+| `TLSSkipVerify` | bool | `false` | 跳过证书验证 |
+| `Tag` | string | `"mebsuta"` | Syslog 标识 |
+| `Facility` | int | `1` | Syslog facility |
+| `Reconnect` | `*bool` | `true` | 断线自动重连 |
+| `RetryDelay` | `time.Duration` | `500ms` | 重连间隔 |
+| `RFC5424` | bool | `false` | 使用 RFC5424 格式 |
 
-This should only be used in development or with explicit operational approval.
-
-## Complete TLS Configuration Example
-
-```go
-package main
-
-import (
-    "log"
-    "log/slog"
-    "time"
-
-    "github.com/iuboy/mebsuta"
-    "github.com/iuboy/mebsuta/syslog"
-)
-
-func main() {
-    syslogH, err := syslog.NewHandler(syslog.Config{
-        Network:     "tcp",
-        Address:     "logs.example.com:6514",
-        Secure:      true,
-        Tag:         "myapp",
-        Facility:    1,
-        Reconnect:   mebsuta.BoolPtr(true),
-        RetryDelay:  500 * time.Millisecond,
-        RFC5424:     true,
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    logger, err := mebsuta.New(
-        mebsuta.WithHandler(syslogH),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    logger.Info("application started",
-        "version", "1.0.0",
-        "environment", "production",
-    )
-}
-```
-
-## Configuration Options
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `Secure` | bool | `false` | Enable TLS encryption |
-| `TLSSkipVerify` | bool | `false` | Skip certificate verification (not recommended) |
-| `Tag` | string | `"mebsuta"` | Syslog tag identifier |
-| `Facility` | int | `1` | Syslog facility (1=user-level) |
-| `Reconnect` | `*bool` | `true` | Auto-reconnect on connection loss |
-| `RetryDelay` | `time.Duration` | `500ms` | Delay between reconnection attempts |
-| `RFC5424` | bool | `false` | Use RFC5424 protocol (vs RFC3164) |
-
-## Port Reference
-
-Standard syslog ports:
-- `514` - Plain TCP/UDP (RFC3164)
-- `6514` - TLS encrypted (RFC5424/RFC5425)
-- `601` - Plain TCP (RFC5424)
-
-**Recommendation**: Use port `6514` for TLS connections.
-
-## Certificate Configuration
-
-### System Certificate Pool
-
-By default, Go uses the system's trusted certificate pool:
-- **Linux**: `/etc/ssl/certs/ca-certificates.crt`
-- **macOS**: System Keychain
-- **Windows**: Certificate Store
-
-No additional configuration is required for certificates issued by public CAs.
-
-### Custom Certificates
-
-For environments with custom certificate authorities, the Go runtime must be configured to trust the custom CA. This is typically done at the process level via environment variables or system configuration.
-
-## Security Best Practices
-
-1. **Always enable certificate verification in production**
-   ```go
-   syslog.Config{Secure: true}
-   ```
-
-2. **Use the standard TLS port (6514)**
-   ```go
-   Network: "tcp", Address: "logs.example.com:6514"
-   ```
-
-3. **Enable reconnection for reliability**
-   ```go
-   syslog.Config{Reconnect: mebsuta.BoolPtr(true)}
-   ```
-
-4. **Monitor connection errors**
-   ```go
-   // SyslogHandler reports errors via the configured error handler
-   syslogH, _ := syslog.NewHandler(syslog.Config{
-       Network: "tcp", Address: "logs:6514", Secure: true,
-   })
-   // Errors are available through metrics or custom error handlers
-   ```
-
-## Troubleshooting
-
-### Certificate Verification Failed
-
-**Error**: `x509: certificate signed by unknown authority`
-
-**Solutions**:
-1. Ensure the server certificate is issued by a trusted CA
-2. For self-signed certificates, add the CA to the system trust store
-3. (Not recommended) Use `TLSSkipVerify: true` for testing
-
-### Connection Timeout
-
-**Error**: Timeout connecting to syslog server
-
-**Solutions**:
-1. Verify the address and port are correct
-2. Check firewall rules allow outbound connections to the syslog port
-3. Ensure the syslog server is running and accessible
-4. Increase retry delay if needed: `RetryDelay: 2 * time.Second`
-
-### TLS Handshake Failure
-
-**Error**: TLS handshake failure
-
-**Solutions**:
-1. Verify the server supports TLS on the specified port
-2. Check that the server certificate is valid (not expired)
-3. Ensure TLS protocol version compatibility (Go uses TLS 1.2+)
-
-## Handler Chain with Syslog
-
-**Important**: Do NOT wrap SyslogHandler in AsyncHandler. SyslogHandler has its own internal buffer:
-
-```go
-// Correct - Syslog without Async
-syslogH, _ := syslog.NewHandler(syslog.Config{
-    Network: "tcp", Address: "logs:6514", Secure: true,
-})
-logger, _ := mebsuta.New(
-    mebsuta.WithHandler(syslogH),
-)
-
-// Incorrect - Async wrapping Syslog (double buffering)
-// This will be rejected at construction time
-```
-
-See `SPEC.md` section "Handler Chain Composition" for details on prohibited combinations.
+标准端口：`514`（明文）、`601`（RFC5424 明文）、`6514`（TLS，推荐）。

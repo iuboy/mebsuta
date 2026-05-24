@@ -13,6 +13,10 @@ import (
 	"github.com/iuboy/mebsuta/attrutil"
 )
 
+// levelAudit is the audit log level value, matching audit.LevelAudit.
+// Kept as an inline constant to avoid importing the audit package.
+const levelAudit slog.Level = slog.LevelError + 4
+
 type contractJSONHandler struct {
 	mu    *sync.Mutex
 	w     io.Writer
@@ -54,7 +58,7 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	level := r.Level.String()
-	if r.Level == LevelAudit {
+	if r.Level == levelAudit {
 		level = "AUDIT"
 	}
 

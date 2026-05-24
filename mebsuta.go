@@ -26,37 +26,11 @@ import (
 // EncodingType defines the log output encoding format.
 type EncodingType string
 
-// Log encoding formats.
+// Log encoding formats. Use JSON for structured machine-readable output, Console for human-readable text.
 const (
 	JSON    EncodingType = "json"
 	Console EncodingType = "console"
 )
-
-// EventType identifies the operation class for audit records.
-type EventType string
-
-// Audit event types.
-const (
-	EventLogin            EventType = "login"
-	EventLogout           EventType = "logout"
-	EventQuery            EventType = "query"
-	EventCreate           EventType = "create"
-	EventUpdate           EventType = "update"
-	EventDelete           EventType = "delete"
-	EventPermissionChange EventType = "permission_change"
-	EventConfigChange     EventType = "config_change"
-	EventKeyOperation     EventType = "key_operation"
-	EventCryptoOperation  EventType = "crypto_operation"
-	EventSystem           EventType = "system"
-)
-
-// LevelAudit 是审计日志级别（等保 2.0 GB/T 22239、密评 GM/T 0054）。
-// 严重性高于 Error，Error 级别的 handler 会接受 Audit 记录，采样器始终放行。
-const LevelAudit slog.Level = slog.LevelError + 4 // 12
-
-// Compile-time assertion: LevelAudit must be >= LevelError so that
-// all handlers' `level >= slog.LevelError` checks include Audit records.
-var _ [LevelAudit - slog.LevelError]struct{}
 
 // HandlerError is a structured error reported by handlers through ErrorHandler.
 type HandlerError struct {
@@ -107,29 +81,6 @@ func Warn(msg string, args ...any) { slog.Warn(msg, args...) }
 
 // Error logs at Error level using the default logger.
 func Error(msg string, args ...any) { slog.Error(msg, args...) }
-
-// Audit logs at the Audit level for compliance records. The event type defaults to "system".
-func Audit(msg string, args ...any) {
-	AuditEvent(EventSystem, msg, args...)
-}
-
-// AuditContext logs at the Audit level with the given context. The event type defaults to "system".
-func AuditContext(ctx context.Context, msg string, args ...any) {
-	AuditEventContext(ctx, EventSystem, msg, args...)
-}
-
-// AuditEvent logs an audit record with an explicit event type.
-func AuditEvent(eventType EventType, msg string, args ...any) {
-	AuditEventContext(context.Background(), eventType, msg, args...)
-}
-
-// AuditEventContext logs an audit record with an explicit event type and context.
-func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
-	all := make([]any, len(args), len(args)+2)
-	copy(all, args)
-	all = append(all, "event_type", string(eventType))
-	slog.Log(ctx, LevelAudit, msg, all...)
-}
 
 // DebugContext logs at Debug level with the given context.
 func DebugContext(ctx context.Context, msg string, args ...any) {
@@ -199,3 +150,6 @@ func LogErrorHandler(w io.Writer) ErrorHandler {
 func SilentErrorHandler() ErrorHandler {
 	return func(HandlerError) {}
 }
+
+// BoolPtr returns a pointer to the given bool value, useful for config struct fields of type *bool.
+func BoolPtr(b bool) *bool { return &b }

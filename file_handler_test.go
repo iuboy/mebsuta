@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
-	"time"
+
+	"github.com/iuboy/mebsuta/filerotate"
 )
 
 // =============================================================================
@@ -23,11 +23,11 @@ func newTestFileHandler(t *testing.T, cfgOverrides ...func(*FileConfig)) (*FileH
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
-	cfg := FileConfig{Path: path}
+	fc := FileConfig{}
 	for _, o := range cfgOverrides {
-		o(&cfg)
+		o(&fc)
 	}
-	h, err := NewFileHandler(cfg)
+	h, err := NewFileHandler(filerotate.Config{Path: path}, fc)
 	if err != nil {
 		t.Fatalf("NewFileHandler: %v", err)
 	}
@@ -36,18 +36,6 @@ func newTestFileHandler(t *testing.T, cfgOverrides ...func(*FileConfig)) (*FileH
 
 func withFormat(f string) func(*FileConfig) {
 	return func(c *FileConfig) { c.Format = f }
-}
-
-func withMaxSizeMB(n int) func(*FileConfig) {
-	return func(c *FileConfig) { c.MaxSizeMB = n }
-}
-
-func withMaxBackups(n int) func(*FileConfig) {
-	return func(c *FileConfig) { c.MaxBackups = n }
-}
-
-func withCompress(b bool) func(*FileConfig) {
-	return func(c *FileConfig) { c.Compress = &b }
 }
 
 func readLogFile(t *testing.T, path string) []byte {
@@ -68,8 +56,8 @@ func assertRestrictedLogFileMode(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("stat %s: %v", path, err)
 	}
-	if got := info.Mode().Perm(); got != logFileMode {
-		t.Fatalf("log file mode = %v, want %v", got, logFileMode)
+	if got := info.Mode().Perm(); got != filerotate.DefaultFileMode {
+		t.Fatalf("log file mode = %v, want %v", got, filerotate.DefaultFileMode)
 	}
 }
 
@@ -145,7 +133,6 @@ func TestFileHandler_ConsoleFormat(t *testing.T) {
 }
 
 func TestFileHandler_DefaultFormat(t *testing.T) {
-	// 空 Format 默认为 JSON
 	h, path := newTestFileHandler(t)
 	defer h.Close()
 
@@ -166,26 +153,6 @@ func TestFileHandler_FilePermissionsRestricted(t *testing.T) {
 	assertRestrictedLogFileMode(t, path)
 }
 
-func TestFileHandler_RotatedFilePermissions(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("POSIX file permissions are not meaningful on Windows")
-	}
-	h, path := newTestFileHandler(t, func(c *FileConfig) {
-		c.MaxSizeMB = 1
-		c.Format = "json"
-	})
-	defer h.Close()
-
-	logger := slog.New(h)
-	msg := strings.Repeat("x", 1024)
-	for range 1200 {
-		logger.Info("fill", "data", msg)
-	}
-
-	h.Close()
-	assertRestrictedLogFileMode(t, path)
-}
-
 // =============================================================================
 // Level 过滤
 // =============================================================================
@@ -193,8 +160,7 @@ func TestFileHandler_RotatedFilePermissions(t *testing.T) {
 func TestFileHandler_LevelFilter(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
-	cfg := FileConfig{Path: path, Format: "json", Level: slog.LevelWarn}
-	h, err := NewFileHandler(cfg)
+	h, err := NewFileHandler(filerotate.Config{Path: path}, FileConfig{Format: "json", Level: slog.LevelWarn})
 	if err != nil {
 		t.Fatalf("NewFileHandler: %v", err)
 	}
@@ -299,7 +265,6 @@ func TestFileHandler_Close(t *testing.T) {
 		t.Errorf("Close() error: %v", err)
 	}
 
-	// 双重 Close 应该是 nop
 	if err := h.Close(); err != nil {
 		t.Errorf("double Close() error: %v", err)
 	}
@@ -315,7 +280,7 @@ func TestFileHandler_Close(t *testing.T) {
 // =============================================================================
 
 func TestNewFileHandler_EmptyPath(t *testing.T) {
-	_, err := NewFileHandler(FileConfig{Path: ""})
+	_, err := NewFileHandler(filerotate.Config{Path: ""}, FileConfig{})
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}
@@ -325,141 +290,9 @@ func TestNewFileHandler_EmptyPath(t *testing.T) {
 }
 
 func TestNewFileHandler_InvalidDirectory(t *testing.T) {
-	cfg := FileConfig{Path: "/proc/nonexistent/test.log"}
-	_, err := NewFileHandler(cfg)
+	_, err := NewFileHandler(filerotate.Config{Path: "/proc/nonexistent/test.log"}, FileConfig{})
 	if err == nil {
 		t.Fatal("expected error for invalid directory")
-	}
-}
-
-// =============================================================================
-// 大小轮转
-// =============================================================================
-
-func TestFileHandler_SizeRotation(t *testing.T) {
-	// MaxSizeMB = 1 字节大小（最小单位测试）
-	h, path := newTestFileHandler(t, withMaxSizeMB(1), withMaxBackups(2), withFormat("json"))
-	defer h.Close()
-
-	logger := slog.New(h)
-
-	// 写入足够多的数据触发多次轮转
-	msg := strings.Repeat("x", 1024)
-	for range 3300 {
-		logger.Info("fill", "data", msg)
-	}
-
-	// 等待异步操作
-	time.Sleep(100 * time.Millisecond)
-
-	backups := matchBackups(path)
-	if len(backups) > 2 {
-		t.Errorf("expected at most 2 backups, got %d: %v", len(backups), backups)
-	}
-}
-
-// =============================================================================
-// gzip 压缩
-// =============================================================================
-
-func TestFileHandler_Compress(t *testing.T) {
-	h, path := newTestFileHandler(t, withMaxSizeMB(1), withCompress(true), withFormat("json"))
-	defer h.Close()
-
-	logger := slog.New(h)
-
-	// 写入足够多的数据触发轮转
-	msg := strings.Repeat("x", 1024)
-	for range 1100 {
-		logger.Info("fill", "data", msg)
-	}
-
-	// 等待异步压缩完成
-	time.Sleep(500 * time.Millisecond)
-
-	backups := matchBackups(path)
-	hasGz := false
-	for _, b := range backups {
-		if strings.HasSuffix(b, ".gz") {
-			hasGz = true
-			break
-		}
-	}
-	if !hasGz {
-		t.Errorf("expected compressed backup (.gz) files, got: %v", backups)
-	}
-}
-
-// =============================================================================
-// 启动时残留文件压缩
-// =============================================================================
-
-func TestCompressResidual(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log")
-
-	// 模拟残留的未压缩轮转文件
-	backup1 := logPath + ".20260401-000000"
-	if err := os.WriteFile(backup1, []byte("old log data\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 模拟残留的 .gz.tmp 崩溃中间文件
-	tmpFile := logPath + ".20260401-000000.gz.tmp"
-	if err := os.WriteFile(tmpFile, []byte("partial gzip"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	compressResidual(logPath, true, &sync.WaitGroup{})
-
-	// 等待异步压缩
-	time.Sleep(200 * time.Millisecond)
-
-	// .tmp 文件应该被清理
-	if _, err := os.Stat(tmpFile); err == nil {
-		t.Error(".tmp file should be cleaned up")
-	}
-
-	// 原始备份应该被压缩
-	if _, err := os.Stat(backup1 + ".gz"); err != nil {
-		t.Errorf("backup should be compressed to .gz: %v", err)
-	}
-}
-
-// =============================================================================
-// compressFile 直接测试
-// =============================================================================
-
-func TestCompressFile(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "source.txt")
-	gzPath := src + ".gz"
-
-	// 创建源文件
-	content := strings.Repeat("log line\n", 1000)
-	if err := os.WriteFile(src, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	compressFile(src, DefaultErrorHandler)
-
-	// 压缩文件应该存在
-	if _, err := os.Stat(gzPath); err != nil {
-		t.Fatal("compressed file should exist")
-	}
-
-	// 原始文件应该被删除
-	if _, err := os.Stat(src); err == nil {
-		t.Error("original file should be removed after compression")
-	}
-
-	// 压缩文件应该比原始文件小
-	gzInfo, _ := os.Stat(gzPath)
-	if gzInfo == nil {
-		t.Fatal("cannot stat compressed file")
-	}
-	if gzInfo.Size() >= int64(len(content)) {
-		t.Errorf("compressed file (%d) should be smaller than original (%d)", gzInfo.Size(), len(content))
 	}
 }
 
@@ -471,7 +304,6 @@ func TestFileHandler_WithAttrsSharedState(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
 	defer h.Close()
 
-	// 创建两个子 Handler
 	child1 := h.WithAttrs([]slog.Attr{slog.String("source", "handler1")})
 	child2 := h.WithAttrs([]slog.Attr{slog.String("source", "handler2")})
 
@@ -501,29 +333,5 @@ func TestFileHandler_Enabled(t *testing.T) {
 	}
 	if !h.Enabled(context.Background(), slog.LevelError) {
 		t.Error("Error should be enabled at Warn level")
-	}
-}
-
-// =============================================================================
-// SPEC: compressFile nil ErrorHandler 不应阻止压缩
-// =============================================================================
-
-func TestCompressFile_NilErrorHandler(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "source.txt")
-	content := "test log data\n"
-	if err := os.WriteFile(src, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// nil ErrorHandler 不应阻止压缩
-	compressFile(src, nil)
-
-	gzPath := src + ".gz"
-	if _, err := os.Stat(gzPath); err != nil {
-		t.Errorf("compression should succeed even with nil ErrorHandler: %v", err)
-	}
-	if _, err := os.Stat(src); err == nil {
-		t.Error("original file should be removed after compression with nil ErrorHandler")
 	}
 }

@@ -62,6 +62,9 @@ Cargo.lock
 # Testcontainers lock files
 integration/*.lock
 
+# Development-only docs (kept locally, not tracked in git)
+docs/plan/
+
 # AI assistant directories
 .gitnexus
 .gstack

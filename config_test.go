@@ -29,144 +29,25 @@ func TestConfigError_ErrorFormat(t *testing.T) {
 // FileConfig Validate
 // =============================================================================
 
-func TestFileConfig_ZeroValue(t *testing.T) {
-	cfg := FileConfig{}
-	_, err := cfg.Validate()
-	require.Error(t, err)
-	cfgErr, ok := err.(*ConfigError)
-	require.True(t, ok, "error should be *ConfigError")
-	require.Equal(t, "Path", cfgErr.Field)
-	require.Contains(t, cfgErr.Msg, "file path is required")
-}
-
-func TestFileConfig_EmptyPath(t *testing.T) {
-	cfg := FileConfig{Path: ""}
-	_, err := cfg.Validate()
-	require.Error(t, err)
-	cfgErr := err.(*ConfigError)
-	require.Equal(t, "Path", cfgErr.Field)
-}
-
-func TestFileConfig_RelativePath(t *testing.T) {
-	cfg := FileConfig{Path: "relative/path.log"}
-	_, err := cfg.Validate()
-	require.Error(t, err)
-	cfgErr := err.(*ConfigError)
-	require.Equal(t, "Path", cfgErr.Field)
-	require.Contains(t, cfgErr.Msg, "must be absolute")
-}
-
 func TestFileConfig_DefaultsApplied(t *testing.T) {
-	cfg := FileConfig{Path: "/tmp/test.log"}
+	cfg := FileConfig{}
 	validated, err := cfg.Validate()
 	require.NoError(t, err)
 
 	require.Equal(t, slog.LevelInfo, validated.Level)
 	require.Equal(t, "json", validated.Format)
-	require.Equal(t, 100, validated.MaxSizeMB)
-	require.Equal(t, 5, validated.MaxBackups)
-	require.Equal(t, 30, validated.MaxAgeDays)
-	require.NotNil(t, validated.Compress)
-	require.True(t, *validated.Compress)
-	require.Equal(t, time.Duration(0), validated.RotateInterval)
 }
 
 func TestFileConfig_CustomValuesPreserved(t *testing.T) {
-	level := slog.LevelDebug
-	compress := false
 	cfg := FileConfig{
-		Path:           "/var/log/app.log",
-		Level:          level,
-		Format:         "console",
-		MaxSizeMB:      50,
-		MaxBackups:     10,
-		MaxAgeDays:     7,
-		Compress:       &compress,
-		RotateInterval: time.Hour,
+		Level:  slog.LevelDebug,
+		Format: "console",
 	}
 	validated, err := cfg.Validate()
 	require.NoError(t, err)
 
-	require.Equal(t, level, validated.Level)
+	require.Equal(t, slog.LevelDebug, validated.Level)
 	require.Equal(t, "console", validated.Format)
-	require.Equal(t, 50, validated.MaxSizeMB)
-	require.Equal(t, 10, validated.MaxBackups)
-	require.Equal(t, 7, validated.MaxAgeDays)
-	require.NotNil(t, validated.Compress)
-	require.False(t, *validated.Compress)
-	require.Equal(t, time.Hour, validated.RotateInterval)
-}
-
-func TestFileConfig_CompressNilVsFalse(t *testing.T) {
-	t.Run("nil_defaults_to_true", func(t *testing.T) {
-		cfg := FileConfig{Path: "/tmp/test.log", Compress: nil}
-		validated, err := cfg.Validate()
-		require.NoError(t, err)
-		require.NotNil(t, validated.Compress)
-		require.True(t, *validated.Compress)
-	})
-
-	t.Run("explicit_false_preserved", func(t *testing.T) {
-		f := false
-		cfg := FileConfig{Path: "/tmp/test.log", Compress: &f}
-		validated, err := cfg.Validate()
-		require.NoError(t, err)
-		require.NotNil(t, validated.Compress)
-		require.False(t, *validated.Compress)
-	})
-
-	t.Run("explicit_true_preserved", func(t *testing.T) {
-		tr := true
-		cfg := FileConfig{Path: "/tmp/test.log", Compress: &tr}
-		validated, err := cfg.Validate()
-		require.NoError(t, err)
-		require.NotNil(t, validated.Compress)
-		require.True(t, *validated.Compress)
-	})
-}
-
-func TestFileConfig_NegativeValuesDefaulted(t *testing.T) {
-	cfg := FileConfig{
-		Path:       "/tmp/test.log",
-		MaxSizeMB:  -1,
-		MaxBackups: -10,
-		MaxAgeDays: -5,
-	}
-	validated, err := cfg.Validate()
-	require.NoError(t, err)
-	require.Equal(t, 100, validated.MaxSizeMB)
-	require.Equal(t, 5, validated.MaxBackups)
-	require.Equal(t, 30, validated.MaxAgeDays)
-}
-
-func TestFileConfig_DoesNotModifyOriginal(t *testing.T) {
-	cfg := FileConfig{Path: "/tmp/test.log"}
-	original := cfg // value copy before Validate
-
-	_, err := cfg.Validate()
-	require.NoError(t, err)
-
-	// Original zero-value fields must remain zero
-	require.Equal(t, original.Path, cfg.Path)
-	require.Nil(t, cfg.Level)
-	require.Equal(t, "", cfg.Format)
-	require.Equal(t, 0, cfg.MaxSizeMB)
-	require.Equal(t, 0, cfg.MaxBackups)
-	require.Equal(t, 0, cfg.MaxAgeDays)
-	require.Nil(t, cfg.Compress)
-	require.Equal(t, time.Duration(0), cfg.RotateInterval)
-}
-
-func TestFileConfig_Idempotent(t *testing.T) {
-	cfg := FileConfig{Path: "/tmp/test.log"}
-
-	first, err := cfg.Validate()
-	require.NoError(t, err)
-
-	second, err := first.Validate()
-	require.NoError(t, err)
-
-	require.Equal(t, first, second)
 }
 
 // =============================================================================

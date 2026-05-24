@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -122,8 +123,8 @@ func (h *unwrapSpy) unwrapHandler() slog.Handler {
 // TestCloseAll_UnwrapsMiddlewareChain verifies CloseAll recursively unwraps
 // each middleware layer.
 func TestCloseAll_UnwrapsMiddlewareChain(t *testing.T) {
-	cfg := FileConfig{Path: t.TempDir() + "/test.log"}
-	fileH, err := NewFileHandler(cfg)
+	cfg := FileConfig{}
+	fileH, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 
 	// Build: unwrapSpy -> Async -> File

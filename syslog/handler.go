@@ -18,6 +18,7 @@ import (
 
 	"github.com/iuboy/mebsuta"
 	"github.com/iuboy/mebsuta/attrutil"
+	"github.com/iuboy/mebsuta/audit"
 )
 
 const (
@@ -419,7 +420,7 @@ func (h *Handler) formatJSONMessage(entry mebsuta.LogEntry, ts time.Time, priori
 		attrutil.FlattenAttr(attributes, "", attr, attrutil.NaNSafe)
 	}
 	level := entry.Level.String()
-	if entry.Level == mebsuta.LevelAudit {
+	if entry.Level == audit.LevelAudit {
 		level = "AUDIT"
 	}
 	logData := map[string]any{
@@ -482,7 +483,7 @@ func (h *Handler) formatStructuredMessage(entry mebsuta.LogEntry, ts time.Time, 
 
 func (h *Handler) levelToSeverity(level slog.Level) int {
 	switch {
-	case level >= mebsuta.LevelAudit:
+	case level >= audit.LevelAudit:
 		return 2
 	case level >= slog.LevelError:
 		return 3

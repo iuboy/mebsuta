@@ -276,11 +276,11 @@ func AsyncDropped(h slog.Handler) int64 {
 }
 
 var (
-	_ slog.Handler      = (*AsyncHandler)(nil)
-	_ slog.Handler      = (*asyncAttrsHandler)(nil)
-	_ slog.Handler      = (*asyncGroupHandler)(nil)
-	_ io.Closer         = (*AsyncHandler)(nil)
-	_ handlerUnwrapper  = (*AsyncHandler)(nil)
-	_ handlerUnwrapper  = (*asyncAttrsHandler)(nil)
-	_ handlerUnwrapper  = (*asyncGroupHandler)(nil)
+	_ slog.Handler     = (*AsyncHandler)(nil)
+	_ slog.Handler     = (*asyncAttrsHandler)(nil)
+	_ slog.Handler     = (*asyncGroupHandler)(nil)
+	_ io.Closer        = (*AsyncHandler)(nil)
+	_ handlerUnwrapper = (*AsyncHandler)(nil)
+	_ handlerUnwrapper = (*asyncAttrsHandler)(nil)
+	_ handlerUnwrapper = (*asyncGroupHandler)(nil)
 )

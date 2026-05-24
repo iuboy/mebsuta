@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -103,7 +104,7 @@ func TestNew_ZeroOptions(t *testing.T) {
 
 func TestNew_UseFile(t *testing.T) {
 	path := t.TempDir() + "/test.log"
-	logger, err := New(UseFile(FileConfig{Path: path}))
+	logger, err := New(UseFile(filerotate.Config{Path: path}, FileConfig{}))
 	require.NoError(t, err)
 	require.NotNil(t, logger)
 
@@ -118,7 +119,7 @@ func TestNew_UseFile(t *testing.T) {
 func TestNew_UseFileWithAsync(t *testing.T) {
 	path := t.TempDir() + "/test.log"
 	logger, err := New(
-		UseFile(FileConfig{Path: path}),
+		UseFile(filerotate.Config{Path: path}, FileConfig{}),
 		UseAsync(AsyncConfig{BufferSize: 64}),
 	)
 	require.NoError(t, err)
@@ -140,7 +141,7 @@ func TestNew_UseFileWithAsync(t *testing.T) {
 func TestNew_UseFileWithAsyncAndSampling(t *testing.T) {
 	path := t.TempDir() + "/test.log"
 	logger, err := New(
-		UseFile(FileConfig{Path: path}),
+		UseFile(filerotate.Config{Path: path}, FileConfig{}),
 		UseAsync(AsyncConfig{BufferSize: 64}),
 		UseSampling(SamplingConfig{
 			Enabled:    true,
@@ -166,7 +167,7 @@ func TestNew_UseFileWithAsyncAndSampling(t *testing.T) {
 
 func TestNew_UseFileInvalidConfig(t *testing.T) {
 	// Empty path should fail validation
-	_, err := New(UseFile(FileConfig{Path: ""}))
+	_, err := New(UseFile(filerotate.Config{Path: ""}, FileConfig{}))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "file path is required")
 }
@@ -177,8 +178,8 @@ func TestNew_MultipleUseFile_CreatesFanout(t *testing.T) {
 	path2 := dir + "/app2.log"
 
 	logger, err := New(
-		UseFile(FileConfig{Path: path1}),
-		UseFile(FileConfig{Path: path2}),
+		UseFile(filerotate.Config{Path: path1}, FileConfig{}),
+		UseFile(filerotate.Config{Path: path2}, FileConfig{}),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, logger)

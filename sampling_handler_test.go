@@ -351,7 +351,7 @@ func TestWithSampling_AuditAlwaysRecorded(t *testing.T) {
 	logger := slog.New(h)
 
 	for range 10 {
-		logger.Log(context.Background(), LevelAudit, "audit", "i", 0)
+		logger.Log(context.Background(), slog.LevelError+4, "audit", "i", 0)
 	}
 
 	if inner.Count() != 10 {

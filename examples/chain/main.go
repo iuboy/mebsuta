@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/filerotate"
 )
 
 func main() {
@@ -19,8 +20,10 @@ func main() {
 
 	logger, err := mebsuta.New(
 		mebsuta.UseStdout(mebsuta.StdoutConfig{}),
-		mebsuta.UseFile(mebsuta.FileConfig{
-			Path: filepath.Join(dir, "app.log"), Level: slog.LevelDebug,
+		mebsuta.UseFile(filerotate.Config{
+			Path: filepath.Join(dir, "app.log"),
+		}, mebsuta.FileConfig{
+			Level: slog.LevelDebug,
 		}),
 		mebsuta.UseSampling(mebsuta.SamplingConfig{
 			Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second,
@@ -35,5 +38,4 @@ func main() {
 
 	slog.Info("application started", "pid", os.Getpid())
 	slog.Error("simulated error", "code", 500)
-	mebsuta.AuditEvent(mebsuta.EventLogin, "compliance event", "actor", "admin", "success", true)
 }

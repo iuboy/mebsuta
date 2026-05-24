@@ -1,0 +1,395 @@
+package filerotate
+
+import (
+	"compress/gzip"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+// =============================================================================
+// 辅助函数
+// =============================================================================
+
+func newTestWriter(t *testing.T, cfgOverrides ...func(*Config)) (*Writer, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	cfg := Config{Path: path}
+	for _, o := range cfgOverrides {
+		o(&cfg)
+	}
+	w, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return w, path
+}
+
+func withMaxSizeMB(n int) func(*Config) {
+	return func(c *Config) { c.MaxSizeMB = n }
+}
+
+func withMaxBackups(n int) func(*Config) {
+	return func(c *Config) { c.MaxBackups = n }
+}
+
+func withCompress(b bool) func(*Config) {
+	return func(c *Config) { c.Compress = &b }
+}
+
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return data
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not meaningful on Windows")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("file mode = %v, want %v", got, want)
+	}
+}
+
+// matchBackups returns all backup filenames matching the log file prefix.
+func matchBackups(logPath string) []string {
+	dir := filepath.Dir(logPath)
+	base := filepath.Base(logPath)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	prefix := base + "."
+	var names []string
+	for _, e := range entries {
+		name := e.Name()
+		if name != base && strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// =============================================================================
+// 基础功能
+// =============================================================================
+
+func TestWriter_Write(t *testing.T) {
+	w, path := newTestWriter(t)
+	defer w.Close()
+
+	data := []byte("hello world\n")
+	n, err := w.Write(data)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len(data) {
+		t.Errorf("Write returned %d, want %d", n, len(data))
+	}
+
+	got := readFile(t, path)
+	if string(got) != string(data) {
+		t.Errorf("got %q, want %q", got, data)
+	}
+}
+
+func TestWriter_FilePermissionsRestricted(t *testing.T) {
+	w, path := newTestWriter(t)
+	defer w.Close()
+
+	assertFileMode(t, path, DefaultFileMode)
+}
+
+// =============================================================================
+// 大小轮转
+// =============================================================================
+
+func TestWriter_SizeRotation(t *testing.T) {
+	w, path := newTestWriter(t, withMaxSizeMB(1), withMaxBackups(2))
+
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 3300 {
+		w.Write(data)
+	}
+
+	w.Close()
+
+	backups := matchBackups(path)
+	if len(backups) > 2 {
+		t.Errorf("expected at most 2 backups, got %d: %v", len(backups), backups)
+	}
+}
+
+// =============================================================================
+// 时间轮转
+// =============================================================================
+
+func TestWriter_TimeRotation(t *testing.T) {
+	w, path := newTestWriter(t, func(c *Config) {
+		c.MaxSizeMB = 100
+		c.RotateInterval = 100 * time.Millisecond
+		c.MaxBackups = 3
+	})
+
+	w.Write([]byte("before rotation\n"))
+	time.Sleep(200 * time.Millisecond)
+	w.Write([]byte("after interval\n"))
+
+	w.Close()
+
+	backups := matchBackups(path)
+	if len(backups) == 0 {
+		t.Error("expected at least one backup from time-based rotation, got none")
+	}
+}
+
+// =============================================================================
+// gzip 压缩
+// =============================================================================
+
+func TestWriter_Compress(t *testing.T) {
+	w, path := newTestWriter(t, withMaxSizeMB(1), withCompress(true))
+
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 1100 {
+		w.Write(data)
+	}
+
+	w.Close()
+
+	backups := matchBackups(path)
+	hasGz := false
+	for _, b := range backups {
+		if strings.HasSuffix(b, ".gz") {
+			hasGz = true
+			gzPath := filepath.Join(filepath.Dir(path), b)
+			f, err := os.Open(gzPath)
+			if err != nil {
+				t.Fatalf("open .gz: %v", err)
+			}
+			defer f.Close()
+			gz, err := gzip.NewReader(f)
+			if err != nil {
+				t.Fatalf("gzip reader: %v", err)
+			}
+			defer gz.Close()
+			content, err := io.ReadAll(gz)
+			if err != nil {
+				t.Fatalf("read gzip: %v", err)
+			}
+			if len(content) == 0 {
+				t.Error("compressed content should not be empty")
+			}
+			break
+		}
+	}
+	if !hasGz {
+		t.Errorf("expected compressed backup (.gz) files, got: %v", backups)
+	}
+}
+
+// =============================================================================
+// 残留文件压缩
+// =============================================================================
+
+func TestCompressResidual(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+
+	backup1 := logPath + ".20260401-000000"
+	if err := os.WriteFile(backup1, []byte("old log data\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpFile := logPath + ".20260401-000000.gz.tmp"
+	if err := os.WriteFile(tmpFile, []byte("partial gzip"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	compressResidual(logPath, true, &wg, nil)
+	wg.Wait()
+
+	if _, err := os.Stat(tmpFile); err == nil {
+		t.Error(".tmp file should be cleaned up")
+	}
+
+	if _, err := os.Stat(backup1 + ".gz"); err != nil {
+		t.Errorf("backup should be compressed to .gz: %v", err)
+	}
+}
+
+// =============================================================================
+// compressFile 直接测试
+// =============================================================================
+
+func TestCompressFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.txt")
+	gzPath := src + ".gz"
+
+	content := strings.Repeat("log line\n", 1000)
+	if err := os.WriteFile(src, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	compressFile(src, nil)
+
+	if _, err := os.Stat(gzPath); err != nil {
+		t.Fatal("compressed file should exist")
+	}
+	if _, err := os.Stat(src); err == nil {
+		t.Error("original file should be removed after compression")
+	}
+
+	gzInfo, _ := os.Stat(gzPath)
+	if gzInfo.Size() >= int64(len(content)) {
+		t.Errorf("compressed file (%d) should be smaller than original (%d)", gzInfo.Size(), len(content))
+	}
+}
+
+func TestCompressFile_NilOnError(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(src, []byte("test log data\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	compressFile(src, nil)
+
+	if _, err := os.Stat(src + ".gz"); err != nil {
+		t.Errorf("compression should succeed even with nil OnError: %v", err)
+	}
+	if _, err := os.Stat(src); err == nil {
+		t.Error("original file should be removed after compression with nil OnError")
+	}
+}
+
+// =============================================================================
+// 轮转后文件权限
+// =============================================================================
+
+func TestWriter_RotatedFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not meaningful on Windows")
+	}
+	w, path := newTestWriter(t, func(c *Config) {
+		c.MaxSizeMB = 1
+	})
+
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 1200 {
+		w.Write(data)
+	}
+
+	w.Close()
+	assertFileMode(t, path, DefaultFileMode)
+}
+
+// =============================================================================
+// 并发写入
+// =============================================================================
+
+func TestWriter_ConcurrentWrites(t *testing.T) {
+	w, _ := newTestWriter(t)
+	defer w.Close()
+
+	const goroutines = 100
+	done := make(chan struct{})
+
+	for i := range goroutines {
+		go func(n int) {
+			w.Write([]byte(strings.Repeat("x", 100) + "\n"))
+			done <- struct{}{}
+		}(i)
+	}
+
+	for range goroutines {
+		<-done
+	}
+}
+
+// =============================================================================
+// Close
+// =============================================================================
+
+func TestWriter_Close(t *testing.T) {
+	w, _ := newTestWriter(t)
+
+	if err := w.Close(); err != nil {
+		t.Errorf("Close() error: %v", err)
+	}
+
+	if err := w.Close(); err != nil {
+		t.Errorf("double Close() error: %v", err)
+	}
+
+	_, err := w.Write([]byte("after close"))
+	if err == nil {
+		t.Error("Write after Close should return error")
+	}
+}
+
+// =============================================================================
+// Config 验证
+// =============================================================================
+
+func TestConfig_EmptyPath(t *testing.T) {
+	_, err := New(Config{Path: ""})
+	if err == nil {
+		t.Fatal("expected error for empty path")
+	}
+	if !strings.Contains(err.Error(), "file path is required") {
+		t.Errorf("error should mention path required, got: %v", err)
+	}
+}
+
+func TestConfig_RelativePath(t *testing.T) {
+	_, err := New(Config{Path: "relative/path.log"})
+	if err == nil {
+		t.Fatal("expected error for relative path")
+	}
+}
+
+func TestConfig_Defaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	w, err := New(Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+
+	if w.cfg.MaxSizeMB != DefaultMaxSizeMB {
+		t.Errorf("MaxSizeMB = %d, want %d", w.cfg.MaxSizeMB, DefaultMaxSizeMB)
+	}
+	if w.cfg.MaxBackups != DefaultMaxBackups {
+		t.Errorf("MaxBackups = %d, want %d", w.cfg.MaxBackups, DefaultMaxBackups)
+	}
+	if w.cfg.MaxAgeDays != DefaultMaxAgeDays {
+		t.Errorf("MaxAgeDays = %d, want %d", w.cfg.MaxAgeDays, DefaultMaxAgeDays)
+	}
+	if !w.cfg.compress() {
+		t.Error("Compress should default to true")
+	}
+	if w.cfg.FileMode != DefaultFileMode {
+		t.Errorf("FileMode = %v, want %v", w.cfg.FileMode, DefaultFileMode)
+	}
+}

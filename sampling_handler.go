@@ -125,7 +125,7 @@ func (s *samplingState) resetLoop() {
 }
 
 var (
-	_ slog.Handler = (*SamplingHandler)(nil)
-	_ io.Closer    = (*SamplingHandler)(nil)
+	_ slog.Handler     = (*SamplingHandler)(nil)
+	_ io.Closer        = (*SamplingHandler)(nil)
 	_ handlerUnwrapper = (*SamplingHandler)(nil)
 )

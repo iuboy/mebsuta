@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
+
+	"github.com/iuboy/mebsuta/filerotate"
 )
 
 // HandlerOption is a functional option for configuring the handler chain built by New.
@@ -38,10 +40,10 @@ func UseStdout(cfg StdoutConfig) HandlerOption {
 	}
 }
 
-// UseFile adds a FileHandler with the given config.
-func UseFile(cfg FileConfig) HandlerOption {
+// UseFile adds a FileHandler with the given rotation and file config.
+func UseFile(rotateCfg filerotate.Config, cfg FileConfig) HandlerOption {
 	return func(o *handlerOptions) error {
-		h, err := NewFileHandler(cfg)
+		h, err := NewFileHandler(rotateCfg, cfg)
 		if err != nil {
 			return err
 		}

@@ -1,11 +1,15 @@
 package database
 
 import (
+	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/iuboy/mebsuta"
 )
+
+var tableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // Config holds configuration for database log output.
 type Config struct {
@@ -34,6 +38,12 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.Table == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name is required"}
+	}
+	if !tableNameRe.MatchString(c.Table) {
+		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z_][a-zA-Z0-9_]*"}
+	}
+	if len(c.Table) > 64 {
+		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max 64, got %d)", len(c.Table))}
 	}
 	if c.Level == nil {
 		c.Level = slog.LevelInfo

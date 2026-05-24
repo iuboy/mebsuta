@@ -206,7 +206,7 @@ func TestAsyncHandler_AuditLevelNotDropped(t *testing.T) {
 		t.Fatalf("Handle fill: %v", err)
 	}
 
-	r := slog.NewRecord(time.Now(), LevelAudit, "audit record", 0)
+	r := slog.NewRecord(time.Now(), slog.LevelError+4, "audit record", 0)
 	if err := h.Handle(context.Background(), r); err != nil {
 		t.Fatalf("Handle audit: %v", err)
 	}
