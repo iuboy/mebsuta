@@ -22,9 +22,6 @@ jobs:
               - '**.go'
               - 'go.mod'
               - 'go.sum'
-              - 'go.work'
-              - '**/go.mod'
-              - '**/go.sum'
             repo:
               - '.github/**'
               - 'README.md'
@@ -38,12 +35,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            database/go.sum
-            metrics/go.sum
-            syslog/go.sum
-      - run: go work sync
+          cache-dependency-path: go.sum
       - run: go test -race -count=1 ./...
       - run: go vet ./...
       - run: test -z "$(gofmt -s -l .)"
@@ -57,12 +49,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            database/go.sum
-            metrics/go.sum
-            syslog/go.sum
-      - run: go work sync
+          cache-dependency-path: go.sum
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   status:
