@@ -13,9 +13,6 @@
 coverage.html
 coverage/
 
-# Go workspace file
-go.work.sum
-
 # Dependency directories
 vendor/
 
@@ -101,3 +98,4 @@ basic
 chain
 file
 sampling
+go.work.sum
