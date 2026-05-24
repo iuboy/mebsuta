@@ -6,15 +6,11 @@ on:
   pull_request:
     branches: [dev]
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
       go: ${{ steps.filter.outputs.go }}
-      rust: ${{ steps.filter.outputs.rust }}
       repo: ${{ steps.filter.outputs.repo }}
     steps:
       - uses: actions/checkout@v4
@@ -23,98 +19,60 @@ jobs:
         with:
           filters: |
             go:
-              - 'go/**'
-            rust:
-              - 'rust/**'
+              - '**.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'go.work'
+              - '**/go.mod'
+              - '**/go.sum'
             repo:
               - '.github/**'
               - 'README.md'
-              - 'CHANGELOG.md'
-              - 'CONTRIBUTING.md'
-              - 'MIGRATION.md'
-              - 'SECURITY.md'
-              - 'SPEC.md'
-              - 'TESTING.md'
-              - 'VERSIONING.md'
-
-  rust:
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.repo == 'true'
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust -> target
-      - run: cargo fmt --all -- --check
-      - run: cargo clippy --workspace -- -D warnings
-      - run: cargo test --workspace
 
   go:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.repo == 'true'
-    defaults:
-      run:
-        working-directory: go
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            database/go.sum
+            metrics/go.sum
+            syslog/go.sum
+      - run: go work sync
       - run: go test -race -count=1 ./...
       - run: go vet ./...
       - run: test -z "$(gofmt -s -l .)"
-
-  rust-audit:
-    runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.repo == 'true'
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust -> target
-      - run: cargo install cargo-audit --locked
-      - run: cargo audit
 
   go-vulncheck:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.repo == 'true'
-    defaults:
-      run:
-        working-directory: go
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go/go.mod
-          cache-dependency-path: go/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            database/go.sum
+            metrics/go.sum
+            syslog/go.sum
+      - run: go work sync
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   status:
     runs-on: ubuntu-latest
-    needs: [changes, rust, go, rust-audit, go-vulncheck]
+    needs: [changes, go, go-vulncheck]
     if: always()
     env:
       GO_SEL: ${{ needs.changes.outputs.go }}
-      RUST_SEL: ${{ needs.changes.outputs.rust }}
       REPO_SEL: ${{ needs.changes.outputs.repo }}
-      RUST_RESULT: ${{ needs.rust.result }}
       GO_RESULT: ${{ needs.go.result }}
-      RUST_AUDIT_RESULT: ${{ needs.rust-audit.result }}
       GO_VULN_RESULT: ${{ needs.go-vulncheck.result }}
     steps:
       - name: Report selected jobs
@@ -122,21 +80,12 @@ jobs:
           echo "## Dev CI Status Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "| Job | Selected | Result |" >> "$GITHUB_STEP_SUMMARY"
           echo "|-----|----------|--------|" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$RUST_SEL" = 'true' ] || [ "$REPO_SEL" = 'true' ]; then sel=yes; else sel=no; fi
-          echo "| rust | $sel | $RUST_RESULT |" >> "$GITHUB_STEP_SUMMARY"
           if [ "$GO_SEL" = 'true' ] || [ "$REPO_SEL" = 'true' ]; then sel=yes; else sel=no; fi
           echo "| go | $sel | $GO_RESULT |" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$RUST_SEL" = 'true' ] || [ "$REPO_SEL" = 'true' ]; then sel=yes; else sel=no; fi
-          echo "| rust-audit | $sel | $RUST_AUDIT_RESULT |" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$GO_SEL" = 'true' ] || [ "$REPO_SEL" = 'true' ]; then sel=yes; else sel=no; fi
           echo "| go-vulncheck | $sel | $GO_VULN_RESULT |" >> "$GITHUB_STEP_SUMMARY"
       - name: Fail if any selected job failed
         run: |
           failed=0
-          if [ "$RUST_SEL" = 'true' ] || [ "$REPO_SEL" = 'true' ]; then
-            [ "$RUST_RESULT" = 'success' ] || { echo "::error::rust job failed or was cancelled"; failed=1; }
-            [ "$RUST_AUDIT_RESULT" = 'success' ] || { echo "::error::rust-audit job failed or was cancelled"; failed=1; }
-          fi
           if [ "$GO_SEL" = 'true' ] || [ "$REPO_SEL" = 'true' ]; then
             [ "$GO_RESULT" = 'success' ] || { echo "::error::go job failed or was cancelled"; failed=1; }
             [ "$GO_VULN_RESULT" = 'success' ] || { echo "::error::go-vulncheck job failed or was cancelled"; failed=1; }

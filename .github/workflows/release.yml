@@ -12,25 +12,17 @@ jobs:
     env:
       TAG_NAME: ${{ github.ref_name }}
     steps:
-      - name: Reject legacy Go-only root tags
+      - name: Validate tag format
         run: |
           case "$TAG_NAME" in
-            v0.1.*|v0.2.*|v0.3.[0-4])
-              echo "::error::Tag $TAG_NAME is a legacy Go-only release. Create go/v* tags instead."
-              exit 1
-              ;;
-          esac
-      - name: Validate tag prefix
-        run: |
-          case "$TAG_NAME" in
-            go/v*|v*) ;;
-            *) echo "::error::Unexpected tag prefix: $TAG_NAME. Use go/v* or v*." >&2; exit 1 ;;
+            v*) ;;
+            *) echo "::error::Unexpected tag format: $TAG_NAME. Use v*." >&2; exit 1 ;;
           esac
 
   go:
     runs-on: ubuntu-latest
     needs: guard
-    if: startsWith(github.ref_name, 'go/v') || startsWith(github.ref_name, 'v')
+    if: startsWith(github.ref_name, 'v')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -45,18 +37,12 @@ jobs:
       - run: go test -race -count=1 ./...
       - run: go vet ./...
       - run: test -z "$(gofmt -s -l .)"
-      - run: go run golang.org/x/vulncheck/cmd/govulncheck@latest ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
       - name: Validate Go module path
         run: |
           module_path="$(go list -m)"
           if [ "$module_path" != 'github.com/iuboy/mebsuta' ]; then
             echo "::error::Expected module path github.com/iuboy/mebsuta, got $module_path"
-            exit 1
-          fi
-      - name: Check CHANGELOG has Unreleased section
-        run: |
-          if ! grep -q '^## \[Unreleased\]' docs/plan/CHANGELOG.md; then
-            echo "::error::docs/plan/CHANGELOG.md missing '## [Unreleased]' section"
             exit 1
           fi
 
@@ -93,19 +79,9 @@ jobs:
       TAG_NAME: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - name: Extract changelog section
-        id: changelog
-        run: |
-          sed -n '/^## \[Unreleased\]/,/^## \[/p' docs/plan/CHANGELOG.md | head -n -1 > release_notes.md
-          echo "Extracted $(wc -l < release_notes.md) lines"
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="$TAG_NAME"
-          if [ ! -f release_notes.md ] || [ ! -s release_notes.md ]; then
-            echo "No release notes found, using tag name as title"
-            gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
-          else
-            gh release create "$TAG" --title "$TAG" --notes-file release_notes.md
-          fi
+          gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
