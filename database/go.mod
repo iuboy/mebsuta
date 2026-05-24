@@ -1,6 +1,6 @@
 module github.com/iuboy/mebsuta/database
 
-go 1.26.0
+go 1.26.1
 
 require (
 	github.com/iuboy/mebsuta v0.0.0
