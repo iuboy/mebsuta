@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// samplingState tracks per-window counters for sampling decisions.
 type samplingState struct {
 	count   atomic.Int64
 	ticker  *time.Ticker

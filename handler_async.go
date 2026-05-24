@@ -191,6 +191,7 @@ func (h *AsyncHandler) run() {
 	}
 }
 
+// asyncAttrsHandler preserves preset attrs through the async boundary.
 type asyncAttrsHandler struct {
 	*AsyncHandler
 	attrs []slog.Attr
@@ -218,6 +219,7 @@ func (h *asyncAttrsHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
+// asyncGroupHandler preserves preset attrs and group prefix through the async boundary.
 type asyncGroupHandler struct {
 	*AsyncHandler
 	group string

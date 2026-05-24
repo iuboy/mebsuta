@@ -8,6 +8,7 @@ import (
 // ContextExtractor extracts slog.Attr values from a context.Context.
 type ContextExtractor func(ctx context.Context) []slog.Attr
 
+// contextExtractorHandler is a slog.Handler decorator that injects context-derived attrs into each record.
 type contextExtractorHandler struct {
 	inner   slog.Handler
 	extract ContextExtractor
@@ -64,6 +65,7 @@ func (h *contextExtractorHandler) setErrorHandler(fn ErrorHandler) {
 	// No-op: propagateErrorHandler recurses via unwrapHandler to reach the inner handler.
 }
 
+// joinGroup joins two group names with a dot, returning the non-empty one if either is empty.
 func joinGroup(parent, child string) string {
 	if parent == "" {
 		return child

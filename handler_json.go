@@ -17,6 +17,8 @@ import (
 // Kept as an inline constant to avoid importing the audit package.
 const levelAudit slog.Level = slog.LevelError + 4
 
+// contractJSONHandler produces stable-contract JSON output: {"time","level","message","attributes"}.
+// It is used instead of slog.JSONHandler to enforce the output schema and handle NaN/Inf floats.
 type contractJSONHandler struct {
 	mu    *sync.Mutex
 	w     io.Writer
@@ -24,6 +26,7 @@ type contractJSONHandler struct {
 	group string
 }
 
+// newContractJSONHandler returns a slog.Handler that writes stable-contract JSON to w.
 func newContractJSONHandler(w io.Writer) slog.Handler {
 	return &contractJSONHandler{w: w, mu: &sync.Mutex{}}
 }
@@ -132,6 +135,7 @@ func (h *contractJSONHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
+// prefixAttr prepends group to the attr's key if both are non-empty.
 func prefixAttr(group string, attr slog.Attr) slog.Attr {
 	if group == "" || attr.Key == "" {
 		return attr

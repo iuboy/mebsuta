@@ -29,6 +29,7 @@ func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 	}
 }
 
+// safeMulti fans out log records to multiple handlers with per-handler panic recovery.
 type safeMulti struct {
 	handlers     []slog.Handler
 	errorHandler ErrorHandler
