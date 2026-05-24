@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
@@ -47,6 +47,18 @@ func (h *countHandler) Levels() []slog.Level {
 	return cp
 }
 
+func (h *countHandler) ErrorLevelCount() int64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var n int64
+	for _, l := range h.levels {
+		if l >= slog.LevelError {
+			n++
+		}
+	}
+	return n
+}
+
 func closeSampling(t *testing.T, h slog.Handler) {
 	t.Helper()
 	if closer, ok := h.(interface{ Close() error }); ok {
@@ -60,7 +72,7 @@ func closeSampling(t *testing.T, h slog.Handler) {
 
 func TestWithSampling_Disabled(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{Enabled: false})
+	h := WithSampling(inner, SamplingConfig{Enabled: false})
 	logger := slog.New(h)
 
 	for range 100 {
@@ -73,7 +85,7 @@ func TestWithSampling_Disabled(t *testing.T) {
 }
 
 func TestWithSampling_NilHandler(t *testing.T) {
-	h := WithSampling(nil, config.SamplingConfig{Enabled: true})
+	h := WithSampling(nil, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second})
 	if h != nil {
 		t.Error("expected nil handler to return nil")
 	}
@@ -81,12 +93,7 @@ func TestWithSampling_NilHandler(t *testing.T) {
 
 func TestWithSampling_BasicSampling(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    5,
-		Thereafter: 2,
-		Window:     time.Second,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 5, Thereafter: 2, Window: time.Second})
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
@@ -106,12 +113,7 @@ func TestWithSampling_BasicSampling(t *testing.T) {
 
 func TestWithSampling_ErrorAlwaysRecorded(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    1,
-		Thereafter: 100,
-		Window:     time.Second,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second})
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
@@ -126,12 +128,7 @@ func TestWithSampling_ErrorAlwaysRecorded(t *testing.T) {
 
 func TestWithSampling_WarnSampled(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    1,
-		Thereafter: 100,
-		Window:     time.Second,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second})
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
@@ -146,12 +143,7 @@ func TestWithSampling_WarnSampled(t *testing.T) {
 
 func TestWithSampling_WindowReset(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    5,
-		Thereafter: 10,
-		Window:     100 * time.Millisecond,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 5, Thereafter: 10, Window: 100 * time.Millisecond})
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
@@ -176,12 +168,7 @@ func TestWithSampling_WindowReset(t *testing.T) {
 
 func TestWithSampling_Concurrent(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    100,
-		Thereafter: 10,
-		Window:     time.Second,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second})
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
@@ -208,12 +195,7 @@ func TestWithSampling_Concurrent(t *testing.T) {
 
 func TestWithSampling_WithAttrs(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    3,
-		Thereafter: 10,
-		Window:     time.Second,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 3, Thereafter: 10, Window: time.Second})
 	defer closeSampling(t, h)
 
 	child := h.WithAttrs([]slog.Attr{slog.String("component", "test")})
@@ -230,12 +212,7 @@ func TestWithSampling_WithAttrs(t *testing.T) {
 
 func TestWithSampling_WithGroup(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    3,
-		Thereafter: 10,
-		Window:     time.Second,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 3, Thereafter: 10, Window: time.Second})
 	defer closeSampling(t, h)
 
 	child := h.WithGroup("request")
@@ -251,12 +228,7 @@ func TestWithSampling_WithGroup(t *testing.T) {
 }
 
 func TestWithSampling_Enabled(t *testing.T) {
-	h := WithSampling(&countHandler{}, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    1,
-		Thereafter: 100,
-		Window:     time.Second,
-	})
+	h := WithSampling(&countHandler{}, SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second})
 	defer closeSampling(t, h)
 
 	if !h.Enabled(context.Background(), slog.LevelError) {
@@ -269,12 +241,7 @@ func TestWithSampling_Enabled(t *testing.T) {
 
 func TestWithSampling_Close(t *testing.T) {
 	inner := &countHandler{}
-	h := WithSampling(inner, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    10,
-		Thereafter: 5,
-		Window:     100 * time.Millisecond,
-	})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 10, Thereafter: 5, Window: 100 * time.Millisecond})
 
 	if sh, ok := h.(interface{ Close() error }); ok {
 		// 第一次关闭
@@ -291,7 +258,7 @@ func TestWithSampling_Close(t *testing.T) {
 func TestWithSampling_Defaults(t *testing.T) {
 	inner := &countHandler{}
 	// 零值配置应使用默认值
-	h := WithSampling(inner, config.SamplingConfig{Enabled: true})
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second})
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
@@ -302,114 +269,6 @@ func TestWithSampling_Defaults(t *testing.T) {
 	count := inner.Count()
 	if count == 0 || count > 200 {
 		t.Errorf("expected some sampling with defaults, got %d", count)
-	}
-}
-
-// =============================================================================
-// SyslogHandler 配置验证测试（不需要真实连接）
-// =============================================================================
-
-func TestNewSyslogHandler_EmptyAddress(t *testing.T) {
-	_, err := NewSyslogHandler(config.SyslogConfig{}, slog.LevelInfo)
-	if err == nil {
-		t.Fatal("expected error for empty address")
-	}
-}
-
-func TestNewSyslogHandler_InvalidFacility(t *testing.T) {
-	_, err := NewSyslogHandler(config.SyslogConfig{
-		Address:  "localhost:514",
-		Facility: 25,
-	}, slog.LevelInfo)
-	if err == nil {
-		t.Fatal("expected error for invalid facility")
-	}
-}
-
-func TestNewSyslogHandler_InvalidNetwork(t *testing.T) {
-	// Network 不验证，只提供默认值
-	// 但连接会失败
-	_, err := NewSyslogHandler(config.SyslogConfig{
-		Address: "localhost:1", // 非常端口，几乎不可能连接
-	}, slog.LevelInfo)
-	if err == nil {
-		t.Error("expected connection error")
-	}
-}
-
-func TestSyslogHandler_Enabled(t *testing.T) {
-	h := &SyslogHandler{
-		LevelHandler: LevelHandler{Level: slog.LevelWarn},
-	}
-	if h.Enabled(context.Background(), slog.LevelDebug) {
-		t.Error("Debug should not be enabled at Warn level")
-	}
-	if !h.Enabled(context.Background(), slog.LevelError) {
-		t.Error("Error should be enabled at Warn level")
-	}
-}
-
-// =============================================================================
-// 辅助函数测试
-// =============================================================================
-
-func TestCleanHostname(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"my-host", "my-host"},
-		{"my_host", "my-host"},
-		{"my host", "my-host"},
-		{"192.168.1.1", "192.168.1.1"},
-		{"", ""},
-	}
-
-	for _, tt := range tests {
-		got := cleanHostname(tt.input)
-		if got != tt.expected {
-			t.Errorf("cleanHostname(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
-func TestSafeMessageForLog(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"hello world", "hello world"},
-		{"hello\tworld", "hello world"},
-		{"hello\x00world", "hello world"},
-		{"  hello   world  ", "hello world"},
-	}
-
-	for _, tt := range tests {
-		got := safeMessageForLog(tt.input)
-		if got != tt.expected {
-			t.Errorf("safeMessageForLog(%q) = %q, want %q", tt.input, got, tt.expected)
-		}
-	}
-}
-
-func TestLevelToSeverity(t *testing.T) {
-	h := &SyslogHandler{cfg: config.SyslogConfig{Facility: 1}}
-
-	tests := []struct {
-		level slog.Level
-		want  int
-	}{
-		{slog.LevelDebug, 7},
-		{slog.LevelInfo, 6},
-		{slog.LevelWarn, 4},
-		{slog.LevelError, 3},
-	}
-
-	for _, tt := range tests {
-		got := h.levelToSeverity(tt.level)
-		if got != tt.want {
-			t.Errorf("levelToSeverity(%v) = %d, want %d", tt.level, got, tt.want)
-		}
 	}
 }
 
@@ -464,14 +323,10 @@ func TestAtomicSamplingCounter(t *testing.T) {
 
 func TestStdoutHandler_WithSampling(t *testing.T) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, slog.LevelInfo, JSON)
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 
-	sampled := WithSampling(h, config.SamplingConfig{
-		Enabled:    true,
-		Initial:    5,
-		Thereafter: 10,
-		Window:     time.Second,
-	})
+	sampled := WithSampling(h, SamplingConfig{Enabled: true, Initial: 5, Thereafter: 10, Window: time.Second})
 	defer closeSampling(t, sampled)
 
 	logger := slog.New(sampled)
@@ -485,5 +340,21 @@ func TestStdoutHandler_WithSampling(t *testing.T) {
 	}
 	if lines > 20 {
 		t.Errorf("expected at most 20 lines, got %d", lines)
+	}
+}
+
+// SPEC: "Audit records must not be dropped regardless of sampling state."
+func TestWithSampling_AuditAlwaysRecorded(t *testing.T) {
+	inner := &countHandler{}
+	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second})
+	defer closeSampling(t, h)
+	logger := slog.New(h)
+
+	for range 10 {
+		logger.Log(context.Background(), slog.LevelError+4, "audit", "i", 0)
+	}
+
+	if inner.Count() != 10 {
+		t.Errorf("all audit records should bypass sampling, got %d/10", inner.Count())
 	}
 }

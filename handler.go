@@ -6,101 +6,22 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"reflect"
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
-// LevelHandler 提供所有 adapter Handler 共享的 Enabled 逻辑。
-// 各 Handler 通过嵌入 LevelHandler 获得 level 过滤能力。
-type LevelHandler struct {
-	Level slog.Level
-}
-
-// Enabled 报告给定级别是否应该被记录。
-func (h *LevelHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.Level
-}
-
-// =============================================================================
-// HandlerOption — Handler 构造的函数式选项
-// =============================================================================
-
-// HandlerOption 配置 New() 的 Handler 组装。
-type HandlerOption func(*handlerOptions) error
-
-type handlerOptions struct {
-	handlers     []slog.Handler
-	errorHandler ErrorHandler
-}
-
-// WithHandler 添加一个 slog.Handler 到 multi-handler。
-func WithHandler(h slog.Handler) HandlerOption {
-	return func(o *handlerOptions) error {
-		if h == nil {
-			return fmt.Errorf("mebsuta: handler cannot be nil")
-		}
-		o.handlers = append(o.handlers, h)
-		return nil
-	}
-}
-
-// WithErrorHandler 设置 Handler 内部错误的处理函数。
-// 默认写入 os.Stderr。设为 nil 则静默丢弃内部错误。
-// nil 会传播到所有子 handler，使其内部错误也被静默丢弃。
-func WithErrorHandler(fn ErrorHandler) HandlerOption {
-	return func(o *handlerOptions) error {
-		o.errorHandler = fn
-		return nil
-	}
-}
-
-// ReportError 安全调用 ErrorHandler，nil 时静默丢弃。
-func ReportError(eh ErrorHandler, component string, err error) {
+// ReportError invokes the ErrorHandler if non-nil.
+func ReportError(eh ErrorHandler, he HandlerError) {
 	if eh != nil {
-		eh(component, err)
-	}
-}
-
-// loadErrorHandler 从 atomic.Pointer[ErrorHandler] 加载当前值。
-func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
-	v := p.Load()
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
-// LoadErrorHandler 导出版本，供子包（如 database）使用。
-func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
-	return loadErrorHandler(p)
-}
-
-// buildHandler 从选项构建 slog.Handler。
-// 0 个 handler 返回 error。1 个直接返回。多个用 safeMultiHandler（带 panic recovery）。
-func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
-	o := &handlerOptions{}
-	for _, opt := range opts {
-		if err := opt(o); err != nil {
-			return nil, err
+		if he.Time.IsZero() {
+			he.Time = time.Now()
 		}
+		eh(he)
 	}
-	if len(o.handlers) == 0 {
-		return nil, fmt.Errorf("mebsuta: at least one handler is required")
-	}
-
-	// 传播 errorHandler 到所有支持它的 handler（包括 nil，实现全局静默）
-	for _, h := range o.handlers {
-		propagateErrorHandler(h, o.errorHandler)
-	}
-
-	if len(o.handlers) == 1 {
-		return o.handlers[0], nil
-	}
-	return safeMultiHandler(o.handlers, o.errorHandler), nil
 }
 
-// safeMultiHandler 包装多个子 Handler，每个调用时加 panic recover。
-// 防止单个 Handler panic 导致整个日志调用崩溃。(Decision #17)
+// safeMultiHandler wraps multiple sub-handlers, adding panic recovery to each call. Prevents a single handler panic from crashing the entire log call.
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 	return &safeMulti{
 		handlers:     handlers,
@@ -113,11 +34,11 @@ type safeMulti struct {
 	errorHandler ErrorHandler
 }
 
-// Close 递归关闭所有子 handler（包括装饰器链内层）。
 func (h *safeMulti) Close() error {
+	visited := make(map[uintptr]bool)
 	var errs []error
 	for _, hh := range h.handlers {
-		if err := CloseAll(hh); err != nil {
+		if err := closeAll(hh, visited); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -135,14 +56,14 @@ func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
 
 func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 	if len(h.handlers) == 1 {
-		// 单 handler 直接串行调用，避免 goroutine 开销
+		// Single handler: call directly without goroutine overhead
 		hh := h.handlers[0]
 		if !hh.Enabled(ctx, r.Level) {
 			return nil
 		}
 		defer func() {
 			if r := recover(); r != nil {
-				ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
+				ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
 			}
 		}()
 		return hh.Handle(ctx, r)
@@ -161,11 +82,11 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					ReportError(h.errorHandler, "multi", fmt.Errorf("handler panic recovered: %v", r))
+					ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
 				}
 			}()
-			// r.Clone() 防止并发 goroutine 竞争 slog.Record。
-			// Clone 内部有快速路径：无 Attr 时仅复制固定字段，无堆分配。
+			// r.Clone() prevents concurrent goroutines from racing on slog.Record.
+			// Clone has a fast path: with no Attrs, only fixed fields are copied with no heap allocation.
 			if err := hh.Handle(ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
@@ -200,17 +121,19 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 		errorHandler: h.errorHandler,
 	}
 }
+func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler = fn
+	for _, hh := range h.handlers {
+		propagateErrorHandler(hh, fn)
+	}
+}
 
-// =============================================================================
-// errorHandlerSetter — ErrorHandler 传播接口
-// =============================================================================
-
-// errorHandlerSetter 是支持自定义错误处理的 Handler 的内部接口。
+// errorHandlerSetter is an internal interface for handlers that support custom error handling.
 type errorHandlerSetter interface {
 	setErrorHandler(fn ErrorHandler)
 }
 
-// propagateErrorHandler 递归解包装饰器链，向所有支持 errorHandlerSetter 的 handler 注入 errorHandler。
+// propagateErrorHandler recursively unwraps the decorator chain, injecting errorHandler into all handlers that support setErrorHandler.
 func propagateErrorHandler(h slog.Handler, fn ErrorHandler) {
 	if s, ok := h.(errorHandlerSetter); ok {
 		s.setErrorHandler(fn)
@@ -220,37 +143,77 @@ func propagateErrorHandler(h slog.Handler, fn ErrorHandler) {
 	}
 }
 
-// =============================================================================
-// CloseAll — 递归关闭所有实现 io.Closer 的 Handler
-// =============================================================================
-
-// handlerUnwrapper 是装饰器实现的内部接口，用于 CloseAll 递归解包。
+// handlerUnwrapper is an internal interface for decorator implementations, used by CloseAll for recursive unwrapping.
 type handlerUnwrapper interface {
 	unwrapHandler() slog.Handler
 }
 
-// CloseAll 递归关闭 handler 及其子 handler 中所有实现 io.Closer 的资源。
-// 支持装饰器链解包（Sampling、Async、Metrics 等）。
-// 用于进程退出前 flush 缓冲区、关闭文件和网络连接。
+// CloseAll recursively closes all resources in the handler and decorator chain that implement io.Closer.
+// Uses a visited map to prevent shared handlers from being closed more than once.
 func CloseAll(handler slog.Handler) error {
+	return closeAll(handler, make(map[uintptr]bool))
+}
+
+func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
 	if handler == nil {
 		return nil
 	}
-	var errs []error
+	// Use reflect to get the interface's underlying pointer for identity comparison.
+	// This is necessary because slog.Handler is an interface — you can't take the
+	// address of an interface value directly. reflect.ValueOf is the standard Go
+	// approach for interface pointer identity.
+	ptr := reflect.ValueOf(handler).Pointer()
+	if visited[ptr] {
+		return nil
+	}
+	visited[ptr] = true
 
-	// 先关闭自身
+	var errs []error
 	if closer, ok := handler.(io.Closer); ok {
 		if err := closer.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
-
-	// 递归关闭内层 handler（装饰器链）
 	if uw, ok := handler.(handlerUnwrapper); ok {
-		if err := CloseAll(uw.unwrapHandler()); err != nil {
+		if err := closeAll(uw.unwrapHandler(), visited); err != nil {
 			errs = append(errs, err)
 		}
 	}
-
 	return errors.Join(errs...)
 }
+
+// prefixAttrs prepends "group." to each attr's key. Returns attrs unchanged when group is empty.
+func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
+	if group == "" {
+		return attrs
+	}
+	out := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		out[i] = slog.Attr{Key: group + "." + a.Key, Value: a.Value}
+	}
+	return out
+}
+
+// MergeAttrs merges existing and newAttrs, prefixing newAttrs keys with the given group.
+func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
+	merged := make([]slog.Attr, len(existing), len(existing)+len(newAttrs))
+	copy(merged, existing)
+	merged = append(merged, prefixAttrs(group, newAttrs)...)
+	return merged
+}
+
+// RecordWithGroupAttrs creates a new slog.Record with group-prefixed attrs from the original record plus extraAttrs.
+func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
+	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(attr slog.Attr) bool {
+		newR.AddAttrs(slog.Attr{Key: group + "." + attr.Key, Value: attr.Value})
+		return true
+	})
+	newR.AddAttrs(extraAttrs...)
+	return newR
+}
+
+var (
+	_ slog.Handler = (*safeMulti)(nil)
+	_ io.Closer    = (*safeMulti)(nil)
+)

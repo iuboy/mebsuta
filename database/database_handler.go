@@ -11,22 +11,25 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/attrutil"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// =============================================================================
-// DatabaseHandler — 数据库输出 slog.Handler
-// =============================================================================
+func loadDBErrorHandler(p *atomic.Pointer[mebsuta.ErrorHandler]) mebsuta.ErrorHandler {
+	v := p.Load()
+	if v == nil {
+		return nil
+	}
+	return *v
+}
 
 const (
 	finalFlushTimeout = 10 * time.Second
 	finalFlushRetries = 3
 )
 
-// dbLogEntry 是写入数据库的日志条目。
 type dbLogEntry struct {
 	Time    time.Time       `gorm:"column:time"`
 	Level   string          `gorm:"column:level"`
@@ -34,17 +37,10 @@ type dbLogEntry struct {
 	Fields  json.RawMessage `gorm:"type:json"`
 }
 
-// TableName 实现 GORM TableName 接口。
-func (dbLogEntry) TableName() string {
-	return "logs"
-}
-
-// DatabaseHandler 将日志记录批量写入 SQL 数据库。
-// 实现 slog.Handler 和 io.Closer 接口。
-// 支持 MySQL 和 Postgres（通过 GORM）。
-type DatabaseHandler struct {
-	mebsuta.LevelHandler
-	cfg          config.DatabaseConfig
+// Handler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
+type Handler struct {
+	leveler      slog.Leveler
+	cfg          Config
 	db           *gorm.DB
 	table        string
 	entries      chan dbLogEntry
@@ -52,31 +48,35 @@ type DatabaseHandler struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	closed       atomic.Bool
+	sendMu       sync.Mutex
 	errCount     atomic.Int64
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
 
-// NewDatabaseHandler 创建输出到数据库的 slog.Handler。
-func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseHandler, error) {
-	if err := cfg.Validate(); err != nil {
+// NewHandler creates a Handler that connects to the database specified in cfg.
+func NewHandler(cfg Config) (*Handler, error) {
+	cfg, err := cfg.Validate()
+	if err != nil {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
 	var dialector gorm.Dialector
-	switch cfg.DriverName {
+	switch cfg.Driver {
 	case "mysql":
-		dialector = mysql.Open(cfg.DataSourceName)
+		dialector = mysql.Open(cfg.DSN)
 	case "postgres":
-		dialector = postgres.Open(cfg.DataSourceName)
+		dialector = postgres.Open(cfg.DSN)
 	}
 
 	gdb, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("mebsuta: connect %s database: %w", cfg.DriverName, err)
+		return nil, fmt.Errorf("mebsuta: connect %s database: %w", cfg.Driver, err)
 	}
 
 	sqlDB, err := gdb.DB()
 	if err != nil {
+		// gorm.Open succeeded but DB() failed — close the underlying connection.
+		closeSQLDB(gdb)
 		return nil, fmt.Errorf("mebsuta: get database connection: %w", err)
 	}
 
@@ -86,144 +86,90 @@ func NewDatabaseHandler(cfg config.DatabaseConfig, level slog.Level) (*DatabaseH
 		sqlDB.SetConnMaxLifetime(cfg.MaxConnLifetime)
 	}
 
-	batchSize := cfg.BatchSize
-	batchInterval := cfg.BatchInterval
-	retryDelay := cfg.RetryDelay
-
 	ctx, cancel := context.WithCancel(context.Background())
 
-	h := &DatabaseHandler{
-		LevelHandler: mebsuta.LevelHandler{Level: level},
-		cfg:          cfg,
-		db:           gdb,
-		table:        cfg.TableName,
-		entries:      make(chan dbLogEntry, batchSize*10),
-		ctx:          ctx,
-		cancel:       cancel,
+	h := &Handler{
+		leveler: cfg.Level,
+		cfg:     cfg,
+		db:      gdb,
+		table:   cfg.Table,
+		entries: make(chan dbLogEntry, cfg.BatchSize*10),
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
 
 	h.wg.Add(1)
-	go h.run(batchSize, batchInterval, retryDelay)
+	go h.run(cfg.BatchSize, cfg.BatchInterval, cfg.RetryDelay)
 
 	return h, nil
 }
 
-// Handle 处理一条日志记录，转换为 dbLogEntry 并发送到缓冲通道。
-func (h *DatabaseHandler) Handle(ctx context.Context, r slog.Record) error {
+// Enabled implements slog.Handler.
+func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.leveler.Level()
+}
+
+// Handle implements slog.Handler.
+func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return nil
 	}
 
 	entry := h.recordToDBEntry(r)
 
-	// recover 防止 Close() 关闭 channel 后并发 send 导致 panic。
-	defer func() {
-		if r := recover(); r != nil {
-			h.errCount.Add(1)
-			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("send on closed channel, log dropped"))
+	if r.Level >= slog.LevelError {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		h.sendMu.Lock()
+		defer h.sendMu.Unlock()
+		if h.closed.Load() {
+			return nil
 		}
-	}()
+		select {
+		case h.entries <- entry:
+			return nil
+		case <-timer.C:
+			h.errCount.Add(1)
+			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", r.Level), Dropped: 1})
+			return nil
+		}
+	}
 
+	h.sendMu.Lock()
+	defer h.sendMu.Unlock()
+	if h.closed.Load() {
+		return nil
+	}
 	select {
 	case h.entries <- entry:
 		return nil
 	default:
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("buffer full, log dropped"))
+		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
 		return nil
 	}
 }
 
-// WithAttrs 返回带有预置属性的新 DatabaseHandler。
-// 预置属性会在 Handle 中序列化到 JSON Fields。
-func (h *DatabaseHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &dbAttrsHandler{
-		DatabaseHandler: h,
-		attrs:           attrs,
-	}
+// WithAttrs implements slog.Handler.
+func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &mebsuta.AttrsSub[*Handler]{Parent: h, Attrs: attrs}
 }
 
-// WithGroup 返回带有分组前缀的新 DatabaseHandler。
-func (h *DatabaseHandler) WithGroup(name string) slog.Handler {
-	return &dbGroupHandler{
-		DatabaseHandler: h,
-		group:           name,
-	}
+// WithGroup implements slog.Handler.
+func (h *Handler) WithGroup(name string) slog.Handler {
+	return &mebsuta.GroupSub[*Handler]{Parent: h, Group: name}
 }
 
-// dbAttrsHandler 在 Handle 时注入预置属性。
-type dbAttrsHandler struct {
-	*DatabaseHandler
-	attrs []slog.Attr
-}
-
-func (h *dbAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.DatabaseHandler.Handle(ctx, r)
-}
-
-func (h *dbAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
-	merged = append(merged, h.attrs...)
-	merged = append(merged, attrs...)
-	return &dbAttrsHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		attrs:           merged,
-	}
-}
-
-func (h *dbAttrsHandler) WithGroup(name string) slog.Handler {
-	return &dbGroupHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		group:           name,
-		attrs:           h.attrs,
-	}
-}
-
-// dbGroupHandler 在 Handle 时将属性归组。
-type dbGroupHandler struct {
-	*DatabaseHandler
-	group string
-	attrs []slog.Attr
-}
-
-func (h *dbGroupHandler) Handle(ctx context.Context, r slog.Record) error {
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.DatabaseHandler.Handle(ctx, r)
-}
-
-func (h *dbGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	merged := make([]slog.Attr, len(h.attrs), len(h.attrs)+len(attrs))
-	copy(merged, h.attrs)
-	for _, a := range attrs {
-		merged = append(merged, slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
-	}
-	return &dbAttrsHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		attrs:           merged,
-	}
-}
-
-func (h *dbGroupHandler) WithGroup(name string) slog.Handler {
-	return &dbGroupHandler{
-		DatabaseHandler: h.DatabaseHandler,
-		group:           h.group + "." + name,
-		attrs:           h.attrs,
-	}
-}
-
-// Close 关闭数据库连接。先 flush 缓冲区中的日志。
-func (h *DatabaseHandler) Close() error {
+// Close implements io.Closer.
+func (h *Handler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	h.sendMu.Lock()
 	close(h.entries)
+	h.sendMu.Unlock()
 	h.wg.Wait()
 	h.cancel()
 
@@ -234,11 +180,7 @@ func (h *DatabaseHandler) Close() error {
 	return sqlDB.Close()
 }
 
-// =============================================================================
-// 批量写入
-// =============================================================================
-
-func (h *DatabaseHandler) run(batchSize int, batchInterval, retryDelay time.Duration) {
+func (h *Handler) run(batchSize int, batchInterval, retryDelay time.Duration) {
 	defer h.wg.Done()
 
 	ticker := time.NewTicker(batchInterval)
@@ -273,7 +215,7 @@ func (h *DatabaseHandler) run(batchSize int, batchInterval, retryDelay time.Dura
 	}
 }
 
-func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
+func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 	if len(batch) == 0 {
 		return
 	}
@@ -287,18 +229,15 @@ func (h *DatabaseHandler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			return
 		}
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), "database", fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr))
+		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}
 	}
+	mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
 }
 
-// =============================================================================
-// 辅助
-// =============================================================================
-
-func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
+func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	entry := dbLogEntry{
 		Time:    r.Time,
 		Level:   r.Level.String(),
@@ -307,12 +246,13 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 
 	fields := make(map[string]any)
 	r.Attrs(func(attr slog.Attr) bool {
-		fields[attr.Key] = attr.Value
+		attrutil.FlattenAttr(fields, "", attr, attrutil.NaNString)
 		return true
 	})
 	if len(fields) > 0 {
 		data, err := json.Marshal(fields)
 		if err != nil {
+			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "marshal", Err: fmt.Errorf("marshal fields: %w", err)})
 			data = []byte("{}")
 		}
 		entry.Fields = json.RawMessage(data)
@@ -321,13 +261,21 @@ func (h *DatabaseHandler) recordToDBEntry(r slog.Record) dbLogEntry {
 	return entry
 }
 
-// setErrorHandler 设置内部错误处理函数（由 buildHandler 传播调用）。
-func (h *DatabaseHandler) setErrorHandler(fn mebsuta.ErrorHandler) {
+func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-// 编译期断言
+// SelfBuffered marks Handler as having built-in async buffering.
+func (*Handler) SelfBuffered() {}
+
+func closeSQLDB(gdb *gorm.DB) {
+	if db, err := gdb.DB(); err == nil {
+		_ = db.Close()
+	}
+}
+
 var (
-	_ slog.Handler = (*DatabaseHandler)(nil)
-	_ io.Closer    = (*DatabaseHandler)(nil)
+	_ slog.Handler                = (*Handler)(nil)
+	_ io.Closer                   = (*Handler)(nil)
+	_ mebsuta.SelfBufferedHandler = (*Handler)(nil)
 )

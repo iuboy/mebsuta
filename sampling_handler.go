@@ -2,67 +2,56 @@ package mebsuta
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/iuboy/mebsuta/config"
 )
 
-// =============================================================================
-// SamplingHandler — 采样装饰器
-// =============================================================================
-
-// SamplingHandler 是 slog.Handler 装饰器，按时间窗口对日志进行采样。
-//
-// 采样规则：
-//   - Error 及以上级别始终记录，不受采样限制。
-//   - 每个时间窗口内，前 Initial 条日志全部记录。
-//   - 超过 Initial 后，每 Thereafter 条记录 1 条。
-//   - 窗口到期后计数器自动重置。
-type SamplingHandler struct {
-	inner   slog.Handler
-	cfg     config.SamplingConfig
-	count   *atomic.Int64 // 指针，跨 WithAttrs/WithGroup 共享
+type samplingState struct {
+	count   atomic.Int64
 	ticker  *time.Ticker
 	stopCh  chan struct{}
-	wg      *sync.WaitGroup // 指针，跨 WithAttrs/WithGroup 共享
-	stopped *atomic.Bool    // 指针，跨 WithAttrs/WithGroup 共享
+	wg      sync.WaitGroup
+	stopped atomic.Bool
 }
 
-// WithSampling 返回一个采样装饰器，包裹给定的 handler。
-func WithSampling(inner slog.Handler, cfg config.SamplingConfig) slog.Handler {
+// SamplingHandler is a slog.Handler decorator that samples log records within a time window.
+// Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
+type SamplingHandler struct {
+	inner        slog.Handler
+	cfg          SamplingConfig
+	state        *samplingState
+	errorHandler atomic.Pointer[ErrorHandler]
+}
+
+// WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
+func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner
 	}
-	if cfg.Window <= 0 {
-		cfg.Window = time.Second
-	}
-	if cfg.Initial <= 0 {
-		cfg.Initial = 100
-	}
-	if cfg.Thereafter <= 0 {
-		cfg.Thereafter = 10
+	cfg, err := cfg.Validate()
+	if err != nil {
+		ReportError(DefaultErrorHandler, HandlerError{Component: "sampling", Operation: "init", Err: fmt.Errorf("invalid config: %w", err)})
 	}
 
-	h := &SamplingHandler{
-		inner:   inner,
-		cfg:     cfg,
-		count:   &atomic.Int64{},
-		ticker:  time.NewTicker(cfg.Window),
-		stopCh:  make(chan struct{}),
-		wg:      &sync.WaitGroup{},
-		stopped: &atomic.Bool{},
+	s := &samplingState{
+		ticker: time.NewTicker(cfg.Window),
+		stopCh: make(chan struct{}),
 	}
-	h.wg.Add(1)
-	go h.resetLoop()
-	return h
+	s.wg.Add(1)
+	go s.resetLoop()
+
+	return &SamplingHandler{
+		inner: inner,
+		cfg:   cfg,
+		state: s,
+	}
 }
 
-// Enabled 报告给定级别是否应该被记录。
-// Error 及以上始终通过。
+// Enabled implements slog.Handler.
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	if level >= slog.LevelError {
 		return true
@@ -70,84 +59,73 @@ func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-// Handle 处理一条日志记录，按采样规则决定是否传递给内层 handler。
+// Handle implements slog.Handler.
 func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
-	// Error 及以上始终记录
 	if r.Level >= slog.LevelError {
 		return h.inner.Handle(ctx, r)
 	}
 
-	count := h.count.Add(1)
-
-	cfg := h.cfg
-	if count <= int64(cfg.Initial) {
+	count := h.state.count.Add(1)
+	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
 	}
-	if (count-int64(cfg.Initial))%int64(cfg.Thereafter) == 0 {
+	if (count-int64(h.cfg.Initial))%int64(h.cfg.Thereafter) == 0 {
 		return h.inner.Handle(ctx, r)
 	}
-
-	// 被采样跳过
 	return nil
 }
 
-// WithAttrs 返回带有预置属性的新 SamplingHandler，链式传播到内层。
+// WithAttrs implements slog.Handler.
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
-		inner:   h.inner.WithAttrs(attrs),
-		cfg:     h.cfg,
-		count:   h.count, // 共享计数器（atomic，无需额外同步）
-		ticker:  h.ticker,
-		stopCh:  h.stopCh,
-		wg:      h.wg, // 共享 WaitGroup（Close 需等待 goroutine 退出）
-		stopped: h.stopped,
+		inner: h.inner.WithAttrs(attrs),
+		cfg:   h.cfg,
+		state: h.state,
 	}
 }
 
-// WithGroup 返回带有分组前缀的新 SamplingHandler，链式传播到内层。
+// WithGroup implements slog.Handler.
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
-		inner:   h.inner.WithGroup(name),
-		cfg:     h.cfg,
-		count:   h.count,
-		ticker:  h.ticker,
-		stopCh:  h.stopCh,
-		wg:      h.wg,
-		stopped: h.stopped,
+		inner: h.inner.WithGroup(name),
+		cfg:   h.cfg,
+		state: h.state,
 	}
 }
 
-// Close 停止采样器，释放资源。
+// Close implements io.Closer.
 func (h *SamplingHandler) Close() error {
-	if !h.stopped.CompareAndSwap(false, true) {
+	if !h.state.stopped.CompareAndSwap(false, true) {
 		return nil
 	}
-	h.ticker.Stop()
-	close(h.stopCh)
-	h.wg.Wait()
+	h.state.ticker.Stop()
+	close(h.state.stopCh)
+	h.state.wg.Wait()
 	return nil
 }
 
-// unwrapHandler 返回内层 handler，供 CloseAll 递归关闭。
 func (h *SamplingHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
-// resetLoop 定期重置采样计数器。
-func (h *SamplingHandler) resetLoop() {
-	defer h.wg.Done()
+func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
+	h.errorHandler.Store(&fn)
+}
+
+func (s *samplingState) resetLoop() {
+	defer s.wg.Done()
 	for {
 		select {
-		case <-h.ticker.C:
-			h.count.Store(0)
-		case <-h.stopCh:
+		case <-s.ticker.C:
+			s.count.Store(0)
+		case <-s.stopCh:
 			return
 		}
 	}
 }
 
-// 编译期断言
 var (
-	_ slog.Handler = (*SamplingHandler)(nil)
-	_ io.Closer    = (*SamplingHandler)(nil)
+	_ slog.Handler     = (*SamplingHandler)(nil)
+	_ io.Closer        = (*SamplingHandler)(nil)
+	_ handlerUnwrapper = (*SamplingHandler)(nil)
 )

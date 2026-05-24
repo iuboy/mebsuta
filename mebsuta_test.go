@@ -7,38 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
-
-	"github.com/iuboy/mebsuta/config"
 )
-
-// =============================================================================
-// LevelHandler 测试
-// =============================================================================
-
-func TestLevelHandler_Enabled(t *testing.T) {
-	h := LevelHandler{Level: slog.LevelWarn}
-
-	tests := []struct {
-		level    slog.Level
-		expected bool
-	}{
-		{slog.LevelDebug, false},
-		{slog.LevelInfo, false},
-		{slog.LevelWarn, true},
-		{slog.LevelError, true},
-	}
-
-	for _, tt := range tests {
-		if got := h.Enabled(context.Background(), tt.level); got != tt.expected {
-			t.Errorf("Enabled(%v) = %v, want %v", tt.level, got, tt.expected)
-		}
-	}
-}
 
 // =============================================================================
 // StdoutHandler 测试
@@ -46,7 +21,10 @@ func TestLevelHandler_Enabled(t *testing.T) {
 
 func newTestHandler(level slog.Level, format EncodingType) (*StdoutHandler, *bytes.Buffer) {
 	var buf bytes.Buffer
-	h := newStdoutHandlerWithWriter(&buf, level, format)
+	h, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: level, Format: string(format)})
+	if err != nil {
+		panic(err)
+	}
 	return h, &buf
 }
 
@@ -60,11 +38,15 @@ func TestStdoutHandler_JSONFormat(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON output: %v, got: %s", err, buf.String())
 	}
-	if result["msg"] != "hello" {
-		t.Errorf("msg = %v, want hello", result["msg"])
+	if result["message"] != "hello" {
+		t.Errorf("message = %v, want hello", result["message"])
 	}
-	if result["key"] != "value" {
-		t.Errorf("key = %v, want value", result["key"])
+	attrs, ok := result["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("attributes missing or invalid: %v", result["attributes"])
+	}
+	if attrs["key"] != "value" {
+		t.Errorf("attributes.key = %v, want value", attrs["key"])
 	}
 	if result["level"] != "INFO" {
 		t.Errorf("level = %v, want INFO", result["level"])
@@ -112,8 +94,9 @@ func TestStdoutHandler_WithAttrs(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if result["preset"] != "value" {
-		t.Errorf("preset = %v, want value", result["preset"])
+	attrs := result["attributes"].(map[string]any)
+	if attrs["preset"] != "value" {
+		t.Errorf("attributes.preset = %v, want value", attrs["preset"])
 	}
 }
 
@@ -128,12 +111,9 @@ func TestStdoutHandler_WithGroup(t *testing.T) {
 	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	req, ok := result["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("request should be a group, got: %v", result["request"])
-	}
-	if req["id"] != "123" {
-		t.Errorf("request.id = %v, want 123", req["id"])
+	attrs := result["attributes"].(map[string]any)
+	if attrs["request.id"] != "123" {
+		t.Errorf("attributes[request.id] = %v, want 123", attrs["request.id"])
 	}
 }
 
@@ -174,7 +154,8 @@ func TestStdoutHandler_Close(t *testing.T) {
 // =============================================================================
 
 func TestNew_SingleHandler(t *testing.T) {
-	handler := NewStdoutHandler(slog.LevelInfo, JSON)
+	handler, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	logger, err := New(WithHandler(handler))
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -185,8 +166,10 @@ func TestNew_SingleHandler(t *testing.T) {
 }
 
 func TestNew_MultipleHandlers(t *testing.T) {
-	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
-	h2 := NewStdoutHandler(slog.LevelWarn, JSON)
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelWarn})
+	require.NoError(t, err)
 	logger, err := New(WithHandler(h1), WithHandler(h2))
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -204,10 +187,14 @@ func TestNew_NilHandler(t *testing.T) {
 }
 
 func TestNew_NoHandlers(t *testing.T) {
-	_, err := New()
-	if err == nil {
-		t.Fatal("expected error for no handlers")
+	logger, err := New()
+	if err != nil {
+		t.Fatalf("New() with no options should return default logger: %v", err)
 	}
+	if logger == nil {
+		t.Fatal("New() returned nil logger")
+	}
+	defer CloseAll(logger.Handler())
 }
 
 // =============================================================================
@@ -221,7 +208,8 @@ func TestCloseAll_NilHandler(t *testing.T) {
 }
 
 func TestCloseAll_StdoutHandler(t *testing.T) {
-	h := NewStdoutHandler(slog.LevelInfo, JSON)
+	h, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	// StdoutHandler.Close is nop, should succeed
 	if err := CloseAll(h); err != nil {
 		t.Errorf("CloseAll() error: %v", err)
@@ -229,8 +217,10 @@ func TestCloseAll_StdoutHandler(t *testing.T) {
 }
 
 func TestCloseAll_MultiHandler(t *testing.T) {
-	h1 := NewStdoutHandler(slog.LevelInfo, JSON)
-	h2 := NewStdoutHandler(slog.LevelWarn, JSON)
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelWarn})
+	require.NoError(t, err)
 	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
 
 	// safeMulti 实现了 io.Closer，应递归关闭子 handler
@@ -240,8 +230,9 @@ func TestCloseAll_MultiHandler(t *testing.T) {
 }
 
 func TestCloseAll_DecoratorChain(t *testing.T) {
-	inner := NewStdoutHandler(slog.LevelInfo, JSON)
-	sampling := WithSampling(inner, config.SamplingConfig{Enabled: true, Initial: 10, Thereafter: 1, Window: time.Second})
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	sampling := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 10, Thereafter: 1, Window: time.Second})
 
 	// CloseAll 应通过 unwrapHandler 递归关闭 inner
 	if err := CloseAll(sampling); err != nil {
@@ -283,25 +274,26 @@ func TestRecordToLogEntry(t *testing.T) {
 
 func TestErrorHandler_Default(t *testing.T) {
 	var buf bytes.Buffer
-	DefaultErrorHandler = func(component string, err error) {
-		fmt.Fprintf(&buf, "%s: %v\n", component, err)
+	DefaultErrorHandler = func(he HandlerError) {
+		fmt.Fprintf(&buf, "%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 	defer func() { DefaultErrorHandler = defaultErrorHandler }()
 
-	DefaultErrorHandler("test", fmt.Errorf("boom"))
+	DefaultErrorHandler(HandlerError{Component: "test", Operation: "write", Err: fmt.Errorf("boom")})
 	got := buf.String()
-	if !strings.Contains(got, "test: boom") {
-		t.Errorf("DefaultErrorHandler output = %q, want 'test: boom'", got)
+	if !strings.Contains(got, "test/write: boom") {
+		t.Errorf("DefaultErrorHandler output = %q, want 'test/write: boom'", got)
 	}
 }
 
 func TestErrorHandler_WithErrorHandler(t *testing.T) {
 	var buf bytes.Buffer
-	capture := func(component string, err error) {
-		fmt.Fprintf(&buf, "%s: %v\n", component, err)
+	capture := func(he HandlerError) {
+		fmt.Fprintf(&buf, "%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -320,7 +312,8 @@ func TestErrorHandler_WithErrorHandler(t *testing.T) {
 }
 
 func TestErrorHandler_NilSilent(t *testing.T) {
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -336,11 +329,12 @@ func TestErrorHandler_NilSilent(t *testing.T) {
 
 func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 	var buf bytes.Buffer
-	capture := func(component string, err error) {
-		fmt.Fprintf(&buf, "%s: %v\n", component, err)
+	capture := func(he HandlerError) {
+		fmt.Fprintf(&buf, "%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
 
@@ -361,85 +355,9 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 	// 没有断言具体输出，只要不 panic 就行
 }
 
-// =============================================================================
-// SyslogHandler WithAttrs/WithGroup 回归测试
-// =============================================================================
-
-// Regression: ISSUE-001 — SyslogHandler 缺少 WithAttrs/WithGroup
-// Found by /qa on 2026-04-15
-// 用户调用 logger.With("key", "value") 后写 syslog，预置属性不应静默丢失。
-func TestSyslogHandler_WithAttrs(t *testing.T) {
-	// SyslogHandler 需要真实连接，这里只验证 WithAttrs 返回的 handler 类型正确
-	// 且 Handle 不会 panic（即使连接失败，safeSend 会 recover）
-	h := &SyslogHandler{
-		LevelHandler: LevelHandler{Level: slog.LevelInfo},
-		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
-		buffer:       make(chan []byte, 10),
-		closing:      atomic.Bool{},
-		closed:       atomic.Bool{},
-	}
-	eh := DefaultErrorHandler
-	h.errorHandler.Store(&eh)
-
-	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
-	if child == nil {
-		t.Fatal("WithAttrs returned nil")
-	}
-
-	// 验证子 handler 不是自身（应该返回包装器）
-	if child == h {
-		t.Error("WithAttrs should return a wrapper, not the same handler")
-	}
-
-	// 验证 WithGroup 也不返回 nil
-	grouped := h.WithGroup("request")
-	if grouped == nil {
-		t.Fatal("WithGroup returned nil")
-	}
-	if grouped == h {
-		t.Error("WithGroup should return a wrapper, not the same handler")
-	}
-
-	// 验证链式 WithAttrs 合并属性
-	double := child.WithAttrs([]slog.Attr{slog.String("extra", "data")})
-	if double == nil {
-		t.Fatal("chained WithAttrs returned nil")
-	}
-}
-
-// =============================================================================
-// groupHandler WithAttrs group 前缀回归测试
-// =============================================================================
-
-// Regression: group 语义丢失 — WithGroup 后 WithAttrs 的属性 key 应带 group 前缀。
-// Found by /pr-review-toolkit:review-pr on 2026-04-15.
-func TestSyslogHandler_GroupPrefix(t *testing.T) {
-	h := &SyslogHandler{
-		LevelHandler: LevelHandler{Level: slog.LevelInfo},
-		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
-		buffer:       make(chan []byte, 10),
-		closing:      atomic.Bool{},
-		closed:       atomic.Bool{},
-	}
-	eh := DefaultErrorHandler
-	h.errorHandler.Store(&eh)
-
-	grouped := h.WithGroup("req").WithAttrs([]slog.Attr{slog.String("key", "val")})
-	// 类型断言：WithGroup 后 WithAttrs 应返回 syslogAttrsHandler
-	attrsH, ok := grouped.(*syslogAttrsHandler)
-	if !ok {
-		t.Fatalf("expected syslogAttrsHandler, got %T", grouped)
-	}
-	if len(attrsH.attrs) != 1 {
-		t.Fatalf("expected 1 attr, got %d", len(attrsH.attrs))
-	}
-	if attrsH.attrs[0].Key != "req.key" {
-		t.Errorf("attr key = %q, want %q", attrsH.attrs[0].Key, "req.key")
-	}
-}
-
 func TestAsyncHandler_GroupPrefix(t *testing.T) {
-	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	grouped := ah.WithGroup("svc").WithAttrs([]slog.Attr{slog.String("id", "1")})
 
@@ -452,43 +370,9 @@ func TestAsyncHandler_GroupPrefix(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// WithAttrs().WithGroup() 属性传递回归测试
-// =============================================================================
-
-// Regression: WithAttrs 后 WithGroup 不应丢失已累积的属性
-// Found by code review on 2026-04-16.
-// handler.WithAttrs(a=1).WithGroup("req").WithAttrs(b=2) 中 a=1 被静默丢弃。
-func TestSyslogHandler_AttrsSurviveGroup(t *testing.T) {
-	h := &SyslogHandler{
-		LevelHandler: LevelHandler{Level: slog.LevelInfo},
-		cfg:          config.SyslogConfig{Address: "127.0.0.1:9999", Network: "tcp"},
-		buffer:       make(chan []byte, 10),
-		closing:      atomic.Bool{},
-		closed:       atomic.Bool{},
-	}
-	eh := DefaultErrorHandler
-	h.errorHandler.Store(&eh)
-
-	chain := h.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
-	attrsH, ok := chain.(*syslogAttrsHandler)
-	if !ok {
-		t.Fatalf("expected syslogAttrsHandler, got %T", chain)
-	}
-	// 应有 2 个属性: service=api 和 req.id=1
-	if len(attrsH.attrs) != 2 {
-		t.Fatalf("expected 2 attrs, got %d", len(attrsH.attrs))
-	}
-	if attrsH.attrs[0].Key != "service" {
-		t.Errorf("first attr key = %q, want %q", attrsH.attrs[0].Key, "service")
-	}
-	if attrsH.attrs[1].Key != "req.id" {
-		t.Errorf("second attr key = %q, want %q", attrsH.attrs[1].Key, "req.id")
-	}
-}
-
 func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
-	inner := NewStdoutHandler(slog.LevelInfo, JSON)
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
 	ah := WithAsync(inner, AsyncConfig{BufferSize: 64})
 	chain := ah.WithAttrs([]slog.Attr{slog.String("service", "api")}).WithGroup("req").WithAttrs([]slog.Attr{slog.String("id", "1")})
 	attrsH, ok := chain.(*asyncAttrsHandler)
@@ -515,8 +399,8 @@ func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
 // nil errorHandler 时 panic 应静默丢弃，不写 stderr。
 func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 	var buf bytes.Buffer
-	DefaultErrorHandler = func(component string, err error) {
-		fmt.Fprintf(&buf, "%s: %v", component, err)
+	DefaultErrorHandler = func(he HandlerError) {
+		fmt.Fprintf(&buf, "%s/%s: %v", he.Component, he.Operation, he.Err)
 	}
 	defer func() { DefaultErrorHandler = defaultErrorHandler }()
 
@@ -537,11 +421,12 @@ func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	var buf bytes.Buffer
 	// FileHandler 有 errorHandler 字段，默认是 DefaultErrorHandler
-	fh, err := NewFileHandler(config.FileConfig{Path: t.TempDir() + "/test.log"}, slog.LevelInfo)
+	cfg := FileConfig{}
+	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer fh.Close()
-	DefaultErrorHandler = func(component string, err error) {
-		fmt.Fprintf(&buf, "%s: %v", component, err)
+	DefaultErrorHandler = func(he HandlerError) {
+		fmt.Fprintf(&buf, "%s/%s: %v", he.Component, he.Operation, he.Err)
 	}
 	defer func() { DefaultErrorHandler = defaultErrorHandler }()
 
@@ -554,5 +439,208 @@ func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	// fh 的 errorHandler 应该是 nil（被传播了 nil），不会写到 stderr
 	if buf.Len() > 0 {
 		t.Errorf("nil errorHandler should be propagated, but got stderr output: %s", buf.String())
+	}
+}
+
+// =============================================================================
+// SPEC: LevelAudit — 审计级别通过 JSON handler 输出 "AUDIT"
+// =============================================================================
+
+func TestLevelAudit_JSONLevelString(t *testing.T) {
+	h, buf := newTestHandler(slog.LevelInfo, JSON)
+	logger := slog.New(h)
+
+	logger.Log(context.Background(), slog.LevelError+4, "audit test", "actor", "admin", "success", true)
+
+	var result map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if result["level"] != "AUDIT" {
+		t.Fatalf("level = %v, want AUDIT", result["level"])
+	}
+}
+
+// =============================================================================
+// SPEC: Multi Handler — 并发写无竞态
+// =============================================================================
+
+func TestSafeMulti_ConcurrentNoRace(t *testing.T) {
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	logger := slog.New(multi)
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			logger.Info("race test", "ts", time.Now().UnixNano())
+		}()
+	}
+	wg.Wait()
+}
+
+// =============================================================================
+// MetricsHandler 测试
+// =============================================================================
+
+type mockMetrics struct {
+	handleLatency time.Duration
+	errors        []string
+	dropped       []string
+	mu            sync.Mutex
+}
+
+func (m *mockMetrics) ObserveHandle(d time.Duration) {
+	m.mu.Lock()
+	m.handleLatency = d
+	m.mu.Unlock()
+}
+
+func (m *mockMetrics) IncError(name string) {
+	m.mu.Lock()
+	m.errors = append(m.errors, name)
+	m.mu.Unlock()
+}
+
+func (m *mockMetrics) IncDropped(name string) {
+	m.mu.Lock()
+	m.dropped = append(m.dropped, name)
+	m.mu.Unlock()
+}
+
+func TestMetricsHandler_Handle(t *testing.T) {
+	var buf bytes.Buffer
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test")
+
+	logger := slog.New(h)
+	logger.Info("hello")
+
+	if mm.handleLatency == 0 {
+		t.Error("ObserveHandle should have been called with non-zero duration")
+	}
+}
+
+func TestMetricsHandler_WithAttrs(t *testing.T) {
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test")
+	child := h.WithAttrs([]slog.Attr{slog.String("k", "v")})
+	if child == nil {
+		t.Fatal("WithAttrs returned nil")
+	}
+}
+
+func TestMetricsHandler_WithGroup(t *testing.T) {
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test")
+	child := h.WithGroup("request")
+	if child == nil {
+		t.Fatal("WithGroup returned nil")
+	}
+}
+
+func TestMetricsHandler_Unwrap(t *testing.T) {
+	inner, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	mm := &mockMetrics{}
+	h := WithMetrics(inner, mm, "test").(*MetricsHandler)
+	if h.unwrapHandler() != inner {
+		t.Error("unwrapHandler should return inner")
+	}
+}
+
+func TestMetricsHandler_NilInner(t *testing.T) {
+	mm := &mockMetrics{}
+	h := WithMetrics(nil, mm, "test")
+	if h != nil {
+		t.Error("WithMetrics(nil, ...) should return nil")
+	}
+}
+
+// =============================================================================
+// safeMulti WithAttrs/WithGroup 测试
+// =============================================================================
+
+func TestSafeMulti_WithAttrs(t *testing.T) {
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	child := multi.WithAttrs([]slog.Attr{slog.String("preset", "val")})
+	if child == nil {
+		t.Fatal("WithAttrs returned nil")
+	}
+
+	sm := child.(*safeMulti)
+	if len(sm.handlers) != 2 {
+		t.Fatalf("expected 2 handlers, got %d", len(sm.handlers))
+	}
+}
+
+func TestSafeMulti_WithGroup(t *testing.T) {
+	h1, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	h2, err := NewStdoutHandler(StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+	child := multi.WithGroup("request")
+	if child == nil {
+		t.Fatal("WithGroup returned nil")
+	}
+
+	sm := child.(*safeMulti)
+	if len(sm.handlers) != 2 {
+		t.Fatalf("expected 2 handlers, got %d", len(sm.handlers))
+	}
+}
+
+func TestSafeMulti_SingleHandlerFastPath(t *testing.T) {
+	var buf bytes.Buffer
+	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
+	require.NoError(t, err)
+	multi := safeMultiHandler([]slog.Handler{inner}, nil)
+	logger := slog.New(multi)
+	logger.Info("single handler fast path")
+	if buf.Len() == 0 {
+		t.Error("single handler should write output")
+	}
+}
+
+// =============================================================================
+// RecordWithGroupAttrs 测试
+// =============================================================================
+
+func TestRecordWithGroupAttrs(t *testing.T) {
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "msg", 0)
+	r.AddAttrs(slog.String("id", "1"))
+
+	newR := RecordWithGroupAttrs(r, "req", []slog.Attr{slog.String("extra", "data")})
+
+	var attrs []slog.Attr
+	newR.Attrs(func(a slog.Attr) bool {
+		attrs = append(attrs, a)
+		return true
+	})
+
+	if len(attrs) != 2 {
+		t.Fatalf("expected 2 attrs, got %d", len(attrs))
+	}
+	if attrs[0].Key != "req.id" {
+		t.Errorf("first attr key = %q, want %q", attrs[0].Key, "req.id")
+	}
+	if attrs[1].Key != "extra" {
+		t.Errorf("second attr key = %q, want %q", attrs[1].Key, "extra")
 	}
 }

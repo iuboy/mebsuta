@@ -11,9 +11,10 @@
 # Output of the go coverage tool
 *.out
 coverage.html
+coverage/
 
 # Go workspace file
-go.work
+go.work.sum
 
 # Dependency directories
 vendor/
@@ -25,10 +26,12 @@ vendor/
 *.swo
 *~
 .DS_Store
+*.iml
 
 # Build output
 /bin/
 /dist/
+/build/
 
 # Log files
 logs/
@@ -38,6 +41,7 @@ logs/
 tmp/
 temp/
 *.tmp
+*.bak
 
 # Test fixtures
 /testdata/
@@ -50,12 +54,50 @@ temp/
 # Docker volumes
 docker-volumes/
 
+/target
+/rust/target
+Cargo.lock
+
 # Testcontainers lock files
 integration/*.lock
 
+# Development-only docs (kept locally, not tracked in git)
+docs/plan/
+
+# AI assistant directories
 .gitnexus
 .gstack
 .claude
 
+# AI assistant generated files
 AGENTS.md
 CLAUDE.md
+MEMORY.md
+.claude/
+.gstack/
+
+# Memory and cache
+.cache/
+*.cache
+
+# OS files
+Thumbs.db
+Desktop.ini
+.Spotlight-V100
+.Trashes
+
+# Profiling and pprof
+*.prof
+*.pprof
+cpu.prof
+mem.prof
+
+# Debug files
+debug
+debug.test
+__debug_bin
+async
+basic
+chain
+file
+sampling

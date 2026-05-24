@@ -5,29 +5,37 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
-	"github.com/iuboy/mebsuta/config"
+	"github.com/iuboy/mebsuta/filerotate"
 )
 
 // =============================================================================
 // 辅助函数
 // =============================================================================
 
-func newTestFileHandler(t *testing.T, cfg config.FileConfig, level slog.Level) (*FileHandler, string) {
+func newTestFileHandler(t *testing.T, cfgOverrides ...func(*FileConfig)) (*FileHandler, string) {
 	t.Helper()
 	dir := t.TempDir()
-	cfg.Path = filepath.Join(dir, "test.log")
-	h, err := NewFileHandler(cfg, level)
+	path := filepath.Join(dir, "test.log")
+	fc := FileConfig{}
+	for _, o := range cfgOverrides {
+		o(&fc)
+	}
+	h, err := NewFileHandler(filerotate.Config{Path: path}, fc)
 	if err != nil {
 		t.Fatalf("NewFileHandler: %v", err)
 	}
-	return h, cfg.Path
+	return h, path
+}
+
+func withFormat(f string) func(*FileConfig) {
+	return func(c *FileConfig) { c.Format = f }
 }
 
 func readLogFile(t *testing.T, path string) []byte {
@@ -39,12 +47,26 @@ func readLogFile(t *testing.T, path string) []byte {
 	return data
 }
 
+func assertRestrictedLogFileMode(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX file permissions are not meaningful on Windows")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != filerotate.DefaultFileMode {
+		t.Fatalf("log file mode = %v, want %v", got, filerotate.DefaultFileMode)
+	}
+}
+
 // =============================================================================
 // 基础功能测试
 // =============================================================================
 
 func TestFileHandler_JSONFormat(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	h, path := newTestFileHandler(t, withFormat("json"))
 	defer h.Close()
 
 	logger := slog.New(h)
@@ -55,19 +77,46 @@ func TestFileHandler_JSONFormat(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("invalid JSON: %v, got: %s", err, string(data))
 	}
-	if result["msg"] != "hello" {
-		t.Errorf("msg = %v, want hello", result["msg"])
+	if result["message"] != "hello" {
+		t.Errorf("message = %v, want hello", result["message"])
 	}
-	if result["key"] != "value" {
-		t.Errorf("key = %v, want value", result["key"])
+	attrs, ok := result["attributes"].(map[string]any)
+	if !ok {
+		t.Fatalf("attributes missing or invalid: %v", result["attributes"])
+	}
+	if attrs["key"] != "value" {
+		t.Errorf("attributes.key = %v, want value", attrs["key"])
 	}
 	if result["level"] != "INFO" {
 		t.Errorf("level = %v, want INFO", result["level"])
 	}
 }
 
+func TestFileHandler_JSONFormat_NonFiniteFloats(t *testing.T) {
+	h, path := newTestFileHandler(t, withFormat("json"))
+	defer h.Close()
+
+	logger := slog.New(h)
+	logger.Info("floats", "nan", math.NaN(), "pos_inf", math.Inf(1), "neg_inf", math.Inf(-1))
+
+	data := readLogFile(t, path)
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("invalid JSON for non-finite floats: %v, got: %s", err, string(data))
+	}
+	for _, key := range []string{"nan", "pos_inf", "neg_inf"} {
+		attrs, ok := result["attributes"].(map[string]any)
+		if !ok {
+			t.Fatalf("attributes missing from JSON output: %s", string(data))
+		}
+		if _, ok := attrs[key]; !ok {
+			t.Fatalf("%s missing from JSON output: %s", key, string(data))
+		}
+	}
+}
+
 func TestFileHandler_ConsoleFormat(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(Console)}, slog.LevelInfo)
+	h, path := newTestFileHandler(t, withFormat("console"))
 	defer h.Close()
 
 	logger := slog.New(h)
@@ -84,8 +133,7 @@ func TestFileHandler_ConsoleFormat(t *testing.T) {
 }
 
 func TestFileHandler_DefaultFormat(t *testing.T) {
-	// 空 Format 默认为 JSON
-	h, path := newTestFileHandler(t, config.FileConfig{}, slog.LevelInfo)
+	h, path := newTestFileHandler(t)
 	defer h.Close()
 
 	logger := slog.New(h)
@@ -98,12 +146,24 @@ func TestFileHandler_DefaultFormat(t *testing.T) {
 	}
 }
 
+func TestFileHandler_FilePermissionsRestricted(t *testing.T) {
+	h, path := newTestFileHandler(t)
+	defer h.Close()
+
+	assertRestrictedLogFileMode(t, path)
+}
+
 // =============================================================================
 // Level 过滤
 // =============================================================================
 
 func TestFileHandler_LevelFilter(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelWarn)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	h, err := NewFileHandler(filerotate.Config{Path: path}, FileConfig{Format: "json", Level: slog.LevelWarn})
+	if err != nil {
+		t.Fatalf("NewFileHandler: %v", err)
+	}
 	defer h.Close()
 
 	logger := slog.New(h)
@@ -126,7 +186,7 @@ func TestFileHandler_LevelFilter(t *testing.T) {
 // =============================================================================
 
 func TestFileHandler_WithAttrs(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	h, path := newTestFileHandler(t, withFormat("json"))
 	defer h.Close()
 
 	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
@@ -138,13 +198,14 @@ func TestFileHandler_WithAttrs(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if result["preset"] != "value" {
-		t.Errorf("preset = %v, want value", result["preset"])
+	attrs := result["attributes"].(map[string]any)
+	if attrs["preset"] != "value" {
+		t.Errorf("attributes.preset = %v, want value", attrs["preset"])
 	}
 }
 
 func TestFileHandler_WithGroup(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	h, path := newTestFileHandler(t, withFormat("json"))
 	defer h.Close()
 
 	child := h.WithGroup("request")
@@ -156,12 +217,9 @@ func TestFileHandler_WithGroup(t *testing.T) {
 	if err := json.Unmarshal(data, &result); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	req, ok := result["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("request should be a group, got: %v", result["request"])
-	}
-	if req["id"] != "123" {
-		t.Errorf("request.id = %v, want 123", req["id"])
+	attrs := result["attributes"].(map[string]any)
+	if attrs["request.id"] != "123" {
+		t.Errorf("attributes[request.id] = %v, want 123", attrs["request.id"])
 	}
 }
 
@@ -170,7 +228,7 @@ func TestFileHandler_WithGroup(t *testing.T) {
 // =============================================================================
 
 func TestFileHandler_ConcurrentWrites(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	h, path := newTestFileHandler(t, withFormat("json"))
 	defer h.Close()
 
 	logger := slog.New(h)
@@ -201,13 +259,12 @@ func TestFileHandler_ConcurrentWrites(t *testing.T) {
 // =============================================================================
 
 func TestFileHandler_Close(t *testing.T) {
-	h, _ := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	h, _ := newTestFileHandler(t, withFormat("json"))
 
 	if err := h.Close(); err != nil {
 		t.Errorf("Close() error: %v", err)
 	}
 
-	// 双重 Close 应该是 nop
 	if err := h.Close(); err != nil {
 		t.Errorf("double Close() error: %v", err)
 	}
@@ -223,7 +280,7 @@ func TestFileHandler_Close(t *testing.T) {
 // =============================================================================
 
 func TestNewFileHandler_EmptyPath(t *testing.T) {
-	_, err := NewFileHandler(config.FileConfig{}, slog.LevelInfo)
+	_, err := NewFileHandler(filerotate.Config{Path: ""}, FileConfig{})
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}
@@ -233,179 +290,9 @@ func TestNewFileHandler_EmptyPath(t *testing.T) {
 }
 
 func TestNewFileHandler_InvalidDirectory(t *testing.T) {
-	_, err := NewFileHandler(config.FileConfig{Path: "/proc/nonexistent/test.log"}, slog.LevelInfo)
+	_, err := NewFileHandler(filerotate.Config{Path: "/proc/nonexistent/test.log"}, FileConfig{})
 	if err == nil {
 		t.Fatal("expected error for invalid directory")
-	}
-}
-
-// =============================================================================
-// 大小轮转
-// =============================================================================
-
-func TestFileHandler_SizeRotation(t *testing.T) {
-	// MaxSizeMB = 1 字节大小（最小单位测试）
-	h, path := newTestFileHandler(t, config.FileConfig{
-		MaxSizeMB: 1, // 1 MB
-		Format:    string(JSON),
-	}, slog.LevelInfo)
-	defer h.Close()
-
-	logger := slog.New(h)
-
-	// 写入足够多的数据触发轮转（1MB）
-	msg := strings.Repeat("x", 1024) // 1KB per message
-	for range 1100 {
-		logger.Info("fill", "data", msg)
-	}
-
-	// 等待轮转完成（大小检查是同步的）
-	backups := matchBackups(path)
-	if len(backups) == 0 {
-		t.Errorf("expected rotation to create backup files, found none")
-	}
-
-	// 新文件应该存在
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("new log file should exist: %v", err)
-	}
-}
-
-// =============================================================================
-// MaxBackups 清理
-// =============================================================================
-
-func TestFileHandler_MaxBackups(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{
-		MaxSizeMB:  1, // 1 MB
-		MaxBackups: 2,
-		Format:     string(JSON),
-	}, slog.LevelInfo)
-	defer h.Close()
-
-	logger := slog.New(h)
-
-	// 写入足够多的数据触发多次轮转
-	msg := strings.Repeat("x", 1024)
-	for range 3300 {
-		logger.Info("fill", "data", msg)
-	}
-
-	// 等待异步操作
-	time.Sleep(100 * time.Millisecond)
-
-	backups := matchBackups(path)
-	if len(backups) > 2 {
-		t.Errorf("expected at most 2 backups, got %d: %v", len(backups), backups)
-	}
-}
-
-// =============================================================================
-// gzip 压缩
-// =============================================================================
-
-func TestFileHandler_Compress(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{
-		MaxSizeMB: 1,
-		Compress:  true,
-		Format:    string(JSON),
-	}, slog.LevelInfo)
-	defer h.Close()
-
-	logger := slog.New(h)
-
-	// 写入足够多的数据触发轮转
-	msg := strings.Repeat("x", 1024)
-	for range 1100 {
-		logger.Info("fill", "data", msg)
-	}
-
-	// 等待异步压缩完成
-	time.Sleep(500 * time.Millisecond)
-
-	backups := matchBackups(path)
-	hasGz := false
-	for _, b := range backups {
-		if strings.HasSuffix(b, ".gz") {
-			hasGz = true
-			break
-		}
-	}
-	if !hasGz {
-		t.Errorf("expected compressed backup (.gz) files, got: %v", backups)
-	}
-}
-
-// =============================================================================
-// 启动时残留文件压缩
-// =============================================================================
-
-func TestCompressResidual(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "test.log")
-
-	// 模拟残留的未压缩轮转文件
-	backup1 := logPath + ".20260401-000000"
-	if err := os.WriteFile(backup1, []byte("old log data\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 模拟残留的 .gz.tmp 崩溃中间文件
-	tmpFile := logPath + ".20260401-000000.gz.tmp"
-	if err := os.WriteFile(tmpFile, []byte("partial gzip"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	compressResidual(logPath, true, &sync.WaitGroup{})
-
-	// 等待异步压缩
-	time.Sleep(200 * time.Millisecond)
-
-	// .tmp 文件应该被清理
-	if _, err := os.Stat(tmpFile); err == nil {
-		t.Error(".tmp file should be cleaned up")
-	}
-
-	// 原始备份应该被压缩
-	if _, err := os.Stat(backup1 + ".gz"); err != nil {
-		t.Errorf("backup should be compressed to .gz: %v", err)
-	}
-}
-
-// =============================================================================
-// compressFile 直接测试
-// =============================================================================
-
-func TestCompressFile(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "source.txt")
-	gzPath := src + ".gz"
-
-	// 创建源文件
-	content := strings.Repeat("log line\n", 1000)
-	if err := os.WriteFile(src, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	compressFile(src, DefaultErrorHandler)
-
-	// 压缩文件应该存在
-	if _, err := os.Stat(gzPath); err != nil {
-		t.Fatal("compressed file should exist")
-	}
-
-	// 原始文件应该被删除
-	if _, err := os.Stat(src); err == nil {
-		t.Error("original file should be removed after compression")
-	}
-
-	// 压缩文件应该比原始文件小
-	gzInfo, _ := os.Stat(gzPath)
-	if gzInfo == nil {
-		t.Fatal("cannot stat compressed file")
-	}
-	if gzInfo.Size() >= int64(len(content)) {
-		t.Errorf("compressed file (%d) should be smaller than original (%d)", gzInfo.Size(), len(content))
 	}
 }
 
@@ -414,10 +301,9 @@ func TestCompressFile(t *testing.T) {
 // =============================================================================
 
 func TestFileHandler_WithAttrsSharedState(t *testing.T) {
-	h, path := newTestFileHandler(t, config.FileConfig{Format: string(JSON)}, slog.LevelInfo)
+	h, path := newTestFileHandler(t, withFormat("json"))
 	defer h.Close()
 
-	// 创建两个子 Handler
 	child1 := h.WithAttrs([]slog.Attr{slog.String("source", "handler1")})
 	child2 := h.WithAttrs([]slog.Attr{slog.String("source", "handler2")})
 
@@ -439,7 +325,7 @@ func TestFileHandler_WithAttrsSharedState(t *testing.T) {
 // =============================================================================
 
 func TestFileHandler_Enabled(t *testing.T) {
-	h, _ := newTestFileHandler(t, config.FileConfig{}, slog.LevelWarn)
+	h, _ := newTestFileHandler(t)
 	defer h.Close()
 
 	if h.Enabled(context.Background(), slog.LevelDebug) {

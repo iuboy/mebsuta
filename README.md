@@ -1,14 +1,6 @@
 # Mebsuta
 
-Go 结构化日志库，基于 `log/slog` Handler 插件架构。
-
-## 特性
-
-- **slog Handler 插件**：stdout、file、syslog、database 输出
-- **装饰器链**：采样、异步写入、指标收集、上下文提取
-- **文件轮转**：自研实现，时间 + 大小双策略，gzip 压缩
-- **安全多输出**：MultiHandler 带 panic recovery
-- **Prometheus 指标**：内置 HandlerMetrics 接口
+基于 `log/slog` 的结构化日志库。
 
 ## 安装
 
@@ -19,192 +11,104 @@ go get github.com/iuboy/mebsuta
 ## 快速开始
 
 ```go
-package main
-
-import (
-    "log/slog"
-    "github.com/iuboy/mebsuta"
-)
-
-func main() {
-    logger, err := mebsuta.New(
-        mebsuta.WithHandler(
-            mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON),
-        ),
-    )
-    if err != nil {
-        log.Fatal(err)
-    }
-    slog.SetDefault(logger)
-    defer mebsuta.CloseAll(logger.Handler())
-
-    slog.Info("服务启动成功", "key", "value")
+logger, err := mebsuta.New()
+if err != nil {
+    log.Fatal(err)
 }
+slog.SetDefault(logger)
+defer mebsuta.CloseAll(logger.Handler())
+
+slog.Info("hello", "key", "value")
 ```
 
-## 输出 Handler
+`New()` 零配置即返回 JSON 格式输出到 stdout 的 logger。
 
-### StdoutHandler
+JSON 输出使用稳定契约：
 
-```go
-h := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)
-// 或
-h := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.Console)
+```json
+{"time":"2026-05-21T14:00:00Z","level":"INFO","message":"hello","attributes":{"key":"value"}}
 ```
 
-### FileHandler（自研轮转）
+## 配置输出
 
 ```go
-import "github.com/iuboy/mebsuta/config"
-
-h, err := mebsuta.NewFileHandler(config.FileConfig{
-    Path:         "/var/log/app.log",
-    MaxSizeMB:    100,
-    MaxBackups:   5,
-    MaxAgeDays:   30,
-    Compress:     true,
-    Format:       mebsuta.JSON,
-}, slog.LevelInfo)
-```
-
-### SyslogHandler
-
-```go
-h, err := mebsuta.NewSyslogHandler(config.SyslogConfig{
-    Network:  "tcp",
-    Address:  "localhost:514",
-    Tag:      "my-app",
-    RFC5424:  true,
-}, slog.LevelInfo)
-```
-
-### DatabaseHandler
-
-```go
-h, err := mebsuta.NewDatabaseHandler(config.DatabaseConfig{
-    DriverName:     "mysql",
-    DataSourceName: "user:pass@tcp(localhost:3306)/logs",
-    TableName:      "logs",
-    BatchSize:      100,
-    BatchInterval:  5 * time.Second,
-}, slog.LevelInfo)
-```
-
-## 多输出
-
-```go
+// 文件输出
 logger, err := mebsuta.New(
-    mebsuta.WithHandler(mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)),
-    mebsuta.WithHandler(mebsuta.NewFileHandler(fileConfig, slog.LevelInfo)),
-    mebsuta.WithHandler(mebsuta.NewSyslogHandler(syslogConfig, slog.LevelInfo)),
+    mebsuta.UseFile(
+        filerotate.Config{Path: "/var/log/app.log"},
+        mebsuta.FileConfig{Level: slog.LevelDebug},
+    ),
+)
+
+// 多输出 + 采样 + 异步
+logger, err := mebsuta.New(
+    mebsuta.UseStdout(mebsuta.StdoutConfig{}),
+    mebsuta.UseFile(
+        filerotate.Config{Path: "/var/log/app.log", MaxSizeMB: 200},
+        mebsuta.FileConfig{},
+    ),
+    mebsuta.UseSampling(mebsuta.SamplingConfig{
+        Enabled: true, Initial: 100, Thereafter: 10,
+    }),
+    mebsuta.UseAsync(mebsuta.AsyncConfig{BufferSize: 512}),
 )
 ```
 
-多个 Handler 自动使用 `safeMultiHandler`（自研实现，per-handler panic recovery + 并行分发）。
+## Handler
+
+| Handler | 构造函数 | 说明 |
+|---------|----------|------|
+| StdoutHandler | `NewStdoutHandler(cfg StdoutConfig)` | 控制台输出 |
+| FileHandler | `NewFileHandler(rotateCfg filerotate.Config, cfg FileConfig)` | 文件输出，自研轮转 |
+| SyslogHandler | `syslog.NewHandler(cfg syslog.Config)` | Syslog 输出（独立模块） |
+| DatabaseHandler | `database.NewHandler(cfg database.Config)` | 数据库批量写入（独立模块） |
 
 ## 装饰器
 
-### 采样
+| 装饰器 | 构造函数 | 说明 |
+|--------|----------|------|
+| SamplingHandler | `WithSampling(inner, cfg)` | 时间窗口采样 |
+| AsyncHandler | `WithAsync(inner, cfg)` | 异步缓冲写入 |
+| MetricsHandler | `WithMetrics(inner, m, name)` | 指标收集 |
+| ContextExtractor | `WithContextExtractor(inner, fn)` | 上下文字段提取 |
+
+## 审计日志
+
+审计功能位于独立模块 `mebsuta/audit`：
 
 ```go
-inner := mebsuta.NewStdoutHandler(slog.LevelInfo, mebsuta.JSON)
-h := mebsuta.WithSampling(inner, config.SamplingConfig{
-    Enabled:    true,
-    Initial:    100,
-    Thereafter: 10,
-    Window:     time.Minute,
-})
-```
+import "github.com/iuboy/mebsuta/audit"
 
-### 异步写入
-
-```go
-h := mebsuta.WithAsync(inner, mebsuta.AsyncConfig{
-    BufferSize: 1024,
-})
-defer mebsuta.CloseAll(h)
-```
-
-### 指标收集
-
-```go
-h := mebsuta.WithMetrics(inner, myMetrics, "stdout")
-```
-
-### 上下文提取
-
-```go
-h := mebsuta.WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
-    if id, ok := ctx.Value(myKey).(string); ok {
-        return []slog.Attr{slog.String("request_id", id)}
-    }
-    return nil
-})
-```
-
-### 自定义错误处理
-
-```go
-logger, err := mebsuta.New(
-    mebsuta.WithHandler(stdoutHandler),
-    mebsuta.WithErrorHandler(func(component string, err error) {
-        sentry.CaptureException(err)
-    }),
+audit.AuditEvent(audit.EventLogin, "user login",
+    "actor", "user:42",
+    "success", true,
+    "ip", "127.0.0.1",
 )
 ```
 
-所有子 Handler（包括装饰器链内部）自动传播 `ErrorHandler`。设为 `nil` 则静默丢弃内部错误。
+## 示例
 
-装饰器可以自由组合：
-
-```go
-h := mebsuta.WithMetrics(
-    mebsuta.WithSampling(inner, samplingCfg),
-    myMetrics, "stdout",
-)
+```bash
+go run ./examples/basic    # 最简 stdout 输出
+go run ./examples/file     # 文件输出 + 轮转
+go run ./examples/sampling # 采样装饰器
+go run ./examples/async    # 异步写入
+go run ./examples/chain    # 完整生产配置链
 ```
-
-## 监控指标
-
-```go
-import (
-    mebmetrics "github.com/iuboy/mebsuta/metrics"
-    "github.com/prometheus/client_golang/prometheus"
-    "github.com/prometheus/client_golang/prometheus/promhttp"
-)
-
-registry := prometheus.NewRegistry()
-registry.MustRegister(mebmetrics.GetMetricsAsCollector())
-http.Handle("/metrics", promhttp.HandlerFor(registry, prometheus.HandlerOpts{}))
-
-// 或注册到默认注册表（幂等，可安全多次调用）
-mebmetrics.Register()
-```
-
-### 可用指标
-
-| 指标 | 类型 | 说明 |
-|------|------|------|
-| `mebsuta_log_writes_total` | Counter | 日志写入总数 |
-| `mebsuta_log_dropped_total` | Counter | 日志丢弃总数 |
-| `mebsuta_log_errors_total` | Counter | 日志错误总数 |
-| `mebsuta_batch_writes_total` | Counter | 批量写入总数 |
-| `mebsuta_batch_size` | Histogram | 批量写入大小 |
-| `mebsuta_batch_latency_seconds` | Histogram | 批量写入延迟 |
-| `mebsuta_batch_failures_total` | Counter | 批量写入失败总数 |
-| `mebsuta_buffer_usage` | Gauge | 缓冲区使用率 |
-| `mebsuta_buffer_full_total` | Counter | 缓冲区满事件总数 |
-| `mebsuta_active_connections` | Gauge | 活跃连接数 |
-| `mebsuta_idle_connections` | Gauge | 空闲连接数 |
-| `mebsuta_write_latency_seconds` | Histogram | 写入延迟分布 |
 
 ## 测试
 
 ```bash
-go test -race -count=1 ./...
-go test -bench=. -benchmem .
+./scripts/test.sh unit
+./scripts/test.sh vet
+./scripts/test.sh fmt
 ```
 
-## 许可证
+集成测试依赖服务：`scripts/docker-compose.yml`。
 
-MIT License
+## 文档
+
+| 文档 | 说明 |
+|------|------|
+| [TLS 配置](docs/TLS.md) | SyslogHandler TLS 安全配置 |
+| [性能基准](docs/BENCHMARKS.md) | 性能基准测试 |

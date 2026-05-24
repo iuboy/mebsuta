@@ -1,4 +1,4 @@
-// Package metrics 提供日志系统的指标监控功能
+// Package metrics provides Prometheus-based metrics collection for the mebsuta logging system.
 package metrics
 
 import (
@@ -9,50 +9,50 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Metrics 收集日志系统的所有指标
+// Metrics collects all observability metrics for the mebsuta logging system.
 type Metrics struct {
-	// 日志写入计数器（按级别）
+	// Log write counters (by level)
 	logWrites  *prometheus.CounterVec
 	logDropped *prometheus.CounterVec
 	logErrors  *prometheus.CounterVec
 
-	// 批量写入指标
+	// Batch write metrics
 	batchWrites   prometheus.Counter
 	batchSize     prometheus.Histogram
 	batchLatency  prometheus.Histogram
 	batchFailures prometheus.Counter
 
-	// 缓冲区指标
+	// Buffer metrics
 	bufferUsage prometheus.Gauge
 	bufferFull  prometheus.Counter
 
-	// 连接池指标
+	// Connection pool metrics
 	activeConns prometheus.Gauge
 	idleConns   prometheus.Gauge
 
-	// 写入延迟指标
+	// Write latency metrics
 	writeLatency prometheus.Histogram
 
-	// Goroutine状态
+	// Goroutine status
 	activeGoroutines prometheus.Gauge
 	goroutineCount   atomic.Int64
 }
 
 var (
-	// 全局metrics实例
+	// Global metrics instance
 	globalMetrics *Metrics
 	once          sync.Once
-	registryOnce  sync.Once // 防止重复注册
-	registerErr   error     // 保存首次注册错误
+	registryOnce  sync.Once // prevent double registration
+	registerErr   error     // stores first registration error
 )
 
-// NewMetrics 创建新的metrics收集器（不自动注册）
+// NewMetrics creates a new Metrics collector without registering it with Prometheus.
 func NewMetrics() *Metrics {
 	return &Metrics{
 		logWrites: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mebsuta_log_writes_total",
-				Help: "日志写入总数",
+				Help: "Total number of log writes",
 			},
 			[]string{"level", "output"},
 		),
@@ -60,7 +60,7 @@ func NewMetrics() *Metrics {
 		logDropped: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mebsuta_log_dropped_total",
-				Help: "日志丢弃总数",
+				Help: "Total number of dropped log records",
 			},
 			[]string{"reason", "output"},
 		),
@@ -68,7 +68,7 @@ func NewMetrics() *Metrics {
 		logErrors: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "mebsuta_log_errors_total",
-				Help: "日志错误总数",
+				Help: "Total number of log errors",
 			},
 			[]string{"error_type", "output"},
 		),
@@ -76,14 +76,14 @@ func NewMetrics() *Metrics {
 		batchWrites: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "mebsuta_batch_writes_total",
-				Help: "批量写入总数",
+				Help: "Total number of batch writes",
 			},
 		),
 
 		batchSize: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name:    "mebsuta_batch_size",
-				Help:    "批量写入大小分布",
+				Help:    "Batch write size distribution",
 				Buckets: prometheus.ExponentialBuckets(1, 2, 10), // 1, 2, 4, 8, 16, 32, 64, 128, 256, 512
 			},
 		),
@@ -91,7 +91,7 @@ func NewMetrics() *Metrics {
 		batchLatency: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name:    "mebsuta_batch_latency_seconds",
-				Help:    "批量写入延迟分布",
+				Help:    "Batch write latency distribution",
 				Buckets: prometheus.ExponentialBuckets(0.001, 2, 10), // 1ms, 2ms, 4ms, ... 512ms
 			},
 		),
@@ -99,42 +99,42 @@ func NewMetrics() *Metrics {
 		batchFailures: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "mebsuta_batch_failures_total",
-				Help: "批量写入失败总数",
+				Help: "Total number of batch write failures",
 			},
 		),
 
 		bufferUsage: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_buffer_usage",
-				Help: "缓冲区使用情况（已用/总容量）",
+				Help: "Buffer usage ratio (used/total capacity)",
 			},
 		),
 
 		bufferFull: prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: "mebsuta_buffer_full_total",
-				Help: "缓冲区满事件总数",
+				Help: "Total number of buffer-full events",
 			},
 		),
 
 		activeConns: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_active_connections",
-				Help: "活跃连接数",
+				Help: "Number of active connections",
 			},
 		),
 
 		idleConns: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_idle_connections",
-				Help: "空闲连接数",
+				Help: "Number of idle connections",
 			},
 		),
 
 		writeLatency: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name:    "mebsuta_write_latency_seconds",
-				Help:    "写入延迟分布",
+				Help:    "Write latency distribution",
 				Buckets: prometheus.ExponentialBuckets(0.0001, 2, 10), // 0.1ms, 0.2ms, ... 51.2ms
 			},
 		),
@@ -142,13 +142,13 @@ func NewMetrics() *Metrics {
 		activeGoroutines: prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: "mebsuta_active_goroutines",
-				Help: "活跃 goroutine 数量",
+				Help: "Number of active goroutines",
 			},
 		),
 	}
 }
 
-// GetMetrics 获取全局metrics实例
+// GetMetrics returns the singleton Metrics instance, creating it on first call.
 func GetMetrics() *Metrics {
 	once.Do(func() {
 		globalMetrics = NewMetrics()
@@ -156,106 +156,99 @@ func GetMetrics() *Metrics {
 	return globalMetrics
 }
 
-// IncLogWrite 增加日志写入计数
+// IncLogWrite increments the log write counter for the given level and output.
 func (m *Metrics) IncLogWrite(level, output string) {
 	m.logWrites.WithLabelValues(level, output).Inc()
 }
 
-// IncLogDropped 增加日志丢弃计数
+// IncLogDropped increments the log dropped counter for the given reason and output.
 func (m *Metrics) IncLogDropped(reason, output string) {
 	m.logDropped.WithLabelValues(reason, output).Inc()
 }
 
-// IncLogError 增加日志错误计数
+// IncLogError increments the log error counter for the given error type and output.
 func (m *Metrics) IncLogError(errorType, output string) {
 	m.logErrors.WithLabelValues(errorType, output).Inc()
 }
 
-// IncBatchWrite 增加批量写入计数
+// IncBatchWrite increments the batch write counter.
 func (m *Metrics) IncBatchWrite() {
 	m.batchWrites.Inc()
 }
 
-// ObserveBatchSize 观察批量写入大小
+// ObserveBatchSize observes the batch write size distribution.
 func (m *Metrics) ObserveBatchSize(size float64) {
 	m.batchSize.Observe(size)
 }
 
-// ObserveBatchLatency 观察批量写入延迟（秒）
+// ObserveBatchLatency observes the batch write latency in seconds.
 func (m *Metrics) ObserveBatchLatency(seconds float64) {
 	m.batchLatency.Observe(seconds)
 }
 
-// IncBatchFailure 增加批量写入失败计数
+// IncBatchFailure increments the batch write failure counter.
 func (m *Metrics) IncBatchFailure() {
 	m.batchFailures.Inc()
 }
 
-// SetBufferUsage 设置缓冲区使用率（0-1）
+// SetBufferUsage sets the buffer usage gauge (0 to 1).
 func (m *Metrics) SetBufferUsage(ratio float64) {
 	m.bufferUsage.Set(ratio)
 }
 
-// IncBufferFull 增加缓冲区满事件计数
+// IncBufferFull increments the buffer-full event counter.
 func (m *Metrics) IncBufferFull() {
 	m.bufferFull.Inc()
 }
 
-// SetActiveConns 设置活跃连接数
+// SetActiveConns sets the active connection count gauge.
 func (m *Metrics) SetActiveConns(count float64) {
 	m.activeConns.Set(count)
 }
 
-// SetIdleConns 设置空闲连接数
+// SetIdleConns sets the idle connection count gauge.
 func (m *Metrics) SetIdleConns(count float64) {
 	m.idleConns.Set(count)
 }
 
-// ObserveWriteLatency 观察写入延迟（秒）
+// ObserveWriteLatency observes a write latency in seconds.
 func (m *Metrics) ObserveWriteLatency(seconds float64) {
 	m.writeLatency.Observe(seconds)
 }
 
-// IncGoroutine 增加活跃goroutine计数
+// IncGoroutine increments the active goroutine counter.
 func (m *Metrics) IncGoroutine() {
 	m.goroutineCount.Add(1)
 	m.activeGoroutines.Inc()
 }
 
-// DecGoroutine 减少活跃goroutine计数
+// DecGoroutine decrements the active goroutine counter.
 func (m *Metrics) DecGoroutine() {
 	m.goroutineCount.Add(-1)
 	m.activeGoroutines.Dec()
 }
 
-// GetGoroutineCount 获取活跃goroutine计数
+// GetGoroutineCount returns the current active goroutine count.
 func (m *Metrics) GetGoroutineCount() int64 {
 	return m.goroutineCount.Load()
 }
 
-// =============================================================================
-// HandlerMetrics 接口实现（桥接到 Prometheus 指标）
-// =============================================================================
-
-// ObserveHandle 记录一次 Handle 调用的延迟。
-// 实现 mebsuta.HandlerMetrics 接口。
+// ObserveHandle records handle call latency, implementing the mebsuta.HandlerMetrics interface.
 func (m *Metrics) ObserveHandle(duration time.Duration) {
 	m.writeLatency.Observe(duration.Seconds())
 }
 
-// IncError 增加错误计数。
-// 实现 mebsuta.HandlerMetrics 接口。
+// IncError increments the error counter for the named handler, implementing the mebsuta.HandlerMetrics interface.
 func (m *Metrics) IncError(handlerName string) {
 	m.logErrors.WithLabelValues("handle", handlerName).Inc()
 }
 
-// IncDropped 增加丢弃计数。
-// 实现 mebsuta.HandlerMetrics 接口。
+// IncDropped increments the dropped counter for the named handler, implementing the mebsuta.HandlerMetrics interface.
 func (m *Metrics) IncDropped(handlerName string) {
 	m.logDropped.WithLabelValues("overflow", handlerName).Inc()
 }
 
-// Describe 实现 prometheus.Collector 接口
+// Describe implements prometheus.Collector.
 func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.logWrites.Describe(ch)
 	m.logDropped.Describe(ch)
@@ -271,7 +264,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.writeLatency.Describe(ch)
 }
 
-// Collect 实现 prometheus.Collector 接口
+// Collect implements prometheus.Collector.
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.logWrites.Collect(ch)
 	m.logDropped.Collect(ch)
@@ -287,43 +280,17 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.writeLatency.Collect(ch)
 }
 
-// Register 注册所有指标到自定义的 Prometheus 注册表
-// 用法示例：
-//
-//	registry := prometheus.NewRegistry()
-//	registry.MustRegister(mebsuta.GetMetricsAsCollector())
-//	http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+// RegisterToRegistry registers all metrics with a custom Prometheus registerer.
 func RegisterToRegistry(registry prometheus.Registerer) error {
 	return registry.Register(GetMetrics())
 }
 
-// GetMetricsAsCollector 获取指标作为 prometheus.Collector
-// 用于注册到自定义的 Prometheus 注册表
-//
-// 用法示例：
-//
-//	import (
-//	    "log/slog"
-//	    "github.com/prometheus/client_golang/prometheus"
-//	    "github.com/prometheus/client_golang/prometheus/promhttp"
-//	    mebmetrics "github.com/iuboy/mebsuta/metrics"
-//	)
-//
-//	func main() {
-//	    // 创建自定义注册表
-//	    registry := prometheus.NewRegistry()
-//	    registry.MustRegister(mebmetrics.GetMetricsAsCollector())
-//
-//	    // 暴露指标端点
-//	    http.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-//	    http.ListenAndServe(":2112", nil)
-//	}
+// GetMetricsAsCollector returns the global Metrics as a prometheus.Collector for custom registration.
 func GetMetricsAsCollector() prometheus.Collector {
 	return GetMetrics()
 }
 
-// Register 注册到默认的 Prometheus 注册表（幂等，可安全多次调用）。
-// 如果首次注册失败，后续调用始终返回该错误。
+// Register registers all metrics with the default Prometheus registry. It is idempotent; repeated calls return the first error.
 func Register() error {
 	registryOnce.Do(func() {
 		registerErr = RegisterToRegistry(prometheus.DefaultRegisterer)

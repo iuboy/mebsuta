@@ -2,85 +2,99 @@ package mebsuta
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"sync"
 )
 
-// StdoutHandler 将日志记录输出到 stdout。
-// 实现 slog.Handler 和 io.Closer 接口。
+// StdoutHandler writes log records to stdout.
 type StdoutHandler struct {
-	LevelHandler
-	format EncodingType
-	inner  slog.Handler // 底层 slog.JSONHandler 或 slog.TextHandler
-	mu     *sync.Mutex
+	cfg   StdoutConfig
+	inner slog.Handler // underlying slog.JSONHandler or slog.TextHandler
+	mu    *sync.Mutex
 }
 
-// NewStdoutHandler 创建输出到 stdout 的 slog.Handler。
-// level 控制日志级别过滤，format 控制 JSON 或 Console 输出格式。
-func NewStdoutHandler(level slog.Level, format EncodingType) *StdoutHandler {
+// NewStdoutHandler creates a StdoutHandler that writes to stdout using cfg.
+// cfg.Validate is called internally to apply defaults.
+func NewStdoutHandler(cfg StdoutConfig) (*StdoutHandler, error) {
+	cfg, err := cfg.Validate()
+	if err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
+	}
 	h := &StdoutHandler{
-		LevelHandler: LevelHandler{Level: level},
-		format:       format,
-		mu:           &sync.Mutex{},
+		cfg: cfg,
+		mu:  &sync.Mutex{},
 	}
-	h.inner = newInnerHandler(os.Stdout, format)
-	return h
+	h.inner = newInnerHandler(os.Stdout, EncodingType(cfg.Format))
+	return h, nil
 }
 
-// newStdoutHandlerWithWriter 创建输出到指定 writer 的 handler（用于测试）。
-func newStdoutHandlerWithWriter(w io.Writer, level slog.Level, format EncodingType) *StdoutHandler {
+func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, error) {
+	cfg, err := cfg.Validate()
+	if err != nil {
+		return nil, fmt.Errorf("mebsuta: %w", err)
+	}
 	h := &StdoutHandler{
-		LevelHandler: LevelHandler{Level: level},
-		format:       format,
-		mu:           &sync.Mutex{},
+		cfg: cfg,
+		mu:  &sync.Mutex{},
 	}
-	h.inner = newInnerHandler(w, format)
-	return h
+	h.inner = newInnerHandler(w, EncodingType(cfg.Format))
+	return h, nil
 }
 
-func newInnerHandler(w io.Writer, format EncodingType) slog.Handler {
-	opts := &slog.HandlerOptions{
-		Level: slog.LevelDebug, // level 过滤由外层 levelHandler 控制
-	}
-	switch format {
-	case Console:
-		return slog.NewTextHandler(w, opts)
-	default:
-		return slog.NewJSONHandler(w, opts)
-	}
+// Enabled implements slog.Handler.
+func (h *StdoutHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.cfg.level()
 }
 
-// Handle 处理一条日志记录，写入 stdout。
+// Handle implements slog.Handler.
 func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.inner.Handle(ctx, r)
 }
 
-// WithAttrs 返回带有预置属性的新 StdoutHandler。
+// WithAttrs implements slog.Handler.
 func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
-		LevelHandler: h.LevelHandler,
-		format:       h.format,
-		inner:        h.inner.WithAttrs(attrs),
-		mu:           h.mu,
+		cfg:   h.cfg,
+		inner: h.inner.WithAttrs(attrs),
+		mu:    h.mu,
 	}
 }
 
-// WithGroup 返回带有分组前缀的新 StdoutHandler。
+// WithGroup implements slog.Handler.
 func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
-		LevelHandler: h.LevelHandler,
-		format:       h.format,
-		inner:        h.inner.WithGroup(name),
-		mu:           h.mu,
+		cfg:   h.cfg,
+		inner: h.inner.WithGroup(name),
+		mu:    h.mu,
 	}
 }
 
-// Close 刷新并关闭 handler（实现 io.Closer）。
-// stdout 不需要关闭，此方法为 nop。
+// Close is a no-op because stdout does not need to be closed.
 func (h *StdoutHandler) Close() error {
 	return nil
+}
+
+var (
+	_ slog.Handler = (*StdoutHandler)(nil)
+	_ io.Closer    = (*StdoutHandler)(nil)
+)
+
+// newInnerHandler creates the underlying slog handler for the given format.
+// JSON format uses a contract-enforcing JSON handler; Console uses slog.TextHandler.
+// Level filtering is done by the outer handler, so the inner handler accepts all levels.
+func newInnerHandler(w io.Writer, format EncodingType) slog.Handler {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug, // level filtering is controlled by the outer handler
+	}
+	switch format {
+	case Console:
+		return slog.NewTextHandler(w, opts)
+	default:
+		return newContractJSONHandler(w)
+	}
 }

@@ -2,49 +2,86 @@ name: Release
 
 on:
   push:
-    branches: [main]
     tags:
+      - "go/v*"
       - "v*"
-  pull_request:
-    branches: [main]
 
 jobs:
-  test:
+  guard:
     runs-on: ubuntu-latest
-
+    env:
+      TAG_NAME: ${{ github.ref_name }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: "1.26"
-          cache: true
-
-      - name: Download dependencies
-        run: go mod download
-
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Run go fmt check
+      - name: Validate tag format
         run: |
-          if [ -n "$(gofmt -s -l .)" ]; then
-            echo "以下文件需要格式化:"
-            gofmt -s -l .
+          case "$TAG_NAME" in
+            v*) ;;
+            *) echo "::error::Unexpected tag format: $TAG_NAME. Use v*." >&2; exit 1 ;;
+          esac
+
+  go:
+    runs-on: ubuntu-latest
+    needs: guard
+    if: startsWith(github.ref_name, 'v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            database/go.sum
+            syslog/go.sum
+            metrics/go.sum
+      - run: go work sync
+      - run: go test -race -count=1 ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -s -l .)"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: Validate Go module path
+        run: |
+          module_path="$(go list -m)"
+          if [ "$module_path" != 'github.com/iuboy/mebsuta' ]; then
+            echo "::error::Expected module path github.com/iuboy/mebsuta, got $module_path"
             exit 1
           fi
 
-      - name: Run unit tests
-        run: go test -v -race ./...
+  status:
+    runs-on: ubuntu-latest
+    needs: [guard, go]
+    if: always()
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+      GO_RESULT: ${{ needs.go.result }}
+    steps:
+      - name: Report release status
+        run: |
+          echo "## Release Status" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Triggered | Result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-----------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          case "$TAG_NAME" in
+            go/v*|v*) echo "| go | yes | $GO_RESULT |" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "| go | no | skipped |" >> "$GITHUB_STEP_SUMMARY" ;;
+          esac
+      - name: Fail if any triggered job failed
+        run: |
+          case "$TAG_NAME" in
+            go/v*|v*)
+              [ "$GO_RESULT" = 'success' ] || { echo "::error::go release job failed"; exit 1; }
+              ;;
+          esac
 
-      - name: Run all tests with coverage
-        run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.out
-          fail_ci_if_error: false
-          verbose: true
+  github-release:
+    runs-on: ubuntu-latest
+    needs: status
+    if: needs.status.result == 'success'
+    env:
+      TAG_NAME: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$TAG_NAME"
+          gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
