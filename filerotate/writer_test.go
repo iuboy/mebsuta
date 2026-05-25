@@ -2,6 +2,8 @@ package filerotate
 
 import (
 	"compress/gzip"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -391,5 +393,168 @@ func TestConfig_Defaults(t *testing.T) {
 	}
 	if w.cfg.FileMode != DefaultFileMode {
 		t.Errorf("FileMode = %v, want %v", w.cfg.FileMode, DefaultFileMode)
+	}
+}
+
+// =============================================================================
+// Error 方法
+// =============================================================================
+
+func TestError_Methods(t *testing.T) {
+	inner := fmt.Errorf("inner error")
+	e := &Error{Op: "rotate", Err: inner}
+
+	if !strings.Contains(e.Error(), "filerotate/rotate") {
+		t.Errorf("Error() should contain 'filerotate/rotate', got: %s", e.Error())
+	}
+	if !strings.Contains(e.Error(), "inner error") {
+		t.Errorf("Error() should contain inner error, got: %s", e.Error())
+	}
+	if !errors.Is(e, inner) {
+		t.Error("Unwrap should return inner error")
+	}
+}
+
+// =============================================================================
+// SetOnError
+// =============================================================================
+
+func TestWriter_SetOnError(t *testing.T) {
+	w, _ := newTestWriter(t, withMaxSizeMB(1))
+	defer w.Close()
+
+	var mu sync.Mutex
+	var gotErr string
+	w.SetOnError(func(err error) {
+		mu.Lock()
+		gotErr = err.Error()
+		mu.Unlock()
+	})
+	_ = gotErr // verified through rotation error test below
+}
+
+// =============================================================================
+// 轮转重命名失败 (recoverOpen)
+// =============================================================================
+
+func TestWriter_RotationRenameFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions required")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root user bypasses file permissions")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := New(Config{Path: path, MaxSizeMB: 1, Compress: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	var errs []error
+	w.SetOnError(func(err error) {
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	})
+
+	// Trigger first rotation.
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 1100 {
+		w.Write(data)
+	}
+
+	// Make the directory non-writable to force rename failure on next rotation.
+	os.Chmod(dir, 0555)
+
+	// Write enough to trigger another rotation.
+	for range 1200 {
+		w.Write(data)
+	}
+
+	os.Chmod(dir, 0755)
+	w.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(errs) == 0 {
+		t.Error("expected rotation error via SetOnError callback")
+	}
+}
+
+// =============================================================================
+// 备份文件名碰撞
+// =============================================================================
+
+func TestWriter_BackupNameCollision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := New(Config{Path: path, MaxSizeMB: 1, MaxBackups: 10, Compress: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := time.Now().Format("2006-01-02T15-04-05.000")
+	for i := range 5 {
+		collision := fmt.Sprintf("%s.%s.%d", path, ts, i)
+		os.WriteFile(collision, []byte("old"), 0644)
+	}
+
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 1100 {
+		w.Write(data)
+	}
+	w.Close()
+
+	backups := matchBackups(path)
+	if len(backups) == 0 {
+		t.Error("expected at least one backup despite name collisions")
+	}
+}
+
+// =============================================================================
+// reportError with nil OnError
+// =============================================================================
+
+func TestWriter_ReportError_NilOnError(t *testing.T) {
+	reportError(nil, &Error{Op: "test", Err: fmt.Errorf("test error")})
+}
+
+// =============================================================================
+// 过期备份清理
+// =============================================================================
+
+func TestWriter_CleanupExpiredBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	oldBackup := path + ".2020-01-01T00-00-00.000"
+	os.WriteFile(oldBackup, []byte("old backup\n"), 0644)
+	oldTime := time.Now().AddDate(0, 0, -31)
+	os.Chtimes(oldBackup, oldTime, oldTime)
+
+	w, err := New(Config{
+		Path:       path,
+		MaxSizeMB:  1,
+		MaxBackups: 100,
+		MaxAgeDays: 30,
+		Compress:   boolPtr(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 1100 {
+		w.Write(data)
+	}
+	w.Close()
+
+	if _, err := os.Stat(oldBackup); err == nil {
+		t.Error("old backup should have been removed by MaxAgeDays cleanup")
 	}
 }

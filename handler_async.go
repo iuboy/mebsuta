@@ -110,7 +110,7 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
-	// Error and Audit records: blocking send with 5s timeout.
+	// Error and Audit (LevelAudit > LevelError) records: blocking send with 5s timeout.
 	// Other levels use non-blocking send and drop on buffer full.
 	if ar.Level >= slog.LevelError {
 		timer := time.NewTimer(5 * time.Second)

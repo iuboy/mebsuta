@@ -54,6 +54,7 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 
 // Enabled implements slog.Handler.
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	// Error and Audit (LevelAudit > LevelError) records are never sampled.
 	if level >= slog.LevelError {
 		return true
 	}
@@ -62,6 +63,7 @@ func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 
 // Handle implements slog.Handler.
 func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Error and Audit (LevelAudit > LevelError) records are never sampled.
 	if r.Level >= slog.LevelError {
 		return h.inner.Handle(ctx, r)
 	}

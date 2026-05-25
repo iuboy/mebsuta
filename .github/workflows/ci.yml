@@ -35,6 +35,7 @@ jobs:
       - run: go test -race -count=1 ./...
       - run: go vet ./...
       - run: test -z "$(gofmt -s -l .)"
+      - run: go install honnef.co/go/tools/cmd/staticcheck@latest && staticcheck ./...
 
   go-vulncheck:
     runs-on: ubuntu-latest
@@ -48,14 +49,67 @@ jobs:
           cache-dependency-path: go.sum
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  integration:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: logs
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -ptest"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: logs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd=pg_isready
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -u root -ptest 2>/dev/null; then
+              echo "MySQL ready"
+              break
+            fi
+            echo "Waiting for MySQL... ($i/30)"
+            sleep 2
+          done
+      - name: Run integration tests
+        env:
+          MEBSUTA_MYSQL_DSN: "root:test@tcp(127.0.0.1:3306)/logs?parseTime=true"
+          MEBSUTA_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=test password=test dbname=logs sslmode=disable"
+        run: go test -race -count=1 -tags=integration ./database/...
+
   status:
     runs-on: ubuntu-latest
-    needs: [changes, go, go-vulncheck]
+    needs: [changes, go, go-vulncheck, integration]
     if: always()
     env:
       GO_SEL: ${{ needs.changes.outputs.go }}
       GO_RESULT: ${{ needs.go.result }}
       GO_VULN_RESULT: ${{ needs.go-vulncheck.result }}
+      INTEGRATION_RESULT: ${{ needs.integration.result }}
     steps:
       - name: Report selected jobs
         run: |
@@ -65,11 +119,13 @@ jobs:
           if [ "$GO_SEL" = 'true' ]; then sel=yes; else sel=no; fi
           echo "| go | $sel | $GO_RESULT |" >> "$GITHUB_STEP_SUMMARY"
           echo "| go-vulncheck | $sel | $GO_VULN_RESULT |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| integration | $sel | $INTEGRATION_RESULT |" >> "$GITHUB_STEP_SUMMARY"
       - name: Fail if any selected job failed
         run: |
           failed=0
           if [ "$GO_SEL" = 'true' ]; then
             [ "$GO_RESULT" = 'success' ] || { echo "::error::go job failed or was cancelled"; failed=1; }
             [ "$GO_VULN_RESULT" = 'success' ] || { echo "::error::go-vulncheck job failed or was cancelled"; failed=1; }
+            [ "$INTEGRATION_RESULT" = 'success' ] || { echo "::error::integration job failed or was cancelled"; failed=1; }
           fi
           exit "$failed"

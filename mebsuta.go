@@ -32,6 +32,10 @@ const (
 	Console EncodingType = "console"
 )
 
+// LevelAudit is the audit log level for compliance logging (GB/T 22239, GM/T 0054).
+// Severity is above Error; handlers at Error level accept Audit records, and samplers always pass them through.
+const LevelAudit slog.Level = slog.LevelError + 4
+
 // HandlerError is a structured error reported by handlers through ErrorHandler.
 type HandlerError struct {
 	Component string // "file", "syslog", "database", "async", "multi"

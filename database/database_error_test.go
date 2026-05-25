@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
-	"github.com/iuboy/mebsuta/audit"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -80,8 +79,8 @@ func TestHandler_BatchRetryExhaustion(t *testing.T) {
 
 	// Wait for flush retries to exhaust (3 retries x 1ms delay).
 	require.Eventually(t, func() bool {
-		return reported.Load() > 0
-	}, 2*time.Second, 50*time.Millisecond, "error handler should be called for batch failures")
+		return reported.Load() >= int64(finalFlushRetries+1)
+	}, 2*time.Second, 50*time.Millisecond, "error handler should receive all retry errors plus final loss report")
 
 	// Verify the error message mentions records lost after exhausting retries.
 	errPtr := lastErr.Load()
@@ -214,11 +213,11 @@ func TestHandler_AuditLevelNotDropped(t *testing.T) {
 	// Set handler level to Error — Audit is above Error so Enabled returns true.
 	h.leveler = slog.LevelError
 
-	require.True(t, h.Enabled(context.Background(), audit.LevelAudit),
+	require.True(t, h.Enabled(context.Background(), mebsuta.LevelAudit),
 		"Audit should be enabled even at Error level handler")
 
 	// Handle an Audit record — it takes the retry path (level >= Error).
-	r := slog.NewRecord(time.Now(), audit.LevelAudit, "audit event", 0)
+	r := slog.NewRecord(time.Now(), mebsuta.LevelAudit, "audit event", 0)
 	require.NoError(t, h.Handle(context.Background(), r), "audit record should be accepted")
 
 	// Close and verify.
@@ -250,7 +249,7 @@ func TestHandler_AuditLevelPersisted(t *testing.T) {
 	go h.run(5, 50*time.Millisecond, 5*time.Millisecond)
 
 	// Write an Audit record (LevelAudit > Error, so it passes Enabled check).
-	r := slog.NewRecord(time.Now(), audit.LevelAudit, "audit persisted", 0)
+	r := slog.NewRecord(time.Now(), mebsuta.LevelAudit, "audit persisted", 0)
 	require.NoError(t, h.Handle(context.Background(), r))
 
 	require.NoError(t, h.Close())
@@ -264,7 +263,7 @@ func TestHandler_AuditLevelPersisted(t *testing.T) {
 	require.Len(t, entries, 1, "exactly one audit record should be persisted")
 	require.Equal(t, "audit persisted", entries[0].Message)
 
-	require.Equal(t, audit.LevelAudit.String(), entries[0].Level,
+	require.Equal(t, mebsuta.LevelAudit.String(), entries[0].Level,
 		"level should be stored as audit level string")
 
 	sqlDB, _ := gdb2.DB()

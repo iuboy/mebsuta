@@ -2,11 +2,14 @@ package mebsuta_test
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/audit"
 	"github.com/iuboy/mebsuta/filerotate"
 )
 
@@ -172,4 +175,130 @@ func Example_loginAudit() {
 		"actor", "user:123",
 		"success", true,
 	)
+}
+
+// ExampleUseContextExtractor demonstrates extracting fields from context.Context.
+func ExampleUseContextExtractor() {
+	type ctxKey string
+	const reqID ctxKey = "request_id"
+
+	logger, _ := mebsuta.New(
+		mebsuta.UseContextExtractor(func(ctx context.Context) []slog.Attr {
+			if id, ok := ctx.Value(reqID).(string); ok {
+				return []slog.Attr{slog.String("request_id", id)}
+			}
+			return nil
+		}),
+	)
+	slog.SetDefault(logger)
+	defer mebsuta.CloseAll(logger.Handler())
+
+	ctx := context.WithValue(context.Background(), reqID, "req-789")
+	slog.InfoContext(ctx, "request received", "path", "/api")
+}
+
+// ExampleWithErrorHandler demonstrates custom error handling for internal handler errors.
+func ExampleWithErrorHandler() {
+	dir, _ := os.MkdirTemp("", "mebsuta-example-err")
+	defer os.RemoveAll(dir)
+
+	logger, err := mebsuta.New(
+		mebsuta.UseFile(filerotate.Config{
+			Path:       filepath.Join(dir, "app.log"),
+			MaxSizeMB:  1,
+			MaxBackups: 3,
+		}, mebsuta.FileConfig{}),
+		mebsuta.WithErrorHandler(func(he mebsuta.HandlerError) {
+			fmt.Fprintf(os.Stderr, "component=%s op=%s err=%v\n",
+				he.Component, he.Operation, he.Err)
+		}),
+	)
+	if err != nil {
+		panic(err)
+	}
+	slog.SetDefault(logger)
+	defer mebsuta.CloseAll(logger.Handler())
+
+	slog.Info("normal log", "status", "ok")
+}
+
+// ExampleSilentErrorHandler demonstrates suppressing all internal error reports.
+func ExampleSilentErrorHandler() {
+	logger, _ := mebsuta.New(
+		mebsuta.WithErrorHandler(mebsuta.SilentErrorHandler()),
+	)
+	defer mebsuta.CloseAll(logger.Handler())
+
+	logger.Info("errors from handlers are silently discarded")
+}
+
+// ExampleInit demonstrates the one-line Init shortcut.
+func ExampleInit() {
+	logger, err := mebsuta.Init()
+	if err != nil {
+		panic(err)
+	}
+	defer mebsuta.CloseAll(logger.Handler())
+
+	// Init sets the global default automatically.
+	slog.Info("using Init")
+
+	mebsuta.Info("convenience function")
+	mebsuta.Warn("convenience function")
+}
+
+// Example_auditEventTypes demonstrates audit event type constants.
+func Example_auditEventTypes() {
+	handler, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+
+	audit.AuditEvent(audit.EventLogin, "user login",
+		"actor", "user:42", "success", true)
+
+	audit.AuditEvent(audit.EventDelete, "record deleted",
+		"actor", "admin:1", "resource", "doc:99", "success", true)
+
+	audit.AuditEvent(audit.EventConfigChange, "config updated",
+		"actor", "admin:1", "key", "timeout", "new_value", "30s")
+}
+
+// ExampleHandlerError demonstrates the HandlerError structure.
+func ExampleHandlerError() {
+	he := mebsuta.HandlerError{
+		Component: "file",
+		Operation: "rotate",
+		Err:       fmt.Errorf("permission denied"),
+		Dropped:   0,
+	}
+	fmt.Printf("component=%s op=%s err=%v dropped=%d\n",
+		he.Component, he.Operation, he.Err, he.Dropped)
+	// Output: component=file op=rotate err=permission denied dropped=0
+}
+
+// Example_filerotateAdvancedConfig demonstrates advanced file rotation settings.
+func Example_filerotateAdvancedConfig() {
+	dir, _ := os.MkdirTemp("", "mebsuta-example-rotate")
+	defer os.RemoveAll(dir)
+
+	logger, err := mebsuta.New(
+		mebsuta.UseFile(filerotate.Config{
+			Path:           filepath.Join(dir, "app.log"),
+			MaxSizeMB:      1,
+			MaxBackups:     5,
+			MaxAgeDays:     30,
+			Compress:       mebsuta.BoolPtr(true),
+			RotateInterval: 24 * time.Hour,
+			FileMode:       0644,
+		}, mebsuta.FileConfig{
+			Level:  slog.LevelDebug,
+			Format: "json",
+		}),
+	)
+	if err != nil {
+		panic(err)
+	}
+	defer mebsuta.CloseAll(logger.Handler())
+
+	slog.Debug("debug message written to file")
 }

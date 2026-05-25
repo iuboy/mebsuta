@@ -1,14 +1,17 @@
 package syslog
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/iuboy/mebsuta"
-	"github.com/iuboy/mebsuta/audit"
+	"github.com/stretchr/testify/require"
 )
 
 func listenTCP() (net.Listener, error) {
@@ -186,7 +189,7 @@ func TestLevelToSeverity(t *testing.T) {
 		{slog.LevelInfo, 6},
 		{slog.LevelWarn, 4},
 		{slog.LevelError, 3},
-		{audit.LevelAudit, 2},
+		{mebsuta.LevelAudit, 2},
 	}
 	for _, tt := range tests {
 		got := h.levelToSeverity(tt.level)
@@ -481,7 +484,7 @@ func TestFormatMessage_AuditLevel(t *testing.T) {
 
 	entry := mebsuta.LogEntry{
 		Time:    time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
-		Level:   audit.LevelAudit,
+		Level:   mebsuta.LevelAudit,
 		Message: "audit event",
 	}
 	msg := h.formatMessage(entry)
@@ -739,4 +742,151 @@ func TestConfigError_Format(t *testing.T) {
 	if !strings.Contains(err.Error(), "is required") {
 		t.Error("should contain message")
 	}
+}
+
+// =============================================================================
+// Flush + drainBuffer
+// =============================================================================
+
+func TestHandler_Flush(t *testing.T) {
+	received := make(chan string, 20)
+	listener, err := listenTCP()
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 8192)
+		for {
+			n, err := conn.Read(buf)
+			if n > 0 {
+				for _, line := range strings.Split(string(buf[:n]), "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						received <- line
+					}
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	h, err := NewHandler(Config{
+		Network:    "tcp",
+		Address:    listener.Addr().String(),
+		Tag:        "test",
+		BufferSize: 100,
+		RetryDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	defer h.Close()
+
+	for i := range 5 {
+		r := slog.NewRecord(time.Now(), slog.LevelInfo, fmt.Sprintf("flush-%d", i), 0)
+		h.Handle(context.Background(), r)
+	}
+
+	if err := h.Flush(3 * time.Second); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	// Flush guarantees buffer is drained; verify at least some messages arrived.
+	require.Eventually(t, func() bool {
+		return len(received) >= 3
+	}, 3*time.Second, 50*time.Millisecond, "should receive messages after flush")
+}
+
+func TestHandler_Flush_Closing(t *testing.T) {
+	listener, err := listenTCP()
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	h, err := NewHandler(Config{
+		Network: "tcp",
+		Address: listener.Addr().String(),
+		Tag:     "test",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	h.Close()
+
+	if err := h.Flush(time.Second); err != nil {
+		t.Errorf("Flush on closing handler should return nil, got: %v", err)
+	}
+}
+
+// =============================================================================
+// setErrorHandler + loadEH
+// =============================================================================
+
+func TestHandler_SetErrorHandler(t *testing.T) {
+	listener, err := listenTCP()
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	// Accept and immediately close — forces write to fail.
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	h, err := NewHandler(Config{
+		Network:    "tcp",
+		Address:    listener.Addr().String(),
+		Tag:        "test",
+		RetryDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	defer h.Close()
+
+	var mu sync.Mutex
+	var gotErr string
+	h.setErrorHandler(func(he mebsuta.HandlerError) {
+		mu.Lock()
+		gotErr = he.Err.Error()
+		mu.Unlock()
+	})
+
+	// Close the server so the next write attempt triggers reconnect failure.
+	listener.Close()
+
+	// Write multiple records to increase chance of hitting the error path.
+	for i := range 10 {
+		r := slog.NewRecord(time.Now(), slog.LevelInfo, fmt.Sprintf("error-%d", i), 0)
+		h.Handle(context.Background(), r)
+	}
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotErr != ""
+	}, 5*time.Second, 50*time.Millisecond, "custom error handler should be called")
 }
