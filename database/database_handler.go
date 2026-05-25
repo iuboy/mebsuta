@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -70,7 +71,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	gdb, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
-		return nil, fmt.Errorf("mebsuta: connect %s database: %w", cfg.Driver, err)
+		return nil, fmt.Errorf("mebsuta: connect %s database: %s", cfg.Driver, sanitizeDBError(err))
 	}
 
 	sqlDB, err := gdb.DB()
@@ -99,6 +100,10 @@ func NewHandler(cfg Config) (*Handler, error) {
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
+
+	if cfg.warnNoTLS {
+		mebsuta.ReportError(eh, mebsuta.HandlerError{Component: "database", Operation: "init", Err: fmt.Errorf("database connection has no TLS/SSL configured — log data will be transmitted in plaintext")})
+	}
 
 	h.wg.Add(1)
 	go h.run(cfg.BatchSize, cfg.BatchInterval, cfg.RetryDelay)
@@ -272,6 +277,18 @@ func closeSQLDB(gdb *gorm.DB) {
 	if db, err := gdb.DB(); err == nil {
 		_ = db.Close()
 	}
+}
+
+// dsnCredRe matches common credential patterns in DSNs: user:pass@host, user:pass@tcp(host),
+// password=xxx, and similar.
+var dsnCredRe = regexp.MustCompile(`:[^:@/]+@|password=[^&\s]+|passwd=[^&\s]+`)
+
+// sanitizeDBError removes credential-like substrings from database error messages.
+func sanitizeDBError(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return dsnCredRe.ReplaceAllString(err.Error(), ":***@")
 }
 
 var (

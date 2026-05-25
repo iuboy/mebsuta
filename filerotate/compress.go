@@ -73,6 +73,7 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 	}
 
 	prefix := base + "."
+	var toCompress []string
 	for _, e := range entries {
 		name := e.Name()
 		if name == base || !strings.HasPrefix(name, prefix) {
@@ -87,11 +88,23 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 		}
 
 		if compress {
-			wg.Add(1)
-			go func(path string) {
-				defer wg.Done()
-				compressFile(path, onError)
-			}(filepath.Join(dir, name))
+			toCompress = append(toCompress, filepath.Join(dir, name))
 		}
+	}
+
+	if len(toCompress) == 0 {
+		return
+	}
+
+	const maxConcurrent = 4
+	sem := make(chan struct{}, maxConcurrent)
+	for _, path := range toCompress {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			compressFile(path, onError)
+		}(path)
 	}
 }

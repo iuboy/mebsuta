@@ -39,8 +39,12 @@ func New(cfg Config) (*Writer, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.Path), 0700); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
+	}
+
+	if err := checkNotSymlink(cfg.Path); err != nil {
+		return nil, err
 	}
 
 	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, cfg.FileMode)
@@ -307,3 +311,28 @@ var (
 	_ io.Writer = (*Writer)(nil)
 	_ io.Closer = (*Writer)(nil)
 )
+
+// checkNotSymlink verifies the log file path is not a symlink. If the file does not
+// exist yet, it checks the parent directory. Returns an error if a symlink is detected.
+func checkNotSymlink(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat log file: %w", err)
+		}
+		// File doesn't exist yet — check parent directory.
+		dir := filepath.Dir(path)
+		di, err := os.Lstat(dir)
+		if err != nil {
+			return fmt.Errorf("stat log directory: %w", err)
+		}
+		if di.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("log directory %s is a symlink, refusing to write", dir)
+		}
+		return nil
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("log file %s is a symlink, refusing to write", path)
+	}
+	return nil
+}

@@ -98,6 +98,13 @@ func NewHandler(cfg Config) (*Handler, error) {
 			InsecureSkipVerify: cfg.TLSSkipVerify,
 			MinVersion:         tls.VersionTLS12,
 		}
+		if cfg.TLSSkipVerify {
+			mebsuta.ReportError(mebsuta.DefaultErrorHandler, mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
+		}
+	}
+
+	if cfg.Network == "udp" {
+		mebsuta.ReportError(mebsuta.DefaultErrorHandler, mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("UDP transport sends logs in plaintext without delivery guarantees — consider using TCP with TLS for production use")})
 	}
 
 	if err := h.connect(); err != nil {
@@ -380,6 +387,10 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 			err = fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
 		}
 	}()
+
+	if h.closing.Load() {
+		return fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
+	}
 
 	if level >= slog.LevelError {
 		select {
