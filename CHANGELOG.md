@@ -1,20 +1,7 @@
 # 更新日志
 
-本项目的所有重要变更都将记录在此文件中。
-
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
-并遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-
-## 维护规则
-
-新条目应按影响范围归类：
-
-- `Added`: 新功能
-- `Changed`: 行为变更
-- `Fixed`: Bug 修复
-- `Removed`: 移除的功能
-
-发布标签遵循 `VERSIONING.md`：`vX.Y.Z`
+版本策略参见 [VERSIONING.md](docs/VERSIONING.md)。
 
 ## [Unreleased] — v0.4.0-beta.1
 

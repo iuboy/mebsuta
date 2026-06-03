@@ -61,6 +61,58 @@ logger, _ := mebsuta.New(
 | `UseMetrics(m, name)` | Prometheus 指标收集 |
 | `UseContextExtractor(fn)` | 从 `context.Context` 提取字段 |
 
+## 配置类型
+
+### StdoutConfig / FileConfig
+
+```go
+StdoutConfig{
+    Level:  slog.LevelInfo,  // 日志级别过滤
+    Format: "json",          // "json" 或 "console"
+}
+
+FileConfig{
+    Level:  slog.LevelInfo,
+    Format: "json",
+}
+```
+
+### filerotate.Config
+
+```go
+filerotate.Config{
+    Path:           "/var/log/app.log",
+    MaxSizeMB:      100,        // 0 → 100
+    MaxBackups:     5,          // 0 → 5
+    MaxAgeDays:     30,         // 0 → 30
+    Compress:       mebsuta.BoolPtr(true),
+    RotateInterval: 24 * time.Hour,
+}
+```
+
+### SamplingConfig
+
+```go
+SamplingConfig{
+    Enabled:    true,
+    Initial:    100,   // 0 → 100
+    Thereafter: 10,    // 0 → 10
+    Window:     time.Second, // 0 → 1s
+}
+```
+
+### AsyncConfig
+
+```go
+AsyncConfig{
+    BufferSize: 256,  // 0 → 256
+}
+```
+
+### syslog.Config
+
+完整字段参见 [TLS 配置](docs/TLS.md)。
+
 ## 资源清理
 
 ```go
@@ -95,24 +147,28 @@ audit.AuditEvent(audit.EventLogin, "user login",
 
 `LevelAudit` 高于 `LevelError`，所有配置为 Error 级别的 handler 都会接收审计记录。采样器始终放行审计记录。
 
-## 配置
+## 模块结构
 
-```go
-// 文件输出
-mebsuta.UseFile(
-    filerotate.Config{Path: "/var/log/app.log"},
-    mebsuta.FileConfig{Level: slog.LevelDebug},
-)
+单模块仓库，所有子包共享根 go.mod，按需导入即可。
 
-// 多输出 + 采样 + 异步
-mebsuta.UseStdout(mebsuta.StdoutConfig{})
-mebsuta.UseSampling(mebsuta.SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10})
-mebsuta.UseAsync(mebsuta.AsyncConfig{BufferSize: 512})
-```
+| 模块 | 说明 |
+|------|------|
+| `mebsuta` | 核心日志库 |
+| `mebsuta/audit` | 审计/合规功能 |
+| `mebsuta/syslog` | Syslog 输出 |
+| `mebsuta/database` | 数据库批量写入 |
+| `mebsuta/metrics` | Prometheus 指标 |
+| `mebsuta/filerotate` | 文件轮转 Writer |
+| `mebsuta/attrutil` | Attribute 工具 |
+| `mebsuta/mebsutatest` | 测试辅助 |
 
 ## 文档
 
-- [API 参考](docs/INDEX.md)
+- [行为规范](docs/SPEC.md)
+- [贡献指南](docs/CONTRIBUTING.md)
+- [测试策略](docs/TESTING.md)
+- [版本策略](docs/VERSIONING.md)
+- [迁移指南](docs/MIGRATION.md)
 - [TLS 配置](docs/TLS.md)
 - [性能基准](docs/BENCHMARKS.md)
 - [更新日志](CHANGELOG.md)
