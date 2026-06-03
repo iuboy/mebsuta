@@ -847,11 +847,17 @@ func TestHandler_SetErrorHandler(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	// Accept and immediately close — forces write to fail.
+	// Accept and close with SO_LINGER=0 to send RST instead of FIN.
+	// A graceful FIN allows client writes to succeed (data enters the
+	// kernel send buffer), making write failures non-deterministic.
+	// RST causes immediate ECONNRESET on the next client write.
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
+		}
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetLinger(0)
 		}
 		conn.Close()
 	}()
@@ -875,10 +881,11 @@ func TestHandler_SetErrorHandler(t *testing.T) {
 		mu.Unlock()
 	})
 
-	// Close the server so the next write attempt triggers reconnect failure.
+	// Close listener so reconnect attempts also fail.
 	listener.Close()
 
-	// Write multiple records to increase chance of hitting the error path.
+	// Write records; with RST received, writes fail immediately and
+	// reconnect to the closed listener also fails, triggering the error handler.
 	for i := range 10 {
 		r := slog.NewRecord(time.Now(), slog.LevelInfo, fmt.Sprintf("error-%d", i), 0)
 		h.Handle(context.Background(), r)

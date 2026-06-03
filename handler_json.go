@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -65,7 +66,7 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	if r.PC != 0 {
 		frames := runtime.CallersFrames([]uintptr{r.PC})
 		if f, ok := frames.Next(); ok {
-			source = fmt.Sprintf("%s:%d %s", f.File, f.Line, f.Function)
+			source = fmt.Sprintf("%s:%d %s", filepath.Base(f.File), f.Line, f.Function)
 		}
 	}
 
@@ -96,7 +97,7 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err = fmt.Fprintln(h.w, string(data))
+	_, err = h.w.Write(append(data, '\n'))
 	return err
 }
 

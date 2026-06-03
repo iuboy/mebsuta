@@ -18,14 +18,6 @@ import (
 	"gorm.io/gorm"
 )
 
-func loadDBErrorHandler(p *atomic.Pointer[mebsuta.ErrorHandler]) mebsuta.ErrorHandler {
-	v := p.Load()
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
 const (
 	finalFlushTimeout = 10 * time.Second
 	finalFlushRetries = 3
@@ -137,7 +129,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 			return nil
 		case <-timer.C:
 			h.errCount.Add(1)
-			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", r.Level), Dropped: 1})
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", r.Level), Dropped: 1})
 			return nil
 		}
 	}
@@ -152,7 +144,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		return nil
 	default:
 		h.errCount.Add(1)
-		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
 		return nil
 	}
 }
@@ -234,12 +226,12 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			return
 		}
 		h.errCount.Add(1)
-		mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}
 	}
-	mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
+	mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
 }
 
 func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
@@ -257,7 +249,7 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	if len(fields) > 0 {
 		data, err := json.Marshal(fields)
 		if err != nil {
-			mebsuta.ReportError(loadDBErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "marshal", Err: fmt.Errorf("marshal fields: %w", err)})
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "marshal", Err: fmt.Errorf("marshal fields: %w", err)})
 			data = []byte("{}")
 		}
 		entry.Fields = json.RawMessage(data)

@@ -101,8 +101,9 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	}
 }
 
-// loadErrorHandler loads the ErrorHandler from an atomic pointer.
-func loadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
+// LoadErrorHandler loads the ErrorHandler from an atomic pointer.
+// Exported for use by sub-packages (database, syslog) to avoid duplicating this logic.
+func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
 	v := p.Load()
 	if v == nil {
 		return nil

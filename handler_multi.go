@@ -136,6 +136,12 @@ type errorHandlerSetter interface {
 
 // propagateErrorHandler recursively unwraps the decorator chain, injecting errorHandler into all handlers that support setErrorHandler.
 func propagateErrorHandler(h slog.Handler, fn ErrorHandler) {
+	// Skip nil: do not overwrite handler defaults that were set at construction time.
+	// When buildHandler is called without WithErrorHandler, fn is nil, and each
+	// handler already initialized with DefaultErrorHandler should keep it.
+	if fn == nil {
+		return
+	}
 	if s, ok := h.(errorHandlerSetter); ok {
 		s.setErrorHandler(fn)
 	}
@@ -155,6 +161,16 @@ func CloseAll(handler slog.Handler) error {
 	return closeAll(handler, make(map[uintptr]bool))
 }
 
+// handlerIdentity returns a unique pointer for deduplication. Returns (0, false)
+// for value-type handlers that cannot be identified by pointer.
+func handlerIdentity(h slog.Handler) (uintptr, bool) {
+	v := reflect.ValueOf(h)
+	if v.Kind() == reflect.Ptr {
+		return v.Pointer(), true
+	}
+	return 0, false
+}
+
 func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
 	if handler == nil {
 		return nil
@@ -163,11 +179,14 @@ func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
 	// This is necessary because slog.Handler is an interface — you can't take the
 	// address of an interface value directly. reflect.ValueOf is the standard Go
 	// approach for interface pointer identity.
-	ptr := reflect.ValueOf(handler).Pointer()
-	if visited[ptr] {
-		return nil
+	// Value-type handlers (uncommon) cannot be deduplicated; they are always processed.
+	ptr, canDedup := handlerIdentity(handler)
+	if canDedup {
+		if visited[ptr] {
+			return nil
+		}
+		visited[ptr] = true
 	}
-	visited[ptr] = true
 
 	var errs []error
 	if closer, ok := handler.(io.Closer); ok {

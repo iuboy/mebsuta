@@ -225,10 +225,8 @@ func (h *Handler) dialLocked() (net.Conn, error) {
 	}
 	if tc, ok := conn.(*net.TCPConn); ok {
 		if err := tc.SetKeepAlive(true); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("set keep-alive: %w", err)
-		}
-		if err := tc.SetKeepAlivePeriod(3 * time.Minute); err != nil {
+			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive: %w", err)})
+		} else if err := tc.SetKeepAlivePeriod(3 * time.Minute); err != nil {
 			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive period: %w", err)})
 		}
 	}
@@ -294,7 +292,7 @@ func (h *Handler) write(p []byte) error {
 }
 
 func (h *Handler) writeWithRetry(msg []byte) {
-	if !h.isConnected() && !h.closing.Load() {
+	if !h.isConnected() && !h.closing.Load() && *h.cfg.Reconnect {
 		h.reconnect()
 	}
 	for i := range maxRetries {
@@ -306,7 +304,9 @@ func (h *Handler) writeWithRetry(msg []byte) {
 		}
 		if i == 0 {
 			h.disconnect()
-			h.reconnect()
+			if *h.cfg.Reconnect {
+				h.reconnect()
+			}
 		}
 		time.Sleep(h.cfg.RetryDelay)
 	}
@@ -356,7 +356,7 @@ func (h *Handler) processQueue() {
 			close(done)
 
 		case <-reconnector.C:
-			if !h.isConnected() {
+			if !h.isConnected() && *h.cfg.Reconnect {
 				delay := backoffDelay(retryCount.Load())
 				select {
 				case <-time.After(delay):

@@ -64,7 +64,11 @@ func SlogValueAny(v slog.Value, nan NaNBehavior) any {
 	}
 }
 
-const maxFlattenDepth = 16
+const (
+	maxFlattenDepth = 16
+	maxKeyLen       = 256
+	maxAttrCount    = 1024
+)
 
 // FlattenAttr flattens a slog.Attr into out map with optional key prefix.
 func FlattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior) {
@@ -75,6 +79,9 @@ func flattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehav
 	if depth >= maxFlattenDepth {
 		return
 	}
+	if len(out) >= maxAttrCount {
+		return
+	}
 	attr.Value = attr.Value.Resolve()
 	key := attr.Key
 	if prefix != "" {
@@ -82,6 +89,9 @@ func flattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehav
 	}
 	if key == "" {
 		return
+	}
+	if len(key) > maxKeyLen {
+		key = key[:maxKeyLen]
 	}
 	if attr.Value.Kind() == slog.KindGroup {
 		for _, child := range attr.Value.Group() {

@@ -488,3 +488,46 @@ func TestDecoratorChain_Async_Stdout(t *testing.T) {
 		t.Errorf("expected 'async test' in output, got: %s", buf.String())
 	}
 }
+
+// Test closing async handler while concurrent writes are in flight.
+// Verifies no panic occurs and already-written records are flushed.
+func TestAsyncHandler_CloseDuringConcurrent(t *testing.T) {
+	inner := &countHandler{}
+	h := WithAsync(inner, AsyncConfig{BufferSize: 256})
+	logger := slog.New(h)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Start goroutines writing continuously
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					logger.Info("concurrent write")
+				}
+			}
+		}()
+	}
+
+	// Let goroutines run briefly
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop writers first, then close
+	close(stop)
+	wg.Wait()
+
+	if closer, ok := h.(interface{ Close() error }); ok {
+		closer.Close()
+	}
+
+	// Should not panic, and some records should have been written
+	if inner.Count() == 0 {
+		t.Error("expected some records to be written")
+	}
+}

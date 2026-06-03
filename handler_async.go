@@ -10,8 +10,6 @@ import (
 	"time"
 )
 
-const defaultAsyncBufferSize = 256
-
 // SelfBufferedHandler is a marker interface for handlers with built-in async
 // buffering. Wrapping such a handler in AsyncHandler creates double-buffering
 // and is rejected at construction time.
@@ -66,7 +64,7 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	}
 	bufferSize := cfg.BufferSize
 	if bufferSize <= 0 {
-		bufferSize = defaultAsyncBufferSize
+		bufferSize = DefaultAsyncBufferSize
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -109,10 +107,33 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.sendRecord(ar)
 }
 
-func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
+func (h *AsyncHandler) sendRecord(ar asyncRecord) (retErr error) {
+	// Protect against send-on-closed-channel panic during concurrent Close.
+	// Close() calls cancel() then close(ch). Between cancel and close, a
+	// concurrent Handle/sendRecord may attempt to send on the channel.
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("async handler is closed, log dropped")
+		}
+	}()
+
+	// Fast path: check if already closing before attempting channel operations.
+	if h.closed.Load() {
+		return fmt.Errorf("async handler is closed, log dropped")
+	}
+
 	// Error and Audit (LevelAudit > LevelError) records: blocking send with 5s timeout.
 	// Other levels use non-blocking send and drop on buffer full.
 	if ar.Level >= slog.LevelError {
+		// Try non-blocking send first to avoid timer allocation in the common case.
+		select {
+		case h.ch <- ar:
+			return nil
+		case <-h.ctx.Done():
+			return fmt.Errorf("async handler is closed, log dropped")
+		default:
+		}
+
 		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
 		select {
@@ -123,7 +144,7 @@ func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 		case <-timer.C:
 			h.dropped.Add(1)
 			err := fmt.Errorf("mebsuta: buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load())
-			ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
+			ReportError(LoadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
 			return err
 		}
 	}
@@ -135,7 +156,7 @@ func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 		return fmt.Errorf("async handler is closed, log dropped")
 	default:
 		h.dropped.Add(1)
-		ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
+		ReportError(LoadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
 		return nil
 	}
 }
@@ -153,6 +174,7 @@ func (h *AsyncHandler) WithGroup(name string) slog.Handler {
 	return &asyncGroupHandler{
 		AsyncHandler: h,
 		group:        name,
+		groupInner:   h.inner.WithGroup(name),
 	}
 }
 
@@ -186,7 +208,7 @@ func (h *AsyncHandler) run() {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
 		if err := ar.inner.Handle(ar.ctx, r); err != nil {
-			ReportError(loadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
+			ReportError(LoadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
 		}
 	}
 }
@@ -216,14 +238,16 @@ func (h *asyncAttrsHandler) WithGroup(name string) slog.Handler {
 		AsyncHandler: h.AsyncHandler,
 		group:        name,
 		attrs:        h.attrs,
+		groupInner:   h.AsyncHandler.inner.WithGroup(name),
 	}
 }
 
 // asyncGroupHandler preserves preset attrs and group prefix through the async boundary.
 type asyncGroupHandler struct {
 	*AsyncHandler
-	group string
-	attrs []slog.Attr
+	group      string
+	attrs      []slog.Attr
+	groupInner slog.Handler // cached WithGroup result, avoids per-Handle allocation
 }
 
 func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
@@ -238,7 +262,7 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		Level:   r.Level,
 		Message: r.Message,
 		PC:      r.PC,
-		inner:   h.inner.WithGroup(h.group),
+		inner:   h.groupInner,
 		ctx:     ctx,
 	}
 	r.Attrs(func(attr slog.Attr) bool {
@@ -256,10 +280,12 @@ func (h *asyncGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
+	combined := h.group + "." + name
 	return &asyncGroupHandler{
 		AsyncHandler: h.AsyncHandler,
-		group:        h.group + "." + name,
+		group:        combined,
 		attrs:        h.attrs,
+		groupInner:   h.AsyncHandler.inner.WithGroup(combined),
 	}
 }
 

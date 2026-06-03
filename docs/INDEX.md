@@ -100,13 +100,15 @@ defer mebsuta.CloseAll(logger.Handler())
 
 ## 模块结构
 
-| 模块 | 独立 go.mod | 说明 |
-|------|------------|------|
-| `mebsuta` | 根模块 | 核心日志库 |
-| `mebsuta/audit` | 是 | 审计/合规功能 |
-| `mebsuta/syslog` | 是 | Syslog 输出 |
-| `mebsuta/database` | 是 | 数据库批量写入 |
-| `mebsuta/metrics` | 是 | Prometheus 指标 |
-| `mebsuta/filerotate` | 否 | 文件轮转 Writer |
-| `mebsuta/attrutil` | 否 | Attribute 工具 |
-| `mebsuta/mebsutetest` | 否 | 测试辅助 |
+单模块仓库，所有子包共享根 go.mod，按需导入即可。
+
+| 模块 | 说明 |
+|------|------|
+| `mebsuta` | 核心日志库 |
+| `mebsuta/audit` | 审计/合规功能 |
+| `mebsuta/syslog` | Syslog 输出 |
+| `mebsuta/database` | 数据库批量写入 |
+| `mebsuta/metrics` | Prometheus 指标 |
+| `mebsuta/filerotate` | 文件轮转 Writer |
+| `mebsuta/attrutil` | Attribute 工具 |
+| `mebsuta/mebsutetest` | 测试辅助 |

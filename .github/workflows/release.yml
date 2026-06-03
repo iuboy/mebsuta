@@ -16,13 +16,14 @@ jobs:
         run: |
           case "$TAG_NAME" in
             v*) ;;
-            *) echo "::error::Unexpected tag format: $TAG_NAME. Use v*." >&2; exit 1 ;;
+            go/v*) ;;
+            *) echo "::error::Unexpected tag format: $TAG_NAME. Use v* or go/v*." >&2; exit 1 ;;
           esac
 
   go:
     runs-on: ubuntu-latest
     needs: guard
-    if: startsWith(github.ref_name, 'v')
+    if: startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'go/v')
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

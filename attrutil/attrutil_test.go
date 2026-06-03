@@ -181,3 +181,30 @@ func TestFormatTime_ConvertsToUTC(t *testing.T) {
 		t.Errorf("FormatTime should convert to UTC: %q", got)
 	}
 }
+
+func TestFlattenAttr_MaxKeyLen(t *testing.T) {
+	longKey := make([]byte, maxKeyLen+100)
+	for i := range longKey {
+		longKey[i] = 'a'
+	}
+	out := make(map[string]any)
+	FlattenAttr(out, "", slog.String(string(longKey), "val"), NaNSafe)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(out))
+	}
+	for k := range out {
+		if len(k) != maxKeyLen {
+			t.Errorf("key length = %d, want max %d", len(k), maxKeyLen)
+		}
+	}
+}
+
+func TestFlattenAttr_MaxAttrCount(t *testing.T) {
+	out := make(map[string]any)
+	for i := 0; i < maxAttrCount+100; i++ {
+		FlattenAttr(out, "", slog.Int("key", i), NaNSafe)
+	}
+	if len(out) > maxAttrCount {
+		t.Errorf("output map has %d entries, want max %d", len(out), maxAttrCount)
+	}
+}

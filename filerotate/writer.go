@@ -65,8 +65,11 @@ func New(cfg Config) (*Writer, error) {
 	}
 	w.size.Store(fi.Size())
 
-	defaultFn := defaultOnError
-	w.onError.Store(&errorFunc{fn: defaultFn})
+	onErrorFn := cfg.OnError
+	if onErrorFn == nil {
+		onErrorFn = defaultOnError
+	}
+	w.onError.Store(&errorFunc{fn: onErrorFn})
 
 	compressResidual(cfg.Path, cfg.compress(), &w.compressWg, w.loadOnError())
 
@@ -98,6 +101,19 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if n > 0 {
 		w.size.Add(int64(n))
 	}
+
+	// Post-write rotation check: if this write pushed past the limit,
+	// rotate immediately so the oversized file doesn't persist until
+	// the next Write call (which may never come for low-frequency logs).
+	// mu.RLock is still held, so needsRotation is safe to call.
+	if err == nil && w.needsRotation() {
+		w.mu.RUnlock()
+		w.rotate()
+		// rotate() acquired and released the write lock; re-acquire read
+		// lock so the deferred RUnlock matches.
+		w.mu.RLock()
+	}
+
 	return n, err
 }
 
@@ -107,10 +123,15 @@ func (w *Writer) Close() error {
 		return nil
 	}
 
-	w.compressWg.Wait()
-
+	// Acquire write lock before Wait to prevent a concurrent rotate() from
+	// calling compressWg.Add(1) after Wait returns. Without this lock, the
+	// sequence is: Close sets closed=true, Wait sees 0 goroutines, Lock+close
+	// file — while a rotate() that already passed its closed.Load() check
+	// starts a new compression goroutine that outlives Close.
 	w.mu.Lock()
 	defer w.mu.Unlock()
+
+	w.compressWg.Wait()
 
 	if w.file == nil {
 		return nil

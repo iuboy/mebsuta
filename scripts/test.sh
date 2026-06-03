@@ -76,6 +76,9 @@ run_integration() {
     print_info "启动 Docker 服务..."
     (cd "$ROOT_DIR" && docker compose -f scripts/docker-compose.yml up -d --wait)
 
+    # Ensure containers are stopped even if tests fail (set -e would skip the down command).
+    trap 'cd "$ROOT_DIR" && docker compose -f scripts/docker-compose.yml down' EXIT
+
     print_info "运行集成测试..."
     (cd "$ROOT_DIR" && go test -race -count=1 -tags=integration ./database/...)
     local db_result=$?
@@ -83,6 +86,8 @@ run_integration() {
     (cd "$ROOT_DIR" && go test -race -count=1 -tags=integration ./syslog/...)
     local syslog_result=$?
 
+    # Normal cleanup: remove trap and stop containers explicitly.
+    trap - EXIT
     print_info "停止 Docker 服务..."
     (cd "$ROOT_DIR" && docker compose -f scripts/docker-compose.yml down)
 

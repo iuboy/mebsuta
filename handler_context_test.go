@@ -156,3 +156,51 @@ func TestWithContextExtractor_UnwrapHandler(t *testing.T) {
 	require.True(t, ok, "should implement handlerUnwrapper")
 	require.Equal(t, inner, uw.unwrapHandler())
 }
+
+// TestWithContextExtractor_EmptyGroupNoMutation verifies that when group is "",
+// the original Record is not mutated in a way that leaks attrs to the next call.
+func TestWithContextExtractor_EmptyGroupNoMutation(t *testing.T) {
+	var called int
+	var capturedAttrs []slog.Attr
+	inner := &captureAttrsHandler{fn: func(attrs []slog.Attr) {
+		called++
+		capturedAttrs = attrs
+	}}
+
+	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
+		return []slog.Attr{slog.String("ctx_key", "ctx_val")}
+	})
+
+	logger := slog.New(h)
+	logger.Info("first")
+	logger.Info("second")
+
+	if called != 2 {
+		t.Fatalf("expected 2 calls, got %d", called)
+	}
+	// Each call should have exactly 1 extracted attr
+	count := 0
+	for _, a := range capturedAttrs {
+		if a.Key == "ctx_key" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 ctx_key attr in last call, got %d", count)
+	}
+}
+
+type captureAttrsHandler struct {
+	fn func(attrs []slog.Attr)
+}
+
+func (h *captureAttrsHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *captureAttrsHandler) Handle(_ context.Context, r slog.Record) error {
+	r.Attrs(func(a slog.Attr) bool {
+		h.fn([]slog.Attr{a})
+		return true
+	})
+	return nil
+}
+func (h *captureAttrsHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *captureAttrsHandler) WithGroup(string) slog.Handler      { return h }

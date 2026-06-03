@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"sync"
 	"testing"
 	"time"
 )
@@ -306,4 +307,39 @@ func containsSubstr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// =============================================================================
+// Concurrent writes
+// =============================================================================
+
+func TestContractJSONHandler_Concurrent(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	var wg sync.WaitGroup
+	for i := range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r := slog.NewRecord(time.Now(), slog.LevelInfo, "concurrent", 0)
+			r.AddAttrs(slog.Int("i", i))
+			h.Handle(context.Background(), r)
+		}()
+	}
+	wg.Wait()
+
+	// All lines must be valid JSON
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		var result map[string]any
+		if err := json.Unmarshal(line, &result); err != nil {
+			t.Errorf("invalid JSON line: %v, got: %s", err, string(line))
+		}
+	}
+	if len(lines) != 100 {
+		t.Errorf("expected 100 lines, got %d", len(lines))
+	}
 }
