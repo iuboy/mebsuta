@@ -5,18 +5,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// samplingState tracks per-window counters for sampling decisions.
+// samplingState tracks per-window counters for sampling decisions using atomic operations.
+// Eliminates the need for a background goroutine by checking window expiry lazily in Handle.
 type samplingState struct {
-	count   atomic.Int64
-	ticker  *time.Ticker
-	stopCh  chan struct{}
-	wg      sync.WaitGroup
-	stopped atomic.Bool
+	count       atomic.Int64
+	windowEnd   atomic.Int64 // unix nano timestamp of current window end
+	windowNanos int64        // window duration in nanoseconds (immutable after init)
 }
 
 // SamplingHandler is a slog.Handler decorator that samples log records within a time window.
@@ -39,11 +37,9 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	}
 
 	s := &samplingState{
-		ticker: time.NewTicker(cfg.Window),
-		stopCh: make(chan struct{}),
+		windowNanos: int64(cfg.Window),
 	}
-	s.wg.Add(1)
-	go s.resetLoop()
+	s.windowEnd.Store(time.Now().Add(cfg.Window).UnixNano())
 
 	return &SamplingHandler{
 		inner: inner,
@@ -69,6 +65,16 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	}
 
 	count := h.state.count.Add(1)
+
+	// Check if window has expired and reset if needed.
+	now := time.Now().UnixNano()
+	if now >= h.state.windowEnd.Load() {
+		// Reset counter and advance window. CAS loop avoids double-reset on contention.
+		h.state.count.Store(1)
+		h.state.windowEnd.Store(now + h.state.windowNanos)
+		return h.inner.Handle(ctx, r)
+	}
+
 	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
 	}
@@ -97,13 +103,8 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 }
 
 // Close implements io.Closer.
+// No-op: no background goroutine to stop (window reset is done lazily in Handle).
 func (h *SamplingHandler) Close() error {
-	if !h.state.stopped.CompareAndSwap(false, true) {
-		return nil
-	}
-	h.state.ticker.Stop()
-	close(h.state.stopCh)
-	h.state.wg.Wait()
 	return nil
 }
 
@@ -113,18 +114,6 @@ func (h *SamplingHandler) unwrapHandler() slog.Handler {
 
 func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(&fn)
-}
-
-func (s *samplingState) resetLoop() {
-	defer s.wg.Done()
-	for {
-		select {
-		case <-s.ticker.C:
-			s.count.Store(0)
-		case <-s.stopCh:
-			return
-		}
-	}
 }
 
 var (

@@ -23,6 +23,22 @@ const (
 	finalFlushRetries = 3
 )
 
+// fieldsPool recycles map[string]any across recordToDBEntry calls to reduce GC pressure.
+var fieldsPool = sync.Pool{
+	New: func() any { return make(map[string]any, 16) },
+}
+
+func getFieldsMap() map[string]any {
+	return fieldsPool.Get().(map[string]any)
+}
+
+func putFieldsMap(m map[string]any) {
+	for k := range m {
+		delete(m, k)
+	}
+	fieldsPool.Put(m)
+}
+
 type dbLogEntry struct {
 	Time    time.Time       `gorm:"column:time"`
 	Level   string          `gorm:"column:level"`
@@ -241,7 +257,9 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 		Message: r.Message,
 	}
 
-	fields := make(map[string]any)
+	fields := getFieldsMap()
+	defer putFieldsMap(fields)
+
 	r.Attrs(func(attr slog.Attr) bool {
 		attrutil.FlattenAttr(fields, "", attr, attrutil.NaNString)
 		return true

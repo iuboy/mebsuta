@@ -30,9 +30,8 @@ func SlogValueAny(v slog.Value, nan NaNBehavior) any {
 		}
 		return m
 	case slog.KindLogValuer:
-		return SlogValueAny(v.Resolve(), nan)
+		v = v.Resolve()
 	}
-	v = v.Resolve()
 	switch v.Kind() {
 	case slog.KindString:
 		return v.String()

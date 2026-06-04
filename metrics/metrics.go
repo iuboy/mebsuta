@@ -262,6 +262,7 @@ func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
 	m.activeConns.Describe(ch)
 	m.idleConns.Describe(ch)
 	m.writeLatency.Describe(ch)
+	m.activeGoroutines.Describe(ch)
 }
 
 // Collect implements prometheus.Collector.
@@ -278,6 +279,7 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.activeConns.Collect(ch)
 	m.idleConns.Collect(ch)
 	m.writeLatency.Collect(ch)
+	m.activeGoroutines.Collect(ch)
 }
 
 // RegisterToRegistry registers all metrics with a custom Prometheus registerer.

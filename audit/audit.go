@@ -53,8 +53,5 @@ func AuditEvent(eventType EventType, msg string, args ...any) {
 
 // AuditEventContext logs an audit record with an explicit event type and context.
 func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
-	all := make([]any, len(args), len(args)+2)
-	copy(all, args)
-	all = append(all, "event_type", string(eventType))
-	slog.Log(ctx, LevelAudit, msg, all...)
+	slog.Log(ctx, LevelAudit, msg, append(args, "event_type", string(eventType))...)
 }

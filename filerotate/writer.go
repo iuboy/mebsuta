@@ -20,6 +20,7 @@ type Writer struct {
 	mu         sync.RWMutex
 	file       *os.File
 	size       atomic.Int64
+	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * MiB, avoids multiplication on every Write
 	rotatedAt  time.Time
 	closed     atomic.Bool
 	cfg        Config
@@ -60,6 +61,7 @@ func New(cfg Config) (*Writer, error) {
 
 	w := &Writer{
 		file:      f,
+		maxBytes:  int64(cfg.MaxSizeMB) * MiB,
 		rotatedAt: time.Now(),
 		cfg:       cfg,
 	}
@@ -156,8 +158,7 @@ func (w *Writer) loadOnError() func(error) {
 
 // needsRotation checks whether rotation is needed. Caller must hold w.mu (at least RLock).
 func (w *Writer) needsRotation() bool {
-	maxBytes := int64(w.cfg.MaxSizeMB) * MiB
-	if maxBytes > 0 && w.size.Load() >= maxBytes {
+	if w.maxBytes > 0 && w.size.Load() >= w.maxBytes {
 		return true
 	}
 	if w.cfg.RotateInterval > 0 && time.Since(w.rotatedAt) >= w.cfg.RotateInterval {
@@ -229,16 +230,33 @@ func (w *Writer) recoverOpen(path string, onError func(error)) {
 }
 
 // backupNameLocked generates a unique backup filename. Caller must hold w.mu Lock.
+// Uses a single ReadDir call + in-memory set to avoid up to MaxRotationSuffixSeq Stat syscalls.
 func (w *Writer) backupNameLocked() string {
 	ts := time.Now().Format("2006-01-02T15-04-05.000")
 	name := w.cfg.Path + "." + ts
-	if _, err := os.Stat(name); err != nil {
+
+	// Single ReadDir to get all existing files in the log directory.
+	dir := filepath.Dir(w.cfg.Path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Fallback: can't read dir, just use the name directly.
+		return name
+	}
+
+	// Build a set of existing filenames for O(1) lookup.
+	existing := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		existing[e.Name()] = struct{}{}
+	}
+
+	base := filepath.Base(name)
+	if _, found := existing[base]; !found {
 		return name
 	}
 	for i := 1; i < MaxRotationSuffixSeq; i++ {
-		candidate := fmt.Sprintf("%s.%s.%d", w.cfg.Path, ts, i)
-		if _, err := os.Stat(candidate); err != nil {
-			return candidate
+		candidate := fmt.Sprintf("%s.%d", base, i)
+		if _, found := existing[candidate]; !found {
+			return filepath.Join(dir, candidate)
 		}
 	}
 	return w.cfg.Path + "." + fmt.Sprintf("%d", time.Now().UnixNano())

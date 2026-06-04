@@ -14,6 +14,22 @@ import (
 	"github.com/iuboy/mebsuta/attrutil"
 )
 
+// attrMapPool recycles map[string]any across Handle calls to reduce GC pressure.
+var attrMapPool = sync.Pool{
+	New: func() any { return make(map[string]any, 16) },
+}
+
+func getAttrMap() map[string]any {
+	return attrMapPool.Get().(map[string]any)
+}
+
+func putAttrMap(m map[string]any) {
+	for k := range m {
+		delete(m, k)
+	}
+	attrMapPool.Put(m)
+}
+
 // contractJSONHandler produces stable-contract JSON output: {"time","level","message","attributes"}.
 // It is used instead of slog.JSONHandler to enforce the output schema and handle NaN/Inf floats.
 type contractJSONHandler struct {
@@ -21,6 +37,23 @@ type contractJSONHandler struct {
 	w     io.Writer
 	attrs []slog.Attr
 	group string
+}
+
+// jsonEntry is the JSON output structure for log records.
+type jsonEntry struct {
+	Time       string         `json:"time"`
+	Level      string         `json:"level"`
+	Source     string         `json:"source,omitempty"`
+	EventType  string         `json:"event_type,omitempty"`
+	Message    string         `json:"message"`
+	Actor      string         `json:"actor,omitempty"`
+	Success    *bool          `json:"success,omitempty"`
+	Attributes map[string]any `json:"attributes"`
+}
+
+// entryPool recycles jsonEntry across Handle calls to reduce heap allocations.
+var entryPool = sync.Pool{
+	New: func() any { return new(jsonEntry) },
 }
 
 // newContractJSONHandler returns a slog.Handler that writes stable-contract JSON to w.
@@ -33,7 +66,9 @@ func (h *contractJSONHandler) Enabled(context.Context, slog.Level) bool {
 }
 
 func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
-	attributes := make(map[string]any)
+	attributes := getAttrMap()
+	defer putAttrMap(attributes)
+
 	eventType, actor, success := "", "", (*bool)(nil)
 
 	for _, attr := range h.attrs {
@@ -70,27 +105,29 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		}
 	}
 
-	entry := struct {
-		Time       string         `json:"time"`
-		Level      string         `json:"level"`
-		Source     string         `json:"source,omitempty"`
-		EventType  string         `json:"event_type,omitempty"`
-		Message    string         `json:"message"`
-		Actor      string         `json:"actor,omitempty"`
-		Success    *bool          `json:"success,omitempty"`
-		Attributes map[string]any `json:"attributes"`
-	}{
-		Time:       r.Time.UTC().Format(time.RFC3339Nano),
-		Level:      level,
-		Source:     source,
-		EventType:  eventType,
-		Message:    r.Message,
-		Actor:      actor,
-		Success:    success,
-		Attributes: attributes,
-	}
+	entry := entryPool.Get().(*jsonEntry)
+	entry.Time = r.Time.UTC().Format(time.RFC3339Nano)
+	entry.Level = level
+	entry.Source = source
+	entry.EventType = eventType
+	entry.Message = r.Message
+	entry.Actor = actor
+	entry.Success = success
+	entry.Attributes = attributes
 
 	data, err := json.Marshal(entry)
+
+	// Reset and return entry to pool before proceeding.
+	entry.Time = ""
+	entry.Level = ""
+	entry.Source = ""
+	entry.EventType = ""
+	entry.Message = ""
+	entry.Actor = ""
+	entry.Success = nil
+	entry.Attributes = nil
+	entryPool.Put(entry)
+
 	if err != nil {
 		return err
 	}

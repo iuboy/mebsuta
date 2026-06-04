@@ -107,20 +107,23 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.sendRecord(ar)
 }
 
-func (h *AsyncHandler) sendRecord(ar asyncRecord) (retErr error) {
-	// Protect against send-on-closed-channel panic during concurrent Close.
-	// Close() calls cancel() then close(ch). Between cancel and close, a
-	// concurrent Handle/sendRecord may attempt to send on the channel.
+func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
+	// Fast path: check if already closing before attempting channel operations.
+	if h.closed.Load() {
+		return fmt.Errorf("async handler is closed, log dropped")
+	}
+
+	return h.sendRecordInner(ar)
+}
+
+func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
+	// Recover guard for the rare race where Close() completes cancel()+close(ch)
+	// between sendRecord's closed.Load() check and this select statement.
 	defer func() {
 		if r := recover(); r != nil {
 			retErr = fmt.Errorf("async handler is closed, log dropped")
 		}
 	}()
-
-	// Fast path: check if already closing before attempting channel operations.
-	if h.closed.Load() {
-		return fmt.Errorf("async handler is closed, log dropped")
-	}
 
 	// Error and Audit (LevelAudit > LevelError) records: blocking send with 5s timeout.
 	// Other levels use non-blocking send and drop on buffer full.

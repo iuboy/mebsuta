@@ -21,15 +21,16 @@ import (
 )
 
 const (
-	maxRetries        = 5
-	writeTimeout      = 3 * time.Second
-	dialerTimeout     = 5 * time.Second
-	maxHostnameLength = 255
-	defaultBufferSize = 1000
-	maxBufferSize     = 10000
-	maxMsgSize        = 4 * 1024
-	maxReconnectDelay = 5 * time.Minute
-	maxBackoffExp     = 20
+	maxRetries             = 5
+	writeTimeout           = 3 * time.Second
+	dialerTimeout          = 5 * time.Second
+	reconnectCheckInterval = 5 * time.Second // independent from RetryDelay, avoids excessive wake-ups
+	maxHostnameLength      = 255
+	defaultBufferSize      = 1000
+	maxBufferSize          = 10000
+	maxMsgSize             = 4 * 1024
+	maxReconnectDelay      = 5 * time.Minute
+	maxBackoffExp          = 20
 )
 
 var spaceRe = regexp.MustCompile(`\s+`)
@@ -338,7 +339,7 @@ func backoffDelay(retries int32) time.Duration {
 func (h *Handler) processQueue() {
 	defer h.wg.Done()
 
-	reconnector := time.NewTicker(h.cfg.RetryDelay)
+	reconnector := time.NewTicker(reconnectCheckInterval)
 	defer reconnector.Stop()
 
 	var retryCount atomic.Int32
@@ -507,11 +508,7 @@ func (h *Handler) levelToSeverity(level slog.Level) int {
 }
 
 func (h *Handler) getCleanHost() string {
-	host := cleanHostname(h.hostname)
-	if host == "" {
-		return "localhost"
-	}
-	return host
+	return h.hostname // already cleaned and validated in generateHostname
 }
 
 func generateHostname(static string) (string, error) {
@@ -557,8 +554,16 @@ func cleanHostname(hostname string) string {
 	return clean.String()
 }
 
+var builderPool = sync.Pool{
+	New: func() any { return new(strings.Builder) },
+}
+
 func escapeSDValue(s string) string {
-	var b strings.Builder
+	b := builderPool.Get().(*strings.Builder)
+	defer func() {
+		b.Reset()
+		builderPool.Put(b)
+	}()
 	b.Grow(len(s))
 	for _, r := range s {
 		switch r {
@@ -576,7 +581,11 @@ func escapeSDValue(s string) string {
 }
 
 func sanitizeSDName(key string) string {
-	var b strings.Builder
+	b := builderPool.Get().(*strings.Builder)
+	defer func() {
+		b.Reset()
+		builderPool.Put(b)
+	}()
 	b.Grow(len(key))
 	for _, r := range key {
 		switch {

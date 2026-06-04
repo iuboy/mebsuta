@@ -70,32 +70,58 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		return hh.Handle(ctx, r)
 	}
 
+	// Filter to only enabled handlers.
+	var enabled []slog.Handler
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, r.Level) {
+			enabled = append(enabled, hh)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil
+	}
+
+	// For 2-3 enabled handlers, use sequential calls to avoid goroutine scheduling overhead.
+	// Clone the record once per handler to prevent data races on slog.Record internals.
+	if len(enabled) <= 3 {
+		var firstErr error
+		for _, hh := range enabled {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
+					}
+				}()
+				if err := hh.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}()
+		}
+		return firstErr
+	}
+
+	// For 4+ enabled handlers, fan out with goroutines.
 	var firstErr error
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	for _, handler := range h.handlers {
-		if !handler.Enabled(ctx, r.Level) {
-			continue
-		}
+	for _, hh := range enabled {
 		wg.Add(1)
-		go func(hh slog.Handler) {
+		go func(handler slog.Handler) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
 				}
 			}()
-			// r.Clone() prevents concurrent goroutines from racing on slog.Record.
-			// Clone has a fast path: with no Attrs, only fixed fields are copied with no heap allocation.
-			if err := hh.Handle(ctx, r.Clone()); err != nil {
+			if err := handler.Handle(ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
 				}
 				mu.Unlock()
 			}
-		}(handler)
+		}(hh)
 	}
 	wg.Wait()
 	return firstErr

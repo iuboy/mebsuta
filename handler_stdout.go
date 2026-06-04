@@ -6,14 +6,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"sync"
 )
 
 // StdoutHandler writes log records to stdout.
 type StdoutHandler struct {
 	cfg   StdoutConfig
-	inner slog.Handler // underlying slog.JSONHandler or slog.TextHandler
-	mu    *sync.Mutex
+	inner slog.Handler // underlying contractJSONHandler or slog.TextHandler
 }
 
 // NewStdoutHandler creates a StdoutHandler that writes to stdout using cfg.
@@ -25,7 +23,6 @@ func NewStdoutHandler(cfg StdoutConfig) (*StdoutHandler, error) {
 	}
 	h := &StdoutHandler{
 		cfg: cfg,
-		mu:  &sync.Mutex{},
 	}
 	h.inner = newInnerHandler(os.Stdout, EncodingType(cfg.Format))
 	return h, nil
@@ -38,7 +35,6 @@ func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, 
 	}
 	h := &StdoutHandler{
 		cfg: cfg,
-		mu:  &sync.Mutex{},
 	}
 	h.inner = newInnerHandler(w, EncodingType(cfg.Format))
 	return h, nil
@@ -51,8 +47,6 @@ func (h *StdoutHandler) Enabled(_ context.Context, level slog.Level) bool {
 
 // Handle implements slog.Handler.
 func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
 	return h.inner.Handle(ctx, r)
 }
 
@@ -61,7 +55,6 @@ func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
 		cfg:   h.cfg,
 		inner: h.inner.WithAttrs(attrs),
-		mu:    h.mu,
 	}
 }
 
@@ -70,7 +63,6 @@ func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
 		cfg:   h.cfg,
 		inner: h.inner.WithGroup(name),
-		mu:    h.mu,
 	}
 }
 
