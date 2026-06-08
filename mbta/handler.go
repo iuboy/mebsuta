@@ -62,25 +62,18 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	bufferSize := min(cfg.BufferSize, maxBufferSize)
 
-	// Build MBTA client
-	client, err := mbtago.NewClient(
-		mbtago.WithServer(cfg.Server),
-		mbtago.WithAgent(cfg.AgentID, hostname, cfg.Token),
+	// Dial: create client + connect in one step
+	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout)
+	defer connectCancel()
+
+	client, err := mbtago.Dial(connectCtx, cfg.Server, cfg.AgentID, cfg.Token,
 		mbtago.WithV1Credentials(v1.ClientCredentials{
 			InsecureSkipVerify: cfg.InsecureSkipVerify,
 		}),
 	)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("mebsuta/mbta: create client: %w", err)
-	}
-
-	// Connect
-	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout)
-	defer connectCancel()
-	if err := client.Connect(connectCtx); err != nil {
-		cancel()
-		return nil, fmt.Errorf("mebsuta/mbta: connect failed: %w", err)
+		return nil, fmt.Errorf("mebsuta/mbta: %w", err)
 	}
 
 	h := &Handler{
