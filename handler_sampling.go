@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // samplingState tracks per-window counters for sampling decisions using atomic operations.
@@ -33,7 +34,7 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	}
 	cfg, err := cfg.Validate()
 	if err != nil {
-		ReportError(DefaultErrorHandler, HandlerError{Component: "sampling", Operation: "init", Err: fmt.Errorf("invalid config: %w", err)})
+		ReportError(DefaultErrorHandler, &HandlerError{Component: "sampling", Operation: "init", Err: fmt.Errorf("invalid config: %w", err)})
 	}
 
 	s := &samplingState{
@@ -64,17 +65,22 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 		return h.inner.Handle(ctx, r)
 	}
 
-	count := h.state.count.Add(1)
-
 	// Check if window has expired and reset if needed.
 	now := time.Now().UnixNano()
-	if now >= h.state.windowEnd.Load() {
-		// Reset counter and advance window. CAS loop avoids double-reset on contention.
-		h.state.count.Store(1)
-		h.state.windowEnd.Store(now + h.state.windowNanos)
+	windowEnd := h.state.windowEnd.Load()
+	if now >= windowEnd {
+		// CAS ensures only one goroutine advances the window and resets the counter.
+		// Other goroutines that also see the expired window will pass their record
+		// through (correct: the first record in a new window should always be logged).
+		newEnd := now + h.state.windowNanos
+		if h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
+			h.state.count.Store(0)
+		}
+		h.state.count.Add(1)
 		return h.inner.Handle(ctx, r)
 	}
 
+	count := h.state.count.Add(1)
 	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
 	}
@@ -115,6 +121,8 @@ func (h *SamplingHandler) unwrapHandler() slog.Handler {
 func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
+
+func (h *SamplingHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler     = (*SamplingHandler)(nil)

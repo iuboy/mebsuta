@@ -69,7 +69,7 @@ func TestHandlerError_ErrorsAs(t *testing.T) {
 func TestLogErrorHandler(t *testing.T) {
 	var buf bytes.Buffer
 	eh := LogErrorHandler(&buf)
-	eh(HandlerError{
+	eh(&HandlerError{
 		Component: "file",
 		Operation: "write",
 		Err:       errors.New("disk full"),
@@ -81,7 +81,7 @@ func TestLogErrorHandler(t *testing.T) {
 func TestSilentErrorHandler(t *testing.T) {
 	eh := SilentErrorHandler()
 	// Should not panic and should not write anywhere
-	eh(HandlerError{
+	eh(&HandlerError{
 		Component: "file",
 		Operation: "write",
 		Err:       errors.New("should be discarded"),

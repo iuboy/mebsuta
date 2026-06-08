@@ -375,7 +375,7 @@ func TestIntegration_MetricsDecorator(t *testing.T) {
 // TestIntegration_ErrorHandler 验证自定义错误处理不 panic
 func TestIntegration_ErrorHandler(t *testing.T) {
 	logger, err := New(
-		WithErrorHandler(func(he HandlerError) {}),
+		WithErrorHandler(func(he *HandlerError) {}),
 		UseStdout(StdoutConfig{}),
 	)
 	if err != nil {

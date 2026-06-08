@@ -134,25 +134,25 @@ func RecordToLogEntry(r slog.Record) LogEntry {
 // ErrorHandler handles internal Handler errors (e.g., file rotation failure, database write failure).
 // Since slog.Logger silently ignores errors returned from Handle, handlers use this mechanism to report errors.
 // The default writes to os.Stderr; customize via WithErrorHandler.
-type ErrorHandler func(HandlerError)
+type ErrorHandler func(*HandlerError)
 
 // DefaultErrorHandler writes error details to os.Stderr.
 var DefaultErrorHandler ErrorHandler = defaultErrorHandler
 
-func defaultErrorHandler(he HandlerError) {
+func defaultErrorHandler(he *HandlerError) {
 	fmt.Fprintf(os.Stderr, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
 }
 
 // LogErrorHandler returns an ErrorHandler that writes to w.
 func LogErrorHandler(w io.Writer) ErrorHandler {
-	return func(he HandlerError) {
+	return func(he *HandlerError) {
 		fmt.Fprintf(w, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 }
 
 // SilentErrorHandler returns an ErrorHandler that discards all errors.
 func SilentErrorHandler() ErrorHandler {
-	return func(HandlerError) {}
+	return func(*HandlerError) {}
 }
 
 // BoolPtr returns a pointer to the given bool value, useful for config struct fields of type *bool.

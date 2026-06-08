@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"unsafe"
 )
 
 // StdoutHandler writes log records to stdout.
@@ -70,6 +71,8 @@ func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 func (h *StdoutHandler) Close() error {
 	return nil
 }
+
+func (h *StdoutHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler = (*StdoutHandler)(nil)

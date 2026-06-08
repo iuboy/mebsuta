@@ -37,21 +37,22 @@ var spaceRe = regexp.MustCompile(`\s+`)
 
 // Handler writes log records to a syslog server with built-in buffering, TLS support, and automatic reconnection.
 type Handler struct {
-	leveler      slog.Leveler
-	cfg          Config
-	conn         net.Conn
-	connMu       sync.RWMutex
-	dialer       net.Dialer
-	tlsCfg       *tls.Config
-	hostname     string
-	buffer       chan []byte
-	flushCh      chan chan struct{}
-	wg           sync.WaitGroup
-	ctx          context.Context
-	cancel       context.CancelFunc
-	closing      atomic.Bool
-	location     *time.Location
-	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
+	leveler          slog.Leveler
+	cfg              Config
+	reconnectEnabled bool // resolved from cfg.Reconnect *bool during construction
+	conn             net.Conn
+	connMu           sync.RWMutex
+	dialer           net.Dialer
+	tlsCfg           *tls.Config
+	hostname         string
+	buffer           chan []byte
+	flushCh          chan chan struct{}
+	wg               sync.WaitGroup
+	ctx              context.Context
+	cancel           context.CancelFunc
+	closing          atomic.Bool
+	location         *time.Location
+	errorHandler     atomic.Pointer[mebsuta.ErrorHandler]
 }
 
 // NewHandler creates a Handler that connects to the syslog server specified in cfg.
@@ -74,22 +75,23 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	loc, err := time.LoadLocation(cfg.TimeZone)
 	if err != nil {
-		mebsuta.ReportError(mebsuta.DefaultErrorHandler, mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("invalid timezone %q, using UTC: %w", cfg.TimeZone, err)})
+		mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("invalid timezone %q, using UTC: %w", cfg.TimeZone, err)})
 		loc = time.UTC
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h := &Handler{
-		leveler:  cfg.Level,
-		cfg:      cfg,
-		dialer:   net.Dialer{Timeout: dialerTimeout},
-		hostname: hostname,
-		buffer:   make(chan []byte, bufferSize),
-		flushCh:  make(chan chan struct{}),
-		ctx:      ctx,
-		cancel:   cancel,
-		location: loc,
+		leveler:          cfg.Level,
+		cfg:              cfg,
+		reconnectEnabled: cfg.Reconnect != nil && *cfg.Reconnect,
+		dialer:           net.Dialer{Timeout: dialerTimeout},
+		hostname:         hostname,
+		buffer:           make(chan []byte, bufferSize),
+		flushCh:          make(chan chan struct{}),
+		ctx:              ctx,
+		cancel:           cancel,
+		location:         loc,
 	}
 	eh := mebsuta.DefaultErrorHandler
 	h.errorHandler.Store(&eh)
@@ -100,12 +102,12 @@ func NewHandler(cfg Config) (*Handler, error) {
 			MinVersion:         tls.VersionTLS12,
 		}
 		if cfg.TLSSkipVerify {
-			mebsuta.ReportError(mebsuta.DefaultErrorHandler, mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
+			mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 		}
 	}
 
 	if cfg.Network == "udp" {
-		mebsuta.ReportError(mebsuta.DefaultErrorHandler, mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("UDP transport sends logs in plaintext without delivery guarantees — consider using TCP with TLS for production use")})
+		mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("UDP transport sends logs in plaintext without delivery guarantees — consider using TCP with TLS for production use")})
 	}
 
 	if err := h.connect(); err != nil {
@@ -149,7 +151,7 @@ func (h *Handler) Close() error {
 	h.connMu.Lock()
 	if h.conn != nil {
 		if err := h.conn.Close(); err != nil {
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("close old connection in connect: %w", err)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("close old connection in connect: %w", err)})
 		}
 		h.conn = nil
 	}
@@ -193,12 +195,12 @@ func (h *Handler) drainBuffer() {
 
 // WithAttrs implements slog.Handler.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &mebsuta.AttrsSub[*Handler]{Parent: h, Attrs: attrs}
+	return &mebsuta.AttrsSub{Parent: h, Attrs: attrs}
 }
 
 // WithGroup implements slog.Handler.
 func (h *Handler) WithGroup(name string) slog.Handler {
-	return &mebsuta.GroupSub[*Handler]{Parent: h, Group: name}
+	return &mebsuta.GroupSub{Parent: h, Group: name}
 }
 
 func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
@@ -226,9 +228,9 @@ func (h *Handler) dialLocked() (net.Conn, error) {
 	}
 	if tc, ok := conn.(*net.TCPConn); ok {
 		if err := tc.SetKeepAlive(true); err != nil {
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive: %w", err)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive: %w", err)})
 		} else if err := tc.SetKeepAlivePeriod(3 * time.Minute); err != nil {
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive period: %w", err)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("set keep-alive period: %w", err)})
 		}
 	}
 	return conn, nil
@@ -245,7 +247,7 @@ func (h *Handler) connect() error {
 
 	if h.conn != nil {
 		if err := h.conn.Close(); err != nil {
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("close old connection in connect: %w", err)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("close old connection in connect: %w", err)})
 		}
 	}
 	h.conn = conn
@@ -261,13 +263,13 @@ func (h *Handler) reconnect() {
 
 	conn, err := h.dialLocked()
 	if err != nil {
-		mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "reconnect", Err: fmt.Errorf("reconnect failed: %w", err)})
+		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "reconnect", Err: fmt.Errorf("reconnect failed: %w", err)})
 		return
 	}
 
 	if h.conn != nil {
 		if closeErr := h.conn.Close(); closeErr != nil {
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "reconnect", Err: fmt.Errorf("close old connection in reconnect: %w", closeErr)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "reconnect", Err: fmt.Errorf("close old connection in reconnect: %w", closeErr)})
 		}
 	}
 	h.conn = conn
@@ -293,7 +295,7 @@ func (h *Handler) write(p []byte) error {
 }
 
 func (h *Handler) writeWithRetry(msg []byte) {
-	if !h.isConnected() && !h.closing.Load() && *h.cfg.Reconnect {
+	if !h.isConnected() && !h.closing.Load() && h.reconnectEnabled {
 		h.reconnect()
 	}
 	for i := range maxRetries {
@@ -305,13 +307,13 @@ func (h *Handler) writeWithRetry(msg []byte) {
 		}
 		if i == 0 {
 			h.disconnect()
-			if *h.cfg.Reconnect {
+			if h.reconnectEnabled {
 				h.reconnect()
 			}
 		}
 		time.Sleep(h.cfg.RetryDelay)
 	}
-	mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts", maxRetries)})
+	mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts", maxRetries)})
 }
 
 func (h *Handler) disconnect() {
@@ -319,7 +321,7 @@ func (h *Handler) disconnect() {
 	defer h.connMu.Unlock()
 	if h.conn != nil {
 		if err := h.conn.Close(); err != nil {
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("close old connection in connect: %w", err)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "connect", Err: fmt.Errorf("close old connection in connect: %w", err)})
 		}
 		h.conn = nil
 	}
@@ -357,7 +359,7 @@ func (h *Handler) processQueue() {
 			close(done)
 
 		case <-reconnector.C:
-			if !h.isConnected() && *h.cfg.Reconnect {
+			if !h.isConnected() && h.reconnectEnabled {
 				delay := backoffDelay(retryCount.Load())
 				select {
 				case <-time.After(delay):
@@ -398,7 +400,7 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 		case h.buffer <- data:
 			return nil
 		case <-time.After(5 * time.Second):
-			mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level)})
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level)})
 			return fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
 		}
 	}
@@ -407,7 +409,7 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 	case h.buffer <- data:
 		return nil
 	default:
-		mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full, log dropped")})
+		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full, log dropped")})
 		return fmt.Errorf("mebsuta/syslog: buffer full")
 	}
 }
@@ -443,7 +445,7 @@ func (h *Handler) formatJSONMessage(entry mebsuta.LogEntry, ts time.Time, priori
 
 	jsonBytes, err := json.Marshal(logData)
 	if err != nil {
-		mebsuta.ReportError(h.loadEH(), mebsuta.HandlerError{Component: "syslog", Operation: "marshal", Err: fmt.Errorf("marshal log entry (msg=%q, level=%v): %w", entry.Message, entry.Level, err)})
+		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "marshal", Err: fmt.Errorf("marshal log entry (msg=%q, level=%v): %w", entry.Message, entry.Level, err)})
 		safeData := map[string]any{
 			"time":       logData["time"],
 			"level":      logData["level"],
@@ -525,7 +527,7 @@ func generateHostname(static string) (string, error) {
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
-		mebsuta.ReportError(mebsuta.DefaultErrorHandler, mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("get hostname: %w", err)})
+		mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("get hostname: %w", err)})
 		return "unknown", nil
 	}
 	hostname = cleanHostname(hostname)

@@ -558,3 +558,66 @@ func TestWriter_CleanupExpiredBackups(t *testing.T) {
 		t.Error("old backup should have been removed by MaxAgeDays cleanup")
 	}
 }
+
+// TestWriter_ConcurrentWritesDuringRotation verifies that concurrent writes
+// during file rotation do not cause panics, data races, or lost data.
+func TestWriter_ConcurrentWritesDuringRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := New(Config{
+		Path:      path,
+		MaxSizeMB: 1, // 1 MB — rotation will trigger quickly
+		Compress:  boolPtr(false),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte(strings.Repeat("x", 512) + "\n")
+	const goroutines = 10
+	const writesPerGoroutine = 300
+
+	var wg sync.WaitGroup
+	for i := range goroutines {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			for j := range writesPerGoroutine {
+				if _, err := w.Write(data); err != nil {
+					t.Errorf("goroutine %d write %d: %v", n, j, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Verify the main log file exists and has content.
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read main log: %v", err)
+	}
+	if len(content) == 0 {
+		t.Error("main log file is empty after concurrent writes with rotation")
+	}
+
+	// Verify at least one backup was created due to rotation.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	backupCount := 0
+	for _, e := range entries {
+		if e.Name() != "test.log" {
+			backupCount++
+		}
+	}
+	if backupCount == 0 {
+		t.Error("expected at least one rotated backup file")
+	}
+}

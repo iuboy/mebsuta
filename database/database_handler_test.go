@@ -44,8 +44,8 @@ func TestHandler_Enabled(t *testing.T) {
 
 func TestHandler_WithAttrs(t *testing.T) {
 	var _ slog.Handler = (*Handler)(nil)
-	var _ slog.Handler = (*mebsuta.AttrsSub[*Handler])(nil)
-	var _ slog.Handler = (*mebsuta.GroupSub[*Handler])(nil)
+	var _ slog.Handler = (*mebsuta.AttrsSub)(nil)
+	var _ slog.Handler = (*mebsuta.GroupSub)(nil)
 }
 
 // Regression: ISSUE-002 — Handler 必须实现非导出的 setErrorHandler 方法

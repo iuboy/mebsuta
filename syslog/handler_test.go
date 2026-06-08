@@ -875,7 +875,7 @@ func TestHandler_SetErrorHandler(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotErr string
-	h.setErrorHandler(func(he mebsuta.HandlerError) {
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
 		mu.Lock()
 		gotErr = he.Err.Error()
 		mu.Unlock()

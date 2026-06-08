@@ -65,7 +65,7 @@ func TestHandler_BatchRetryExhaustion(t *testing.T) {
 	)
 
 	// Replace error handler to capture calls.
-	h.setErrorHandler(func(he mebsuta.HandlerError) {
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
 		reported.Add(1)
 		{
 			e := he.Err
@@ -102,7 +102,7 @@ func TestHandler_ErrorHandlerCallback(t *testing.T) {
 		called  int
 	)
 
-	h.setErrorHandler(func(he mebsuta.HandlerError) {
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
 		mu.Lock()
 		defer mu.Unlock()
 		gotComp = he.Component
@@ -127,32 +127,32 @@ func TestHandler_ErrorHandlerCallback(t *testing.T) {
 }
 
 // TestHandler_WithAttrsReturnsCorrectType verifies that WithAttrs
-// returns *AttrsSub[*Handler].
+// returns *AttrsSub.
 func TestHandler_WithAttrsReturnsCorrectType(t *testing.T) {
 	h, cleanup := newFailingDBHandler(t)
 	defer cleanup()
 
 	result := h.WithAttrs([]slog.Attr{slog.String("key", "value")})
 
-	// Should be *AttrsSub[*Handler]
-	_, ok := result.(*mebsuta.AttrsSub[*Handler])
-	require.True(t, ok, "WithAttrs should return *AttrsSub[*Handler]")
+	// Should be *AttrsSub
+	_, ok := result.(*mebsuta.AttrsSub)
+	require.True(t, ok, "WithAttrs should return *AttrsSub")
 
 	// Should also satisfy slog.Handler.
 	var _ slog.Handler = result
 }
 
 // TestHandler_WithGroupReturnsCorrectType verifies that WithGroup
-// returns *GroupSub[*Handler].
+// returns *GroupSub.
 func TestHandler_WithGroupReturnsCorrectType(t *testing.T) {
 	h, cleanup := newFailingDBHandler(t)
 	defer cleanup()
 
 	result := h.WithGroup("mygroup")
 
-	// Should be *GroupSub[*Handler]
-	_, ok := result.(*mebsuta.GroupSub[*Handler])
-	require.True(t, ok, "WithGroup should return *GroupSub[*Handler]")
+	// Should be *GroupSub
+	_, ok := result.(*mebsuta.GroupSub)
+	require.True(t, ok, "WithGroup should return *GroupSub")
 
 	// Should also satisfy slog.Handler.
 	var _ slog.Handler = result
@@ -344,7 +344,7 @@ func TestHandler_BufferFullDropsInfoRecord(t *testing.T) {
 		mu      sync.Mutex
 		errMsgs []string
 	)
-	h.setErrorHandler(func(he mebsuta.HandlerError) {
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
 		mu.Lock()
 		defer mu.Unlock()
 		errMsgs = append(errMsgs, he.Err.Error())
@@ -372,9 +372,9 @@ func TestHandler_BufferFullDropsInfoRecord(t *testing.T) {
 
 	// Clean up — close the channel to stop potential goroutines.
 	h.closed.Store(true)
-	h.sendMu.Lock()
+	h.closeMu.Lock()
 	close(h.entries)
-	h.sendMu.Unlock()
+	h.closeMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
 	sqlDB.Close()
@@ -435,7 +435,7 @@ func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 		mu      sync.Mutex
 		errMsgs []string
 	)
-	h.setErrorHandler(func(he mebsuta.HandlerError) {
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
 		mu.Lock()
 		defer mu.Unlock()
 		errMsgs = append(errMsgs, he.Err.Error())
@@ -464,9 +464,9 @@ func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 
 	// Cleanup
 	h.closed.Store(true)
-	h.sendMu.Lock()
+	h.closeMu.Lock()
 	close(h.entries)
-	h.sendMu.Unlock()
+	h.closeMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
 	sqlDB.Close()
@@ -504,7 +504,7 @@ func TestHandler_FlushRetries(t *testing.T) {
 		ctx:     context.Background(),
 		cancel:  func() {},
 	}
-	h.setErrorHandler(func(he mebsuta.HandlerError) {
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
 		if strings.Contains(he.Err.Error(), "batch insert failed") {
 			retryCount.Add(1)
 		}
@@ -555,9 +555,9 @@ func TestHandler_ErrCountTracksDrops(t *testing.T) {
 
 	// Cleanup
 	h.closed.Store(true)
-	h.sendMu.Lock()
+	h.closeMu.Lock()
 	close(h.entries)
-	h.sendMu.Unlock()
+	h.closeMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
 	sqlDB.Close()
@@ -571,4 +571,59 @@ func TestHandler_NewHandler_ConnectFailure(t *testing.T) {
 	require.Error(t, err, "should fail to connect to invalid MySQL DSN")
 	require.True(t, errors.Is(err, nil) || err != nil,
 		"error should be non-nil for connection failure")
+}
+
+// TestHandler_BatchInsertError verifies that batch insert failures are reported
+// via the error handler and retried up to finalFlushRetries times.
+func TestHandler_BatchInsertError(t *testing.T) {
+	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err, "gorm open")
+
+	// Do NOT create the table — this forces all inserts to fail.
+	sqlDB, _ := gdb.DB()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	var errMsgs []string
+	eh := mebsuta.ErrorHandler(func(he *mebsuta.HandlerError) {
+		mu.Lock()
+		errMsgs = append(errMsgs, he.Err.Error())
+		mu.Unlock()
+	})
+	h := &Handler{
+		leveler: slog.LevelInfo,
+		db:      gdb,
+		table:   "nonexistent_table",
+		entries: make(chan dbLogEntry, 100),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	h.errorHandler.Store(&eh)
+
+	h.wg.Add(1)
+	go h.run(1, 50*time.Millisecond, 10*time.Millisecond)
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "will fail", 0)
+	r.AddAttrs(slog.String("key", "value"))
+	h.Handle(context.Background(), r)
+
+	// Wait for the batch to be processed (with retries).
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(errMsgs) >= 1
+	}, 5*time.Second, 50*time.Millisecond, "error handler should be called for failed batch insert")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.True(t, strings.Contains(errMsgs[0], "batch"), "error should mention batch, got: %s", errMsgs[0])
+
+	h.closed.Store(true)
+	h.closeMu.Lock()
+	close(h.entries)
+	h.closeMu.Unlock()
+	h.wg.Wait()
+	cancel()
+	sqlDB.Close()
 }

@@ -172,12 +172,16 @@ func TestWithSampling_Concurrent(t *testing.T) {
 	defer closeSampling(t, h)
 	logger := slog.New(h)
 
+	const goroutines = 10
+	const logsPerGoroutine = 100
+	const totalLogs = goroutines * logsPerGoroutine
+
 	var wg sync.WaitGroup
-	for range 10 {
+	for range goroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for range 100 {
+			for range logsPerGoroutine {
 				logger.Info("concurrent")
 			}
 		}()
@@ -185,11 +189,14 @@ func TestWithSampling_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	count := inner.Count()
-	if count == 0 {
-		t.Error("expected some logs to be recorded")
+	// Initial=100 means the first 100 records in the window always pass.
+	// After that, 1 in Thereafter=10 is kept. So for 1000 total:
+	// roughly 100 + (1000-100)/10 = 190 records. Use generous bounds.
+	if count < 100 {
+		t.Errorf("expected at least initial 100, got %d", count)
 	}
-	if count > 1000 {
-		t.Errorf("expected less than 1000, got %d", count)
+	if count > totalLogs {
+		t.Errorf("count %d exceeds total logs %d — possible race condition", count, totalLogs)
 	}
 }
 

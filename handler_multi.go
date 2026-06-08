@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"reflect"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 // ReportError invokes the ErrorHandler if non-nil.
-func ReportError(eh ErrorHandler, he HandlerError) {
+func ReportError(eh ErrorHandler, he *HandlerError) {
 	if eh != nil {
 		if he.Time.IsZero() {
 			he.Time = time.Now()
@@ -55,6 +55,17 @@ func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
 	return false
 }
 
+// handleWithRecovery calls handler.Handle with panic recovery. Panics are reported via the error handler and converted to nil errors.
+func (h *safeMulti) handleWithRecovery(handler slog.Handler, ctx context.Context, r slog.Record) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			ReportError(h.errorHandler, &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
+			err = nil
+		}
+	}()
+	return handler.Handle(ctx, r)
+}
+
 func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 	if len(h.handlers) == 1 {
 		// Single handler: call directly without goroutine overhead
@@ -62,12 +73,7 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		if !hh.Enabled(ctx, r.Level) {
 			return nil
 		}
-		defer func() {
-			if r := recover(); r != nil {
-				ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
-			}
-		}()
-		return hh.Handle(ctx, r)
+		return h.handleWithRecovery(hh, ctx, r)
 	}
 
 	// Filter to only enabled handlers.
@@ -87,12 +93,7 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		var firstErr error
 		for _, hh := range enabled {
 			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
-					}
-				}()
-				if err := hh.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+				if err := h.handleWithRecovery(hh, ctx, r.Clone()); err != nil && firstErr == nil {
 					firstErr = err
 				}
 			}()
@@ -109,12 +110,7 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		wg.Add(1)
 		go func(handler slog.Handler) {
 			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					ReportError(h.errorHandler, HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", r)})
-				}
-			}()
-			if err := handler.Handle(ctx, r.Clone()); err != nil {
+			if err := h.handleWithRecovery(handler, ctx, r.Clone()); err != nil {
 				mu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -187,12 +183,30 @@ func CloseAll(handler slog.Handler) error {
 	return closeAll(handler, make(map[uintptr]bool))
 }
 
-// handlerIdentity returns a unique pointer for deduplication. Returns (0, false)
-// for value-type handlers that cannot be identified by pointer.
+// handlerIdentifier is an optional interface for handlers that can provide a unique
+// identity pointer for deduplication in CloseAll. All concrete handler types in this
+// package implement it via handlerAddr(). External handlers that don't implement it
+// fall back to extracting the interface data pointer via unsafe.
+type handlerIdentifier interface {
+	handlerAddr() uintptr
+}
+
+// handlerIdentity returns a unique pointer for deduplication.
+// First checks the handlerIdentifier interface; if not implemented, extracts the
+// interface data pointer via unsafe (works for all pointer-receiver handler types).
 func handlerIdentity(h slog.Handler) (uintptr, bool) {
-	v := reflect.ValueOf(h)
-	if v.Kind() == reflect.Ptr {
-		return v.Pointer(), true
+	if hi, ok := h.(handlerIdentifier); ok {
+		return hi.handlerAddr(), true
+	}
+	// Fallback: extract the data pointer from the interface value.
+	// An interface in Go is {type, data}; the data word is the underlying pointer.
+	type iface struct {
+		_    uintptr // type
+		data uintptr // data pointer
+	}
+	ptr := (*iface)(unsafe.Pointer(&h)).data
+	if ptr != 0 {
+		return ptr, true
 	}
 	return 0, false
 }
@@ -201,10 +215,9 @@ func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
 	if handler == nil {
 		return nil
 	}
-	// Use reflect to get the interface's underlying pointer for identity comparison.
-	// This is necessary because slog.Handler is an interface — you can't take the
-	// address of an interface value directly. reflect.ValueOf is the standard Go
-	// approach for interface pointer identity.
+	// Use handlerIdentifier to get the handler's identity pointer for deduplication.
+	// External handlers that don't implement the interface are always processed
+	// (no deduplication), which is safe since closeAll is idempotent per handler.
 	// Value-type handlers (uncommon) cannot be deduplicated; they are always processed.
 	ptr, canDedup := handlerIdentity(handler)
 	if canDedup {
@@ -258,6 +271,8 @@ func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) s
 	newR.AddAttrs(extraAttrs...)
 	return newR
 }
+
+func (h *safeMulti) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler = (*safeMulti)(nil)

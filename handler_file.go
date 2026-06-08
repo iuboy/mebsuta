@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"unsafe"
 
 	"github.com/iuboy/mebsuta/filerotate"
 )
@@ -83,12 +84,14 @@ func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
 	h.writer.SetOnError(func(err error) {
 		var ferr *filerotate.Error
 		if errors.As(err, &ferr) {
-			ReportError(fn, HandlerError{Component: "file", Operation: ferr.Op, Err: ferr.Err})
+			ReportError(fn, &HandlerError{Component: "file", Operation: ferr.Op, Err: ferr.Err})
 		} else {
-			ReportError(fn, HandlerError{Component: "file", Operation: "write", Err: err})
+			ReportError(fn, &HandlerError{Component: "file", Operation: "write", Err: err})
 		}
 	})
 }
+
+func (h *FileHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 // Compile-time assertions
 var (

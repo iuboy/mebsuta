@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"time"
+	"unsafe"
 )
 
 // HandlerMetrics defines the interface for collecting handler-level metrics such as latency, errors, and drops.
@@ -78,6 +79,8 @@ func (h *MetricsHandler) unwrapHandler() slog.Handler {
 func (h *MetricsHandler) setErrorHandler(fn ErrorHandler) {
 	// No-op: propagateErrorHandler recurses via unwrapHandler to reach the inner handler.
 }
+
+func (h *MetricsHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler     = (*MetricsHandler)(nil)

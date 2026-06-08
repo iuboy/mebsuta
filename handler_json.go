@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/iuboy/mebsuta/attrutil"
 )
@@ -49,11 +50,6 @@ type jsonEntry struct {
 	Actor      string         `json:"actor,omitempty"`
 	Success    *bool          `json:"success,omitempty"`
 	Attributes map[string]any `json:"attributes"`
-}
-
-// entryPool recycles jsonEntry across Handle calls to reduce heap allocations.
-var entryPool = sync.Pool{
-	New: func() any { return new(jsonEntry) },
 }
 
 // newContractJSONHandler returns a slog.Handler that writes stable-contract JSON to w.
@@ -105,28 +101,18 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		}
 	}
 
-	entry := entryPool.Get().(*jsonEntry)
-	entry.Time = r.Time.UTC().Format(time.RFC3339Nano)
-	entry.Level = level
-	entry.Source = source
-	entry.EventType = eventType
-	entry.Message = r.Message
-	entry.Actor = actor
-	entry.Success = success
-	entry.Attributes = attributes
+	entry := &jsonEntry{
+		Time:       r.Time.UTC().Format(time.RFC3339Nano),
+		Level:      level,
+		Source:     source,
+		EventType:  eventType,
+		Message:    r.Message,
+		Actor:      actor,
+		Success:    success,
+		Attributes: attributes,
+	}
 
 	data, err := json.Marshal(entry)
-
-	// Reset and return entry to pool before proceeding.
-	entry.Time = ""
-	entry.Level = ""
-	entry.Source = ""
-	entry.EventType = ""
-	entry.Message = ""
-	entry.Actor = ""
-	entry.Success = nil
-	entry.Attributes = nil
-	entryPool.Put(entry)
 
 	if err != nil {
 		return err
@@ -177,5 +163,7 @@ func prefixAttr(group string, attr slog.Attr) slog.Attr {
 	attr.Key = group + "." + attr.Key
 	return attr
 }
+
+func (h *contractJSONHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var _ slog.Handler = (*contractJSONHandler)(nil)

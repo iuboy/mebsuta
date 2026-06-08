@@ -17,7 +17,7 @@ import (
 // It handles size-based and time-based rotation, backup management, and optional
 // gzip compression.
 type Writer struct {
-	mu         sync.RWMutex
+	mu         sync.Mutex
 	file       *os.File
 	size       atomic.Int64
 	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * MiB, avoids multiplication on every Write
@@ -84,19 +84,16 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 
-	w.mu.RLock()
-	needsRotate := w.needsRotation()
-	w.mu.RUnlock()
-
-	if needsRotate {
-		w.rotate()
-	}
-
-	w.mu.RLock()
-	defer w.mu.RUnlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if w.closed.Load() || w.file == nil {
 		return 0, os.ErrClosed
+	}
+
+	// Pre-write rotation check.
+	if w.needsRotation() {
+		w.rotateLocked()
 	}
 
 	n, err := w.file.Write(p)
@@ -107,13 +104,8 @@ func (w *Writer) Write(p []byte) (int, error) {
 	// Post-write rotation check: if this write pushed past the limit,
 	// rotate immediately so the oversized file doesn't persist until
 	// the next Write call (which may never come for low-frequency logs).
-	// mu.RLock is still held, so needsRotation is safe to call.
 	if err == nil && w.needsRotation() {
-		w.mu.RUnlock()
-		w.rotate()
-		// rotate() acquired and released the write lock; re-acquire read
-		// lock so the deferred RUnlock matches.
-		w.mu.RLock()
+		w.rotateLocked()
 	}
 
 	return n, err
@@ -156,7 +148,7 @@ func (w *Writer) loadOnError() func(error) {
 	return v.fn
 }
 
-// needsRotation checks whether rotation is needed. Caller must hold w.mu (at least RLock).
+// needsRotation checks whether rotation is needed. Caller must hold w.mu.
 func (w *Writer) needsRotation() bool {
 	if w.maxBytes > 0 && w.size.Load() >= w.maxBytes {
 		return true
@@ -167,11 +159,9 @@ func (w *Writer) needsRotation() bool {
 	return false
 }
 
-// rotate performs rotation. Re-checks conditions after acquiring Lock to avoid thundering herd.
-func (w *Writer) rotate() {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
+// rotateLocked performs rotation. Re-checks conditions to avoid thundering herd.
+// Caller must hold w.mu.
+func (w *Writer) rotateLocked() {
 	if w.closed.Load() || w.file == nil {
 		return
 	}

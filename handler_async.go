@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // SelfBufferedHandler is a marker interface for handlers with built-in async
@@ -59,7 +60,7 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 		return inner
 	}
 	if findSelfBuffered(inner) {
-		ReportError(DefaultErrorHandler, HandlerError{Component: "async", Operation: "init", Err: fmt.Errorf("WithAsync: wrapping %T creates double-buffering; returning inner handler directly", inner)})
+		ReportError(DefaultErrorHandler, &HandlerError{Component: "async", Operation: "init", Err: fmt.Errorf("WithAsync: wrapping %T creates double-buffering; returning inner handler directly", inner)})
 		return inner
 	}
 	bufferSize := cfg.BufferSize
@@ -147,7 +148,7 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
 		case <-timer.C:
 			h.dropped.Add(1)
 			err := fmt.Errorf("mebsuta: buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load())
-			ReportError(LoadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
+			ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err})
 			return err
 		}
 	}
@@ -159,7 +160,7 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
 		return fmt.Errorf("async handler is closed, log dropped")
 	default:
 		h.dropped.Add(1)
-		ReportError(LoadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
+		ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
 		return nil
 	}
 }
@@ -211,7 +212,7 @@ func (h *AsyncHandler) run() {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
 		if err := ar.inner.Handle(ar.ctx, r); err != nil {
-			ReportError(LoadErrorHandler(&h.errorHandler), HandlerError{Component: "async", Operation: "process", Err: err})
+			ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err})
 		}
 	}
 }
@@ -305,6 +306,10 @@ func AsyncDropped(h slog.Handler) int64 {
 		return 0
 	}
 }
+
+func (h *AsyncHandler) handlerAddr() uintptr      { return uintptr(unsafe.Pointer(h)) }
+func (h *asyncAttrsHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
+func (h *asyncGroupHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler     = (*AsyncHandler)(nil)

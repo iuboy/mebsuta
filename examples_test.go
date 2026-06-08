@@ -208,7 +208,7 @@ func ExampleWithErrorHandler() {
 			MaxSizeMB:  1,
 			MaxBackups: 3,
 		}, mebsuta.FileConfig{}),
-		mebsuta.WithErrorHandler(func(he mebsuta.HandlerError) {
+		mebsuta.WithErrorHandler(func(he *mebsuta.HandlerError) {
 			fmt.Fprintf(os.Stderr, "component=%s op=%s err=%v\n",
 				he.Component, he.Operation, he.Err)
 		}),

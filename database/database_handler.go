@@ -57,7 +57,7 @@ type Handler struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	closed       atomic.Bool
-	sendMu       sync.Mutex
+	closeMu      sync.Mutex // protects close(h.entries) vs channel send
 	errCount     atomic.Int64
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
@@ -110,7 +110,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	h.errorHandler.Store(&eh)
 
 	if cfg.warnNoTLS {
-		mebsuta.ReportError(eh, mebsuta.HandlerError{Component: "database", Operation: "init", Err: fmt.Errorf("database connection has no TLS/SSL configured — log data will be transmitted in plaintext")})
+		mebsuta.ReportError(eh, &mebsuta.HandlerError{Component: "database", Operation: "init", Err: fmt.Errorf("database connection has no TLS/SSL configured — log data will be transmitted in plaintext")})
 	}
 
 	h.wg.Add(1)
@@ -131,48 +131,54 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	}
 
 	entry := h.recordToDBEntry(r)
+	return h.sendEntry(entry, r.Level)
+}
 
-	if r.Level >= slog.LevelError {
+// sendEntry sends an entry to the background channel. closeMu protects against
+// the race where Close() closes the channel concurrently with a send.
+func (h *Handler) sendEntry(entry dbLogEntry, level slog.Level) error {
+	if h.closed.Load() {
+		return nil
+	}
+
+	h.closeMu.Lock()
+	defer h.closeMu.Unlock()
+
+	if h.closed.Load() {
+		return nil
+	}
+
+	if level >= slog.LevelError {
 		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
-		h.sendMu.Lock()
-		defer h.sendMu.Unlock()
-		if h.closed.Load() {
-			return nil
-		}
 		select {
 		case h.entries <- entry:
 			return nil
 		case <-timer.C:
 			h.errCount.Add(1)
-			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", r.Level), Dropped: 1})
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level), Dropped: 1})
 			return nil
 		}
 	}
 
-	h.sendMu.Lock()
-	defer h.sendMu.Unlock()
-	if h.closed.Load() {
-		return nil
-	}
 	select {
 	case h.entries <- entry:
 		return nil
 	default:
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
 		return nil
 	}
 }
 
 // WithAttrs implements slog.Handler.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &mebsuta.AttrsSub[*Handler]{Parent: h, Attrs: attrs}
+	return &mebsuta.AttrsSub{Parent: h, Attrs: attrs}
 }
 
 // WithGroup implements slog.Handler.
 func (h *Handler) WithGroup(name string) slog.Handler {
-	return &mebsuta.GroupSub[*Handler]{Parent: h, Group: name}
+	return &mebsuta.GroupSub{Parent: h, Group: name}
 }
 
 // Close implements io.Closer.
@@ -180,9 +186,9 @@ func (h *Handler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	h.sendMu.Lock()
+	h.closeMu.Lock()
 	close(h.entries)
-	h.sendMu.Unlock()
+	h.closeMu.Unlock()
 	h.wg.Wait()
 	h.cancel()
 
@@ -234,7 +240,7 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 	}
 
 	for i := range finalFlushRetries {
-		ctx, cancel := context.WithTimeout(context.Background(), finalFlushTimeout)
+		ctx, cancel := context.WithTimeout(h.ctx, finalFlushTimeout)
 		dbErr := h.db.WithContext(ctx).Table(h.table).CreateInBatches(batch, len(batch)).Error
 		cancel()
 
@@ -242,12 +248,12 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 			return
 		}
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
 		if i < finalFlushRetries-1 {
 			time.Sleep(retryDelay)
 		}
 	}
-	mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
+	mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
 }
 
 func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
@@ -267,7 +273,7 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	if len(fields) > 0 {
 		data, err := json.Marshal(fields)
 		if err != nil {
-			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), mebsuta.HandlerError{Component: "database", Operation: "marshal", Err: fmt.Errorf("marshal fields: %w", err)})
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "marshal", Err: fmt.Errorf("marshal fields: %w", err)})
 			data = []byte("{}")
 		}
 		entry.Fields = json.RawMessage(data)

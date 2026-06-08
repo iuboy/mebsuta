@@ -2,8 +2,6 @@
 package metrics
 
 import (
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -35,18 +33,14 @@ type Metrics struct {
 
 	// Goroutine status
 	activeGoroutines prometheus.Gauge
-	goroutineCount   atomic.Int64
 }
 
-var (
-	// Global metrics instance
-	globalMetrics *Metrics
-	once          sync.Once
-	registryOnce  sync.Once // prevent double registration
-	registerErr   error     // stores first registration error
-)
+var _ prometheus.Collector = (*Metrics)(nil)
 
-// NewMetrics creates a new Metrics collector without registering it with Prometheus.
+// NewMetrics creates a new Metrics collector. Register with Prometheus explicitly:
+//
+//	m := metrics.NewMetrics()
+//	prometheus.MustRegister(m)
 func NewMetrics() *Metrics {
 	return &Metrics{
 		logWrites: prometheus.NewCounterVec(
@@ -148,14 +142,6 @@ func NewMetrics() *Metrics {
 	}
 }
 
-// GetMetrics returns the singleton Metrics instance, creating it on first call.
-func GetMetrics() *Metrics {
-	once.Do(func() {
-		globalMetrics = NewMetrics()
-	})
-	return globalMetrics
-}
-
 // IncLogWrite increments the log write counter for the given level and output.
 func (m *Metrics) IncLogWrite(level, output string) {
 	m.logWrites.WithLabelValues(level, output).Inc()
@@ -218,19 +204,12 @@ func (m *Metrics) ObserveWriteLatency(seconds float64) {
 
 // IncGoroutine increments the active goroutine counter.
 func (m *Metrics) IncGoroutine() {
-	m.goroutineCount.Add(1)
 	m.activeGoroutines.Inc()
 }
 
 // DecGoroutine decrements the active goroutine counter.
 func (m *Metrics) DecGoroutine() {
-	m.goroutineCount.Add(-1)
 	m.activeGoroutines.Dec()
-}
-
-// GetGoroutineCount returns the current active goroutine count.
-func (m *Metrics) GetGoroutineCount() int64 {
-	return m.goroutineCount.Load()
 }
 
 // ObserveHandle records handle call latency, implementing the mebsuta.HandlerMetrics interface.
@@ -280,22 +259,4 @@ func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
 	m.idleConns.Collect(ch)
 	m.writeLatency.Collect(ch)
 	m.activeGoroutines.Collect(ch)
-}
-
-// RegisterToRegistry registers all metrics with a custom Prometheus registerer.
-func RegisterToRegistry(registry prometheus.Registerer) error {
-	return registry.Register(GetMetrics())
-}
-
-// GetMetricsAsCollector returns the global Metrics as a prometheus.Collector for custom registration.
-func GetMetricsAsCollector() prometheus.Collector {
-	return GetMetrics()
-}
-
-// Register registers all metrics with the default Prometheus registry. It is idempotent; repeated calls return the first error.
-func Register() error {
-	registryOnce.Do(func() {
-		registerErr = RegisterToRegistry(prometheus.DefaultRegisterer)
-	})
-	return registerErr
 }
