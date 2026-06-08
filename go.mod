@@ -1,8 +1,9 @@
 module github.com/iuboy/mebsuta
 
-go 1.26.1
+go 1.26.3
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/stretchr/testify v1.11.1
 	gorm.io/driver/mysql v1.6.0

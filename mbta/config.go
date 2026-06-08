@@ -82,7 +82,7 @@ func resolveHostname(static string) (string, error) {
 	if static != "" {
 		return static, nil
 	}
-	hostname, err := mebsuta.Hostname()
+	hostname, err := os.Hostname()
 	if err != nil {
 		return "", fmt.Errorf("get hostname: %w", err)
 	}
