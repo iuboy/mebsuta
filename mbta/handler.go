@@ -21,13 +21,13 @@ import (
 )
 
 const (
-	defaultBufferSize   = 1000
-	defaultFlushPeriod  = 5 * time.Second
-	defaultBatchSize    = 100
-	defaultMaxRetries   = 3
-	defaultRetryDelay   = 1 * time.Second
-	maxBufferSize       = 10000
-	connectTimeout      = 10 * time.Second
+	defaultBufferSize  = 1000
+	defaultFlushPeriod = 5 * time.Second
+	defaultBatchSize   = 100
+	defaultMaxRetries  = 3
+	defaultRetryDelay  = 1 * time.Second
+	maxBufferSize      = 10000
+	connectTimeout     = 10 * time.Second
 )
 
 // Handler ships log records to a mebsuta-forwarder via MBTA protocol.
@@ -66,7 +66,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout)
 	defer connectCancel()
 
-	client, err := mbtago.Dial(connectCtx, cfg.Server, cfg.AgentID, cfg.Token,
+	client, err := mbtago.Dial(connectCtx, cfg.Server, cfg.AgentID, cfg.Token, mbtago.Version1,
 		mbtago.WithV1Credentials(v1.ClientCredentials{
 			InsecureSkipVerify: cfg.InsecureSkipVerify,
 		}),
