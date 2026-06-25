@@ -28,7 +28,7 @@ func TestAsyncHandler_Basic(t *testing.T) {
 
 	// 先 close 确保 flush
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	if !bytes.Contains(buf.Bytes(), []byte("hello")) {
@@ -46,7 +46,7 @@ func TestAsyncHandler_DropOnFull(t *testing.T) {
 	}
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	dropped := AsyncDropped(h.(*AsyncHandler))
@@ -97,7 +97,7 @@ func TestAsyncHandler_WithAttrs(t *testing.T) {
 	logger.Info("test")
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	if !bytes.Contains(buf.Bytes(), []byte("preset")) {
@@ -116,7 +116,7 @@ func TestAsyncHandler_WithGroup(t *testing.T) {
 	logger.Info("test", "id", "123")
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	output := buf.String()
@@ -144,7 +144,7 @@ func TestAsyncHandler_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	if count.Load() == 0 {
@@ -189,7 +189,7 @@ func TestAsyncHandler_AuditNotDropped(t *testing.T) {
 	}
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	errorCount := inner.ErrorLevelCount()
@@ -212,7 +212,7 @@ func TestAsyncHandler_AuditLevelNotDropped(t *testing.T) {
 	}
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	errorCount := inner.ErrorLevelCount()
@@ -481,7 +481,7 @@ func TestDecoratorChain_Async_Stdout(t *testing.T) {
 	logger.Info("async test")
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	if !bytes.Contains(buf.Bytes(), []byte("async test")) {
@@ -523,7 +523,7 @@ func TestAsyncHandler_CloseDuringConcurrent(t *testing.T) {
 	wg.Wait()
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 
 	// Should not panic, and some records should have been written

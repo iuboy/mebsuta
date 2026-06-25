@@ -104,7 +104,7 @@ func BenchmarkAsyncHandler(b *testing.B) {
 	}
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 }
 
@@ -255,7 +255,7 @@ func BenchmarkHandlerChain_SamplingAsyncStdout(b *testing.B) {
 	}
 
 	if closer, ok := sampled.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 }
 
@@ -275,6 +275,6 @@ func BenchmarkAsyncHandler_LargeBuffer(b *testing.B) {
 	}
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 }

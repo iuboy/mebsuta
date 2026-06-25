@@ -28,6 +28,12 @@ type capturedLog struct {
 	Attrs   []slog.Attr
 }
 
+// integrationCtxKey is an unexported context key type to avoid collisions
+// with other packages using the same key string (see SA1029).
+type integrationCtxKey string
+
+const requestIDKey integrationCtxKey = "request_id"
+
 // captureSink 收集日志记录，用于测试断言
 type captureSink struct {
 	mu      sync.Mutex
@@ -122,7 +128,7 @@ func TestIntegration_New_DefaultLogger(t *testing.T) {
 	if logger == nil {
 		t.Fatal("New() returned nil logger")
 	}
-	defer CloseAll(logger.Handler())
+	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("test message", "key", "value")
 }
@@ -133,7 +139,7 @@ func TestIntegration_Init_SetsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error: %v", err)
 	}
-	defer CloseAll(logger.Handler())
+	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	if slog.Default() != logger {
 		t.Error("Init() did not set slog.Default()")
@@ -146,7 +152,7 @@ func TestIntegration_UseStdout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(UseStdout) error: %v", err)
 	}
-	defer CloseAll(logger.Handler())
+	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("stdout test")
 }
@@ -164,7 +170,7 @@ func TestIntegration_UseFile_WritesToDisk(t *testing.T) {
 	}
 
 	logger.Info("file test", "key", "value", "count", 42)
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -208,7 +214,7 @@ func TestIntegration_UseFile_ConsoleFormat(t *testing.T) {
 	}
 
 	logger.Info("console message", "status", "ok")
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -251,7 +257,7 @@ func TestIntegration_MultipleOutputs(t *testing.T) {
 	}
 
 	logger.Info("multi output", "key", "val")
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	if ch1.sink.len() != 1 || ch2.sink.len() != 1 {
 		t.Errorf("capture1=%d capture2=%d, both want 1", ch1.sink.len(), ch2.sink.len())
@@ -273,7 +279,7 @@ func TestIntegration_AsyncHandler(t *testing.T) {
 	for i := range n {
 		logger.Info("async message", "i", i)
 	}
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	if got := ch.sink.len(); got < n {
 		t.Errorf("captured %d records, want at least %d", got, n)
@@ -310,7 +316,7 @@ func TestIntegration_SamplingHandler(t *testing.T) {
 		t.Errorf("error sampled=%d, want 1", got)
 	}
 
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 }
 
 // TestIntegration_ContextExtractor 验证上下文字段提取
@@ -318,7 +324,7 @@ func TestIntegration_ContextExtractor(t *testing.T) {
 	ch := newCaptureHandler()
 	logger, err := New(
 		UseContextExtractor(func(ctx context.Context) []slog.Attr {
-			if reqID, ok := ctx.Value("request_id").(string); ok {
+			if reqID, ok := ctx.Value(requestIDKey).(string); ok {
 				return []slog.Attr{slog.String("request_id", reqID)}
 			}
 			return nil
@@ -329,9 +335,9 @@ func TestIntegration_ContextExtractor(t *testing.T) {
 		t.Fatalf("New() error: %v", err)
 	}
 
-	ctx := context.WithValue(context.Background(), "request_id", "req-123")
+	ctx := context.WithValue(context.Background(), requestIDKey, "req-123")
 	logger.InfoContext(ctx, "with context")
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	if got := ch.sink.len(); got != 1 {
 		t.Fatalf("captured %d, want 1", got)
@@ -362,7 +368,7 @@ func TestIntegration_MetricsDecorator(t *testing.T) {
 
 	logger.Info("metric test")
 	logger.Warn("another")
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	if got := handleCount.Load(); got != 2 {
 		t.Errorf("handle count = %d, want 2", got)
@@ -381,7 +387,7 @@ func TestIntegration_ErrorHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	defer CloseAll(logger.Handler())
+	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("with error handler")
 }
@@ -395,7 +401,7 @@ func TestIntegration_SilentErrorHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	defer CloseAll(logger.Handler())
+	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("silent handler test")
 }
@@ -473,7 +479,7 @@ func TestIntegration_ConcurrentWrites(t *testing.T) {
 	if got := ch.sink.len(); got != goroutines*perGoroutine {
 		t.Errorf("captured %d, want %d", got, goroutines*perGoroutine)
 	}
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 }
 
 // TestIntegration_CloseAll_Idempotent 验证 CloseAll 幂等性
@@ -511,7 +517,7 @@ func TestIntegration_NonFiniteFloats(t *testing.T) {
 		"neg_inf", math.Inf(-1),
 		"normal", 3.14,
 	)
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	data, err := os.ReadFile(logPath)
 	if err != nil {
@@ -543,7 +549,7 @@ func TestIntegration_FileRotation(t *testing.T) {
 	for i := range 50000 {
 		logger.Info("rotation pressure test", "data", "padding-content-to-trigger-rotation", "i", i)
 	}
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -579,7 +585,7 @@ func TestIntegration_WithAttrsPropagation(t *testing.T) {
 	if !ch.sink.hasAttr(0, "request_id", "abc-123") {
 		t.Error("missing request_id attribute in child logger")
 	}
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 }
 
 // TestIntegration_SlogDefaultInterop 验证与 slog.Default() 互操作
@@ -606,7 +612,7 @@ func TestIntegration_SlogDefaultInterop(t *testing.T) {
 	if ch.sink.message(1) != "warn via default" {
 		t.Errorf("message[1] = %q, want 'warn via default'", ch.sink.message(1))
 	}
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 }
 
 // TestIntegration_BoolPtr 验证 BoolPtr 辅助函数
@@ -657,7 +663,7 @@ func TestIntegration_AuditLevelInChain(t *testing.T) {
 		t.Errorf("error through sampling=%d, want 1", got)
 	}
 
-	CloseAll(logger.Handler())
+	_ = CloseAll(logger.Handler())
 }
 
 // integrationMetrics 实现 HandlerMetrics 接口

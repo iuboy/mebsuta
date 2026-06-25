@@ -18,7 +18,7 @@ func TestFileHandler_DynamicLevel(t *testing.T) {
 
 	h, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, FileConfig{Level: lv})
 	require.NoError(t, err)
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	// At Info: Debug disabled, Info enabled
 	require.False(t, h.Enabled(context.Background(), slog.LevelDebug))
@@ -58,7 +58,7 @@ func TestLevelVar_ConcurrentReadWrite(t *testing.T) {
 
 	h, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, FileConfig{Level: lv})
 	require.NoError(t, err)
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	var wg sync.WaitGroup
 	ctx := context.Background()

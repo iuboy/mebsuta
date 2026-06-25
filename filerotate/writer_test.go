@@ -95,7 +95,7 @@ func matchBackups(logPath string) []string {
 
 func TestWriter_Write(t *testing.T) {
 	w, path := newTestWriter(t)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	data := []byte("hello world\n")
 	n, err := w.Write(data)
@@ -114,7 +114,7 @@ func TestWriter_Write(t *testing.T) {
 
 func TestWriter_FilePermissionsRestricted(t *testing.T) {
 	w, path := newTestWriter(t)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	assertFileMode(t, path, DefaultFileMode)
 }
@@ -128,10 +128,10 @@ func TestWriter_SizeRotation(t *testing.T) {
 
 	data := []byte(strings.Repeat("x", 1024) + "\n")
 	for range 3300 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
 
-	w.Close()
+	_ = w.Close()
 
 	backups := matchBackups(path)
 	if len(backups) > 2 {
@@ -150,11 +150,11 @@ func TestWriter_TimeRotation(t *testing.T) {
 		c.MaxBackups = 3
 	})
 
-	w.Write([]byte("before rotation\n"))
+	_, _ = w.Write([]byte("before rotation\n"))
 	time.Sleep(200 * time.Millisecond)
-	w.Write([]byte("after interval\n"))
+	_, _ = w.Write([]byte("after interval\n"))
 
-	w.Close()
+	_ = w.Close()
 
 	backups := matchBackups(path)
 	if len(backups) == 0 {
@@ -171,10 +171,10 @@ func TestWriter_Compress(t *testing.T) {
 
 	data := []byte(strings.Repeat("x", 1024) + "\n")
 	for range 1100 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
 
-	w.Close()
+	_ = w.Close()
 
 	backups := matchBackups(path)
 	hasGz := false
@@ -186,12 +186,12 @@ func TestWriter_Compress(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open .gz: %v", err)
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			gz, err := gzip.NewReader(f)
 			if err != nil {
 				t.Fatalf("gzip reader: %v", err)
 			}
-			defer gz.Close()
+			defer func() { _ = gz.Close() }()
 			content, err := io.ReadAll(gz)
 			if err != nil {
 				t.Fatalf("read gzip: %v", err)
@@ -298,10 +298,10 @@ func TestWriter_RotatedFilePermissions(t *testing.T) {
 
 	data := []byte(strings.Repeat("x", 1024) + "\n")
 	for range 1200 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
 
-	w.Close()
+	_ = w.Close()
 	assertFileMode(t, path, DefaultFileMode)
 }
 
@@ -311,14 +311,14 @@ func TestWriter_RotatedFilePermissions(t *testing.T) {
 
 func TestWriter_ConcurrentWrites(t *testing.T) {
 	w, _ := newTestWriter(t)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	const goroutines = 100
 	done := make(chan struct{})
 
 	for i := range goroutines {
 		go func(n int) {
-			w.Write([]byte(strings.Repeat("x", 100) + "\n"))
+			_, _ = w.Write([]byte(strings.Repeat("x", 100) + "\n"))
 			done <- struct{}{}
 		}(i)
 	}
@@ -377,7 +377,7 @@ func TestConfig_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.cfg.MaxSizeMB != DefaultMaxSizeMB {
 		t.Errorf("MaxSizeMB = %d, want %d", w.cfg.MaxSizeMB, DefaultMaxSizeMB)
@@ -421,7 +421,7 @@ func TestError_Methods(t *testing.T) {
 
 func TestWriter_SetOnError(t *testing.T) {
 	w, _ := newTestWriter(t, withMaxSizeMB(1))
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	var mu sync.Mutex
 	var gotErr string
@@ -464,19 +464,19 @@ func TestWriter_RotationRenameFailure(t *testing.T) {
 	// Trigger first rotation.
 	data := []byte(strings.Repeat("x", 1024) + "\n")
 	for range 1100 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
 
 	// Make the directory non-writable to force rename failure on next rotation.
-	os.Chmod(dir, 0555)
+	_ = os.Chmod(dir, 0555)
 
 	// Write enough to trigger another rotation.
 	for range 1200 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
 
-	os.Chmod(dir, 0755)
-	w.Close()
+	_ = os.Chmod(dir, 0755)
+	_ = w.Close()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -501,14 +501,14 @@ func TestWriter_BackupNameCollision(t *testing.T) {
 	ts := time.Now().Format("2006-01-02T15-04-05.000")
 	for i := range 5 {
 		collision := fmt.Sprintf("%s.%s.%d", path, ts, i)
-		os.WriteFile(collision, []byte("old"), 0644)
+		_ = os.WriteFile(collision, []byte("old"), 0644)
 	}
 
 	data := []byte(strings.Repeat("x", 1024) + "\n")
 	for range 1100 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
-	w.Close()
+	_ = w.Close()
 
 	backups := matchBackups(path)
 	if len(backups) == 0 {
@@ -533,9 +533,9 @@ func TestWriter_CleanupExpiredBackups(t *testing.T) {
 	path := filepath.Join(dir, "test.log")
 
 	oldBackup := path + ".2020-01-01T00-00-00.000"
-	os.WriteFile(oldBackup, []byte("old backup\n"), 0644)
+	_ = os.WriteFile(oldBackup, []byte("old backup\n"), 0644)
 	oldTime := time.Now().AddDate(0, 0, -31)
-	os.Chtimes(oldBackup, oldTime, oldTime)
+	_ = os.Chtimes(oldBackup, oldTime, oldTime)
 
 	w, err := New(Config{
 		Path:       path,
@@ -550,9 +550,9 @@ func TestWriter_CleanupExpiredBackups(t *testing.T) {
 
 	data := []byte(strings.Repeat("x", 1024) + "\n")
 	for range 1100 {
-		w.Write(data)
+		_, _ = w.Write(data)
 	}
-	w.Close()
+	_ = w.Close()
 
 	if _, err := os.Stat(oldBackup); err == nil {
 		t.Error("old backup should have been removed by MaxAgeDays cleanup")

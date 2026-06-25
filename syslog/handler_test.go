@@ -574,7 +574,7 @@ func TestHandler_ConnectAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go func() {
 		for {
@@ -582,7 +582,7 @@ func TestHandler_ConnectAndClose(t *testing.T) {
 			if err != nil {
 				return
 			}
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 
@@ -620,14 +620,14 @@ func TestHandler_HandleWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 4096)
 		for {
 			n, err := conn.Read(buf)
@@ -649,10 +649,10 @@ func TestHandler_HandleWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "hello syslog", 0)
-	h.Handle(nil, r)
+	_ = h.Handle(context.TODO(), r)
 
 	select {
 	case data := <-received:
@@ -666,13 +666,13 @@ func TestHandler_HandleWrites(t *testing.T) {
 
 func TestHandler_Enabled(t *testing.T) {
 	h := &Handler{leveler: slog.LevelInfo}
-	if !h.Enabled(nil, slog.LevelInfo) {
+	if !h.Enabled(context.TODO(), slog.LevelInfo) {
 		t.Error("Info should be enabled")
 	}
-	if h.Enabled(nil, slog.LevelDebug) {
+	if h.Enabled(context.TODO(), slog.LevelDebug) {
 		t.Error("Debug should not be enabled at Info level")
 	}
-	if !h.Enabled(nil, slog.LevelError) {
+	if !h.Enabled(context.TODO(), slog.LevelError) {
 		t.Error("Error should always be enabled")
 	}
 }
@@ -754,14 +754,14 @@ func TestHandler_Flush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		buf := make([]byte, 8192)
 		for {
 			n, err := conn.Read(buf)
@@ -789,11 +789,11 @@ func TestHandler_Flush(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	for i := range 5 {
 		r := slog.NewRecord(time.Now(), slog.LevelInfo, fmt.Sprintf("flush-%d", i), 0)
-		h.Handle(context.Background(), r)
+		_ = h.Handle(context.Background(), r)
 	}
 
 	if err := h.Flush(3 * time.Second); err != nil {
@@ -811,14 +811,14 @@ func TestHandler_Flush_Closing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
 			return
 		}
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	h, err := NewHandler(Config{
@@ -830,7 +830,7 @@ func TestHandler_Flush_Closing(t *testing.T) {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
-	h.Close()
+	_ = h.Close()
 
 	if err := h.Flush(time.Second); err != nil {
 		t.Errorf("Flush on closing handler should return nil, got: %v", err)
@@ -857,9 +857,9 @@ func TestHandler_SetErrorHandler(t *testing.T) {
 			return
 		}
 		if tc, ok := conn.(*net.TCPConn); ok {
-			tc.SetLinger(0)
+			_ = tc.SetLinger(0)
 		}
-		conn.Close()
+		_ = conn.Close()
 	}()
 
 	h, err := NewHandler(Config{
@@ -871,7 +871,7 @@ func TestHandler_SetErrorHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	var mu sync.Mutex
 	var gotErr string
@@ -882,13 +882,13 @@ func TestHandler_SetErrorHandler(t *testing.T) {
 	})
 
 	// Close listener so reconnect attempts also fail.
-	listener.Close()
+	_ = listener.Close()
 
 	// Write records; with RST received, writes fail immediately and
 	// reconnect to the closed listener also fails, triggering the error handler.
 	for i := range 10 {
 		r := slog.NewRecord(time.Now(), slog.LevelInfo, fmt.Sprintf("error-%d", i), 0)
-		h.Handle(context.Background(), r)
+		_ = h.Handle(context.Background(), r)
 	}
 
 	require.Eventually(t, func() bool {

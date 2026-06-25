@@ -194,7 +194,7 @@ func TestNew_NoHandlers(t *testing.T) {
 	if logger == nil {
 		t.Fatal("New() returned nil logger")
 	}
-	defer CloseAll(logger.Handler())
+	defer func() { _ = CloseAll(logger.Handler()) }()
 }
 
 // =============================================================================
@@ -295,7 +295,7 @@ func TestErrorHandler_WithErrorHandler(t *testing.T) {
 	cfg := FileConfig{}
 	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 
 	logger, err := New(
 		WithHandler(fh),
@@ -315,7 +315,7 @@ func TestErrorHandler_NilSilent(t *testing.T) {
 	cfg := FileConfig{}
 	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 
 	logger, err := New(
 		WithHandler(fh),
@@ -336,13 +336,13 @@ func TestPropagateErrorHandler_ThroughDecorator(t *testing.T) {
 	cfg := FileConfig{}
 	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 
 	// 用 Async 装饰器包裹 FileHandler，然后通过 WithErrorHandler 注入
 	asyncH := WithAsync(fh, AsyncConfig{})
 	defer func() {
 		if closer, ok := asyncH.(interface{ Close() error }); ok {
-			closer.Close()
+			_ = closer.Close()
 		}
 	}()
 	logger, err := New(
@@ -424,7 +424,7 @@ func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	cfg := FileConfig{}
 	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
-	defer fh.Close()
+	defer func() { _ = fh.Close() }()
 	DefaultErrorHandler = func(he *HandlerError) {
 		fmt.Fprintf(&buf, "%s/%s: %v", he.Component, he.Operation, he.Err)
 	}

@@ -67,7 +67,7 @@ func assertRestrictedLogFileMode(t *testing.T, path string) {
 
 func TestFileHandler_JSONFormat(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	logger := slog.New(h)
 	logger.Info("hello", "key", "value")
@@ -94,7 +94,7 @@ func TestFileHandler_JSONFormat(t *testing.T) {
 
 func TestFileHandler_JSONFormat_NonFiniteFloats(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	logger := slog.New(h)
 	logger.Info("floats", "nan", math.NaN(), "pos_inf", math.Inf(1), "neg_inf", math.Inf(-1))
@@ -117,7 +117,7 @@ func TestFileHandler_JSONFormat_NonFiniteFloats(t *testing.T) {
 
 func TestFileHandler_ConsoleFormat(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("console"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	logger := slog.New(h)
 	logger.Info("hello", "key", "value")
@@ -134,7 +134,7 @@ func TestFileHandler_ConsoleFormat(t *testing.T) {
 
 func TestFileHandler_DefaultFormat(t *testing.T) {
 	h, path := newTestFileHandler(t)
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	logger := slog.New(h)
 	logger.Info("test")
@@ -148,7 +148,7 @@ func TestFileHandler_DefaultFormat(t *testing.T) {
 
 func TestFileHandler_FilePermissionsRestricted(t *testing.T) {
 	h, path := newTestFileHandler(t)
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	assertRestrictedLogFileMode(t, path)
 }
@@ -164,7 +164,7 @@ func TestFileHandler_LevelFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileHandler: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	logger := slog.New(h)
 	logger.Info("should be filtered")
@@ -187,7 +187,7 @@ func TestFileHandler_LevelFilter(t *testing.T) {
 
 func TestFileHandler_WithAttrs(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	child := h.WithAttrs([]slog.Attr{slog.String("preset", "value")})
 	logger := slog.New(child)
@@ -206,7 +206,7 @@ func TestFileHandler_WithAttrs(t *testing.T) {
 
 func TestFileHandler_WithGroup(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	child := h.WithGroup("request")
 	logger := slog.New(child)
@@ -229,7 +229,7 @@ func TestFileHandler_WithGroup(t *testing.T) {
 
 func TestFileHandler_ConcurrentWrites(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	logger := slog.New(h)
 
@@ -302,7 +302,7 @@ func TestNewFileHandler_InvalidDirectory(t *testing.T) {
 
 func TestFileHandler_WithAttrsSharedState(t *testing.T) {
 	h, path := newTestFileHandler(t, withFormat("json"))
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	child1 := h.WithAttrs([]slog.Attr{slog.String("source", "handler1")})
 	child2 := h.WithAttrs([]slog.Attr{slog.String("source", "handler2")})
@@ -326,7 +326,7 @@ func TestFileHandler_WithAttrsSharedState(t *testing.T) {
 
 func TestFileHandler_Enabled(t *testing.T) {
 	h, _ := newTestFileHandler(t)
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	if h.Enabled(context.Background(), slog.LevelDebug) {
 		t.Error("Debug should not be enabled at Warn level")

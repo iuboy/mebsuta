@@ -242,7 +242,7 @@ func (h *asyncAttrsHandler) WithGroup(name string) slog.Handler {
 		AsyncHandler: h.AsyncHandler,
 		group:        name,
 		attrs:        h.attrs,
-		groupInner:   h.AsyncHandler.inner.WithGroup(name),
+		groupInner:   h.inner.WithGroup(name),
 	}
 }
 
@@ -289,7 +289,7 @@ func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
 		AsyncHandler: h.AsyncHandler,
 		group:        combined,
 		attrs:        h.attrs,
-		groupInner:   h.AsyncHandler.inner.WithGroup(combined),
+		groupInner:   h.inner.WithGroup(combined),
 	}
 }
 

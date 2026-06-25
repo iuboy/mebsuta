@@ -31,7 +31,7 @@ func newFailingDBHandler(t *testing.T) (*Handler, func()) {
 	// Close the underlying SQL DB so all subsequent operations fail.
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err, "get underlying sql.DB")
-	sqlDB.Close()
+	_ = sqlDB.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &Handler{
@@ -48,7 +48,7 @@ func newFailingDBHandler(t *testing.T) (*Handler, func()) {
 	go h.run(5, 50*time.Millisecond, 1*time.Millisecond)
 
 	cleanup := func() {
-		h.Close()
+		_ = h.Close()
 	}
 	return h, cleanup
 }
@@ -139,7 +139,7 @@ func TestHandler_WithAttrsReturnsCorrectType(t *testing.T) {
 	require.True(t, ok, "WithAttrs should return *AttrsSub")
 
 	// Should also satisfy slog.Handler.
-	var _ slog.Handler = result
+	var _ slog.Handler = result //nolint:staticcheck // QF1011: intentional compile-time interface assertion
 }
 
 // TestHandler_WithGroupReturnsCorrectType verifies that WithGroup
@@ -155,7 +155,7 @@ func TestHandler_WithGroupReturnsCorrectType(t *testing.T) {
 	require.True(t, ok, "WithGroup should return *GroupSub")
 
 	// Should also satisfy slog.Handler.
-	var _ slog.Handler = result
+	var _ slog.Handler = result //nolint:staticcheck // QF1011: intentional compile-time interface assertion
 }
 
 // TestHandler_RecordToDBEntry verifies field mapping: Time, Level,
@@ -267,7 +267,7 @@ func TestHandler_AuditLevelPersisted(t *testing.T) {
 		"level should be stored as audit level string")
 
 	sqlDB, _ := gdb2.DB()
-	sqlDB.Close()
+	_ = sqlDB.Close()
 }
 
 // TestHandler_LevelFiltering verifies that records below the handler's
@@ -316,7 +316,7 @@ func TestHandler_LevelFiltering(t *testing.T) {
 	require.Equal(t, int64(1), count, "Handle does not filter by level; record should be persisted")
 
 	sqlDB, _ := gdb2.DB()
-	sqlDB.Close()
+	_ = sqlDB.Close()
 }
 
 // TestHandler_BufferFullDropsInfoRecord verifies that when the entry
@@ -377,7 +377,7 @@ func TestHandler_BufferFullDropsInfoRecord(t *testing.T) {
 	h.closeMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
-	sqlDB.Close()
+	_ = sqlDB.Close()
 }
 
 // TestHandler_ConcurrentWrites verifies that multiple goroutines can
@@ -469,7 +469,7 @@ func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 	h.closeMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
-	sqlDB.Close()
+	_ = sqlDB.Close()
 }
 
 // TestHandler_HandleAfterClosedReturnsNil verifies that Handle returns
@@ -493,7 +493,7 @@ func TestHandler_FlushRetries(t *testing.T) {
 	// Close the underlying connection to force flush errors.
 	sqlDB, err := gdb.DB()
 	require.NoError(t, err)
-	sqlDB.Close()
+	_ = sqlDB.Close()
 
 	var retryCount atomic.Int64
 	h := &Handler{
@@ -560,7 +560,7 @@ func TestHandler_ErrCountTracksDrops(t *testing.T) {
 	h.closeMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
-	sqlDB.Close()
+	_ = sqlDB.Close()
 }
 
 // TestHandler_NewHandler_ConnectFailure verifies that
@@ -606,7 +606,7 @@ func TestHandler_BatchInsertError(t *testing.T) {
 
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "will fail", 0)
 	r.AddAttrs(slog.String("key", "value"))
-	h.Handle(context.Background(), r)
+	_ = h.Handle(context.Background(), r)
 
 	// Wait for the batch to be processed (with retries).
 	require.Eventually(t, func() bool {
@@ -625,5 +625,5 @@ func TestHandler_BatchInsertError(t *testing.T) {
 	h.closeMu.Unlock()
 	h.wg.Wait()
 	cancel()
-	sqlDB.Close()
+	_ = sqlDB.Close()
 }

@@ -36,7 +36,7 @@ func ExampleWithAsync() {
 
 	logger := slog.New(async)
 	logger.Info("async message")
-	defer mebsuta.CloseAll(async)
+	defer func() { _ = mebsuta.CloseAll(async) }()
 }
 
 // ExampleWithSampling demonstrates log sampling to reduce volume.
@@ -94,7 +94,7 @@ func ExampleNew_fileHandler() {
 	logger, _ := mebsuta.New(mebsuta.WithHandler(fileH))
 
 	logger.Info("written to file")
-	mebsuta.CloseAll(fileH)
+	_ = mebsuta.CloseAll(fileH)
 }
 
 // ExampleWithMetrics demonstrates metrics collection for logging.
@@ -126,7 +126,7 @@ func ExampleCloseAll() {
 	logger.Info("before close")
 
 	// CloseAll flushes buffers and releases resources
-	mebsuta.CloseAll(async)
+	_ = mebsuta.CloseAll(async)
 	logger.Info("after close") // safely ignored
 }
 
@@ -141,7 +141,7 @@ func Example_withHandlerChain() {
 	})
 
 	logger := slog.New(async)
-	defer mebsuta.CloseAll(async)
+	defer func() { _ = mebsuta.CloseAll(async) }()
 
 	logger.Info("production message")
 }
@@ -160,7 +160,7 @@ func ExampleAsyncDropped() {
 
 	dropped := mebsuta.AsyncDropped(async)
 	_ = dropped // number of dropped records
-	mebsuta.CloseAll(async)
+	_ = mebsuta.CloseAll(async)
 }
 
 // Example_loginAudit demonstrates login audit logging.
@@ -191,7 +191,7 @@ func ExampleUseContextExtractor() {
 		}),
 	)
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	ctx := context.WithValue(context.Background(), reqID, "req-789")
 	slog.InfoContext(ctx, "request received", "path", "/api")
@@ -200,7 +200,7 @@ func ExampleUseContextExtractor() {
 // ExampleWithErrorHandler demonstrates custom error handling for internal handler errors.
 func ExampleWithErrorHandler() {
 	dir, _ := os.MkdirTemp("", "mebsuta-example-err")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseFile(filerotate.Config{
@@ -217,7 +217,7 @@ func ExampleWithErrorHandler() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Info("normal log", "status", "ok")
 }
@@ -227,7 +227,7 @@ func ExampleSilentErrorHandler() {
 	logger, _ := mebsuta.New(
 		mebsuta.WithErrorHandler(mebsuta.SilentErrorHandler()),
 	)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	logger.Info("errors from handlers are silently discarded")
 }
@@ -238,7 +238,7 @@ func ExampleInit() {
 	if err != nil {
 		panic(err)
 	}
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	// Init sets the global default automatically.
 	slog.Info("using Init")
@@ -279,7 +279,7 @@ func ExampleHandlerError() {
 // Example_filerotateAdvancedConfig demonstrates advanced file rotation settings.
 func Example_filerotateAdvancedConfig() {
 	dir, _ := os.MkdirTemp("", "mebsuta-example-rotate")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseFile(filerotate.Config{
@@ -298,7 +298,7 @@ func Example_filerotateAdvancedConfig() {
 	if err != nil {
 		panic(err)
 	}
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Debug("debug message written to file")
 }

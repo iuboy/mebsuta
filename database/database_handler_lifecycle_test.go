@@ -107,7 +107,7 @@ func TestHandler_ConcurrentCloseWrite(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		h.Close()
+		_ = h.Close()
 	}()
 
 	wg.Wait()

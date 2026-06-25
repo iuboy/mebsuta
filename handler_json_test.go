@@ -36,7 +36,7 @@ func TestContractJSONHandler_RequiredFields(t *testing.T) {
 	h, buf := newJSONHandler(t)
 
 	r := slog.NewRecord(time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC), slog.LevelInfo, "test message", 0)
-	h.Handle(context.Background(), r)
+	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 
@@ -72,7 +72,7 @@ func TestContractJSONHandler_LevelStrings(t *testing.T) {
 		t.Run(tt.want, func(t *testing.T) {
 			h, buf := newJSONHandler(t)
 			r := slog.NewRecord(time.Now(), tt.level, "test", 0)
-			h.Handle(context.Background(), r)
+			_ = h.Handle(context.Background(), r)
 			result := parseJSONLine(t, buf.Bytes())
 			if result["level"] != tt.want {
 				t.Errorf("level = %v, want %s", result["level"], tt.want)
@@ -94,7 +94,7 @@ func TestContractJSONHandler_UserAttributes(t *testing.T) {
 		slog.Int("num", 42),
 		slog.Bool("flag", true),
 	)
-	h.Handle(context.Background(), r)
+	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
@@ -124,7 +124,7 @@ func TestContractJSONHandler_AuditFieldPromotion(t *testing.T) {
 		slog.Bool("success", true),
 		slog.String("ip", "127.0.0.1"),
 	)
-	h.Handle(context.Background(), r)
+	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 
@@ -166,7 +166,7 @@ func TestContractJSONHandler_AuditFieldNoPromotionOnTypeMismatch(t *testing.T) {
 		slog.Int("event_type", 123),
 		slog.Int("success", 1),
 	)
-	h.Handle(context.Background(), r)
+	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 
@@ -197,7 +197,7 @@ func TestContractJSONHandler_NonFiniteFloats(t *testing.T) {
 		slog.Float64("pos_inf", math.Inf(1)),
 		slog.Float64("neg_inf", math.Inf(-1)),
 	)
-	h.Handle(context.Background(), r)
+	_ = h.Handle(context.Background(), r)
 
 	// 必须产生有效 JSON
 	result := parseJSONLine(t, buf.Bytes())
@@ -221,7 +221,7 @@ func TestContractJSONHandler_WithGroup(t *testing.T) {
 	child := h.WithGroup("request")
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "grouped", 0)
 	r.AddAttrs(slog.String("id", "abc"))
-	child.Handle(context.Background(), r)
+	_ = child.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
@@ -242,7 +242,7 @@ func TestContractJSONHandler_WithGroupWithAttrs(t *testing.T) {
 
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "combined", 0)
 	r.AddAttrs(slog.Int("status", 200))
-	child.Handle(context.Background(), r)
+	_ = child.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
@@ -265,7 +265,7 @@ func TestContractJSONHandler_NestedGroup(t *testing.T) {
 	child := h.WithGroup("http").WithGroup("request")
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "nested", 0)
 	r.AddAttrs(slog.String("id", "123"))
-	child.Handle(context.Background(), r)
+	_ = child.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
@@ -323,7 +323,7 @@ func TestContractJSONHandler_Concurrent(t *testing.T) {
 			defer wg.Done()
 			r := slog.NewRecord(time.Now(), slog.LevelInfo, "concurrent", 0)
 			r.AddAttrs(slog.Int("i", i))
-			h.Handle(context.Background(), r)
+			_ = h.Handle(context.Background(), r)
 		}()
 	}
 	wg.Wait()

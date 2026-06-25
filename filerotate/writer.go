@@ -55,7 +55,9 @@ func New(cfg Config) (*Writer, error) {
 
 	fi, err := f.Stat()
 	if err != nil {
-		f.Close()
+		if cerr := f.Close(); cerr != nil {
+			return nil, fmt.Errorf("stat log file: %w (close: %v)", err, cerr)
+		}
 		return nil, fmt.Errorf("stat log file: %w", err)
 	}
 

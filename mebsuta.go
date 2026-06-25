@@ -140,13 +140,13 @@ type ErrorHandler func(*HandlerError)
 var DefaultErrorHandler ErrorHandler = defaultErrorHandler
 
 func defaultErrorHandler(he *HandlerError) {
-	fmt.Fprintf(os.Stderr, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
+	_, _ = fmt.Fprintf(os.Stderr, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
 }
 
 // LogErrorHandler returns an ErrorHandler that writes to w.
 func LogErrorHandler(w io.Writer) ErrorHandler {
 	return func(he *HandlerError) {
-		fmt.Fprintf(w, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
+		_, _ = fmt.Fprintf(w, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 }
 

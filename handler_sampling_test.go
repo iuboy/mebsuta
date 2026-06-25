@@ -62,7 +62,7 @@ func (h *countHandler) ErrorLevelCount() int64 {
 func closeSampling(t *testing.T, h slog.Handler) {
 	t.Helper()
 	if closer, ok := h.(interface{ Close() error }); ok {
-		closer.Close()
+		_ = closer.Close()
 	}
 }
 
