@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 // samplingState tracks per-window counters for sampling decisions using atomic operations.
@@ -21,6 +20,7 @@ type samplingState struct {
 // SamplingHandler is a slog.Handler decorator that samples log records within a time window.
 // Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
 type SamplingHandler struct {
+	handlerCore
 	inner        slog.Handler
 	cfg          SamplingConfig
 	state        *samplingState
@@ -43,9 +43,10 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	s.windowEnd.Store(time.Now().Add(cfg.Window).UnixNano())
 
 	return &SamplingHandler{
-		inner: inner,
-		cfg:   cfg,
-		state: s,
+		handlerCore: newHandlerCore(),
+		inner:       inner,
+		cfg:         cfg,
+		state:       s,
 	}
 }
 
@@ -93,18 +94,20 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs implements slog.Handler.
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
-		inner: h.inner.WithAttrs(attrs),
-		cfg:   h.cfg,
-		state: h.state,
+		handlerCore: newHandlerCore(),
+		inner:       h.inner.WithAttrs(attrs),
+		cfg:         h.cfg,
+		state:       h.state,
 	}
 }
 
 // WithGroup implements slog.Handler.
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
-		inner: h.inner.WithGroup(name),
-		cfg:   h.cfg,
-		state: h.state,
+		handlerCore: newHandlerCore(),
+		inner:       h.inner.WithGroup(name),
+		cfg:         h.cfg,
+		state:       h.state,
 	}
 }
 
@@ -121,8 +124,6 @@ func (h *SamplingHandler) unwrapHandler() slog.Handler {
 func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
-
-func (h *SamplingHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler     = (*SamplingHandler)(nil)

@@ -3,7 +3,6 @@ package mebsuta
 import (
 	"context"
 	"log/slog"
-	"unsafe"
 )
 
 // AttrsSub is a sub-handler for WithAttrs/WithGroup chains, eliminating duplicate sub-types across handlers.
@@ -45,8 +44,6 @@ func (h *AttrsSub) unwrapHandler() slog.Handler {
 	return h.Parent
 }
 
-func (h *AttrsSub) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
-
 var _ handlerUnwrapper = (*AttrsSub)(nil)
 
 // GroupSub is a sub-handler for WithGroup chains, prefixing all record attrs with the group name before forwarding to the parent.
@@ -83,7 +80,5 @@ func (h *GroupSub) WithGroup(name string) slog.Handler {
 func (h *GroupSub) unwrapHandler() slog.Handler {
 	return h.Parent
 }
-
-func (h *GroupSub) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var _ handlerUnwrapper = (*GroupSub)(nil)

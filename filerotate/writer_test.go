@@ -621,3 +621,31 @@ func TestWriter_ConcurrentWritesDuringRotation(t *testing.T) {
 		t.Error("expected at least one rotated backup file")
 	}
 }
+
+// TestIsBackupName verifies that only real rotation artifacts are recognized,
+// so cleanup never sweeps up unrelated same-prefix files sharing the log dir.
+func TestIsBackupName(t *testing.T) {
+	const base = "app.log"
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"app.log", false}, // base itself, not a backup
+		{"app.log.2026-06-28T13-04-05.000", true},
+		{"app.log.2026-06-28T13-04-05.000.1", true},
+		{"app.log.2026-06-28T13-04-05.000.gz", true},
+		{"app.log.2026-06-28T13-04-05.000.12.gz", true},
+		{"app.log.1700000000000000000", true}, // unix-nano fallback
+		{"app.log.1700000000000000000.gz", true},
+		{"app.log.other", false},                     // unrelated same-prefix file
+		{"app.log.", false},                          // empty suffix
+		{"other.log.2026-06-28T13-04-05.000", false}, // wrong base
+		{"app.log.NOTALOG", false},
+	}
+	for _, c := range cases {
+		got := isBackupName(base, c.name)
+		if got != c.want {
+			t.Errorf("isBackupName(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

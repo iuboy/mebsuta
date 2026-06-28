@@ -3,7 +3,6 @@ package mebsuta
 import (
 	"context"
 	"log/slog"
-	"unsafe"
 )
 
 // ContextExtractor extracts slog.Attr values from a context.Context.
@@ -65,8 +64,6 @@ func (h *contextExtractorHandler) unwrapHandler() slog.Handler {
 func (h *contextExtractorHandler) setErrorHandler(fn ErrorHandler) {
 	// No-op: propagateErrorHandler recurses via unwrapHandler to reach the inner handler.
 }
-
-func (h *contextExtractorHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 // joinGroup joins two group names with a dot, returning the non-empty one if either is empty.
 func joinGroup(parent, child string) string {

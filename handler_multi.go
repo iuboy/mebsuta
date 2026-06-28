@@ -7,8 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 // ReportError invokes the ErrorHandler if non-nil.
@@ -24,6 +24,7 @@ func ReportError(eh ErrorHandler, he *HandlerError) {
 // safeMultiHandler wraps multiple sub-handlers, adding panic recovery to each call. Prevents a single handler panic from crashing the entire log call.
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 	return &safeMulti{
+		handlerCore:  newHandlerCore(),
 		handlers:     handlers,
 		errorHandler: eh,
 	}
@@ -31,15 +32,16 @@ func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
 
 // safeMulti fans out log records to multiple handlers with per-handler panic recovery.
 type safeMulti struct {
+	handlerCore
 	handlers     []slog.Handler
 	errorHandler ErrorHandler
 }
 
 func (h *safeMulti) Close() error {
-	visited := make(map[uintptr]bool)
+	visited := make(map[uint64]bool)
 	var errs []error
 	for _, hh := range h.handlers {
-		if err := closeAll(hh, visited); err != nil {
+		if err := closeAll(hh, visited, 0); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -129,6 +131,7 @@ func (h *safeMulti) WithAttrs(attrs []slog.Attr) slog.Handler {
 		propagated[i] = hh.WithAttrs(attrs)
 	}
 	return &safeMulti{
+		handlerCore:  newHandlerCore(),
 		handlers:     propagated,
 		errorHandler: h.errorHandler,
 	}
@@ -140,6 +143,7 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 		propagated[i] = hh.WithGroup(name)
 	}
 	return &safeMulti{
+		handlerCore:  newHandlerCore(),
 		handlers:     propagated,
 		errorHandler: h.errorHandler,
 	}
@@ -178,49 +182,62 @@ type handlerUnwrapper interface {
 }
 
 // CloseAll recursively closes all resources in the handler and decorator chain that implement io.Closer.
-// Uses a visited map to prevent shared handlers from being closed more than once.
+// Built-in handlers are deduplicated by stable id; cycle protection is guaranteed
+// by maxUnwrapDepth regardless of identity.
 func CloseAll(handler slog.Handler) error {
-	return closeAll(handler, make(map[uintptr]bool))
+	return closeAll(handler, make(map[uint64]bool), 0)
 }
 
-// handlerIdentifier is an optional interface for handlers that can provide a unique
-// identity pointer for deduplication in CloseAll. All concrete handler types in this
-// package implement it via handlerAddr(). External handlers that don't implement it
-// fall back to extracting the interface data pointer via unsafe.
+// handlerSeq assigns a unique, stable id to each built-in handler instance,
+// replacing pointer-based identity so the close path no longer relies on
+// unsafe.Pointer or interface-layout probing.
+var handlerSeq atomic.Uint64
+
+// handlerCore equips a built-in handler with a stable identity for CloseAll
+// deduplication. Embed it in any concrete handler type; the embedded handlerID
+// method satisfies handlerIdentifier.
+type handlerCore struct{ id uint64 }
+
+func newHandlerCore() handlerCore { return handlerCore{id: handlerSeq.Add(1)} }
+
+func (c handlerCore) handlerID() uint64 { return c.id }
+
+// handlerIdentifier is an internal interface for handlers that opt into CloseAll
+// deduplication. All built-in handlers satisfy it via embedded handlerCore.
+// External (third-party) handlers do not implement it: they are not deduplicated
+// and rely on Close being idempotent (the standard io.Closer contract). Cycle
+// protection comes from maxUnwrapDepth, not from identity, so no unsafe/reflect
+// probing is required.
 type handlerIdentifier interface {
-	handlerAddr() uintptr
+	handlerID() uint64
 }
 
-// handlerIdentity returns a unique pointer for deduplication.
-// First checks the handlerIdentifier interface; if not implemented, extracts the
-// interface data pointer via unsafe (works for all pointer-receiver handler types).
-func handlerIdentity(h slog.Handler) (uintptr, bool) {
+// handlerIdentity returns a built-in handler's stable id. There is deliberately
+// no fallback: third-party handlers are not deduplicated.
+func handlerIdentity(h slog.Handler) (uint64, bool) {
 	if hi, ok := h.(handlerIdentifier); ok {
-		return hi.handlerAddr(), true
-	}
-	// Fallback: extract the data pointer from the interface value.
-	// An interface in Go is {type, data}; the data word is the underlying pointer.
-	type iface struct {
-		_    uintptr // type
-		data uintptr // data pointer
-	}
-	ptr := (*iface)(unsafe.Pointer(&h)).data
-	if ptr != 0 {
-		return ptr, true
+		return hi.handlerID(), true
 	}
 	return 0, false
 }
 
-func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
+// maxUnwrapDepth caps recursion through handlerUnwrapper chains to guarantee
+// termination even if a handler's unwrapHandler is self-referential. Real
+// decorator chains are shallow (<10 layers); 64 is a generous safety bound.
+const maxUnwrapDepth = 64
+
+func closeAll(handler slog.Handler, visited map[uint64]bool, depth int) error {
 	if handler == nil {
 		return nil
 	}
-	// Use handlerIdentifier to get the handler's identity pointer for deduplication.
-	// External handlers that don't implement the interface are always processed
-	// (no deduplication), which is safe since closeAll is idempotent per handler.
-	// Value-type handlers (uncommon) cannot be deduplicated; they are always processed.
-	ptr, canDedup := handlerIdentity(handler)
-	if canDedup {
+	// Hard termination guarantee against self-referential unwrapHandler cycles,
+	// independent of any identity/dedup logic.
+	if depth > maxUnwrapDepth {
+		return nil
+	}
+	// Dedupe built-in handlers by stable id. External handlers without
+	// handlerIdentifier are not deduplicated; their Close must be idempotent.
+	if ptr, ok := handlerIdentity(handler); ok {
 		if visited[ptr] {
 			return nil
 		}
@@ -234,7 +251,7 @@ func closeAll(handler slog.Handler, visited map[uintptr]bool) error {
 		}
 	}
 	if uw, ok := handler.(handlerUnwrapper); ok {
-		if err := closeAll(uw.unwrapHandler(), visited); err != nil {
+		if err := closeAll(uw.unwrapHandler(), visited, depth+1); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -271,8 +288,6 @@ func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) s
 	newR.AddAttrs(extraAttrs...)
 	return newR
 }
-
-func (h *safeMulti) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler = (*safeMulti)(nil)

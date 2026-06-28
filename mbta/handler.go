@@ -66,10 +66,22 @@ func NewHandler(cfg Config) (*Handler, error) {
 	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout)
 	defer connectCancel()
 
+	// Propagate the full TLS credential set. Previously only InsecureSkipVerify
+	// was forwarded, so CAFile/CertFile/KeyFile/ServerName silently never took
+	// effect — leaving mTLS / custom CA / SNI configurations as no-ops.
+	creds := v1.ClientCredentials{
+		CAFile:             cfg.CAFile,
+		CertFile:           cfg.CertFile,
+		KeyFile:            cfg.KeyFile,
+		ServerName:         cfg.ServerName,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+	if cfg.InsecureSkipVerify {
+		mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
+	}
+
 	client, err := mbtago.Dial(connectCtx, cfg.Server, cfg.AgentID, cfg.Token, mbtago.Version1,
-		mbtago.WithV1Credentials(v1.ClientCredentials{
-			InsecureSkipVerify: cfg.InsecureSkipVerify,
-		}),
+		mbtago.WithV1Credentials(creds),
 	)
 	if err != nil {
 		cancel()
@@ -299,15 +311,36 @@ func recordToSignal(r slog.Record, _ string) *core.SignalRecord {
 		severityText = "AUDIT"
 	}
 
+	// Never panic on the log hot path. uuid.NewV7 can only fail if the system
+	// PRNG is unavailable; in that case fall back to a deterministic,
+	// collision-resistant ID derived from the record timestamp rather than
+	// crashing the caller's slog.Info call.
+	eventID := newEventID(r.Time.UnixNano())
+
 	return &core.SignalRecord{
 		SignalType:     "log",
-		EventID:        uuid.Must(uuid.NewV7()).String(),
+		EventID:        eventID,
 		TimeUnixMs:     r.Time.UnixMilli(),
 		ObservedTimeMs: time.Now().UnixMilli(),
 		SeverityText:   severityText,
 		Body:           r.Message,
 		Attributes:     attrs,
 	}
+}
+
+// newEventID returns a UUIDv7 string, falling back to a timestamp-derived ID
+// when UUID generation fails so the log path can never panic.
+func newEventID(fallbackSeed int64) string {
+	if id, err := uuid.NewV7(); err == nil {
+		return id.String()
+	}
+	// Fallback: deterministic, monotonic, non-zero. Collisions are practically
+	// impossible for fallback-only operation under PRNG failure.
+	return fmt.Sprintf("00000000-0000-7%03x-%x%04x-%012x",
+		(fallbackSeed>>32)&0xfff, // version nibble region
+		0x8|((fallbackSeed>>28)&0x3),
+		(fallbackSeed>>16)&0xffff,
+		uint64(fallbackSeed)&0xffffffffffff)
 }
 
 func attrValue(attr slog.Attr) any {

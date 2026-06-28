@@ -12,6 +12,12 @@ import (
 
 var tableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
+const (
+	// maxBatchSize caps the batch size to prevent unbounded channel/batch
+	// allocation when a caller misconfigures a very large BatchSize.
+	maxBatchSize = 10000
+)
+
 // Config holds configuration for database log output.
 type Config struct {
 	Driver          string        // Required: "mysql" or "postgres".
@@ -52,6 +58,8 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.BatchSize <= 0 {
 		c.BatchSize = 100
+	} else if c.BatchSize > maxBatchSize {
+		c.BatchSize = maxBatchSize
 	}
 	if c.BatchInterval <= 0 {
 		c.BatchInterval = 5 * time.Second

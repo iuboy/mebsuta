@@ -99,3 +99,6 @@ chain
 file
 sampling
 go.work.sum
+# Local Go workspace (used for joint development with sibling modules like ../mbta-go;
+# must not ship in releases — would break downstream reproducible builds).
+go.work

@@ -627,3 +627,41 @@ func TestHandler_BatchInsertError(t *testing.T) {
 	cancel()
 	_ = sqlDB.Close()
 }
+
+// TestConfig_BatchSizeCap verifies that an oversized BatchSize is clamped to
+// maxBatchSize so the internal channel/batch cannot grow unbounded.
+func TestConfig_BatchSizeCap(t *testing.T) {
+	cfg, err := Config{Driver: "mysql", DSN: "u:p@tcp(127.0.0.1)/db", Table: "logs", BatchSize: 5_000_000}.Validate()
+	require.NoError(t, err)
+	require.Equal(t, maxBatchSize, cfg.BatchSize, "oversized BatchSize should be clamped to maxBatchSize")
+}
+
+// TestConfig_BatchSizeDefault verifies the default when BatchSize <= 0.
+func TestConfig_BatchSizeDefault(t *testing.T) {
+	cfg, err := Config{Driver: "mysql", DSN: "u:p@tcp(127.0.0.1)/db", Table: "logs"}.Validate()
+	require.NoError(t, err)
+	require.Equal(t, 100, cfg.BatchSize, "BatchSize should default to 100")
+}
+
+// TestSanitizeDBError_Credentials verifies both user:pass@ and key=value style
+// credentials are redacted from propagated error messages.
+func TestSanitizeDBError_Credentials(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string // substring that must NOT appear in output
+	}{
+		{"dial tcp: user:secret@tcp(host)/db", "secret"},
+		{"connect: password=hunter2&db=x", "hunter2"},
+		{"connect: sslpassword=letmein;", "letmein"},
+		{"connect: passwd=foo;", "foo"},
+	}
+	for _, c := range cases {
+		got := sanitizeDBError(errors.New(c.in))
+		require.NotContains(t, got, c.want, "credential %q should be redacted", c.want)
+	}
+}
+
+// TestSanitizeDBError_Nil verifies nil input handling.
+func TestSanitizeDBError_Nil(t *testing.T) {
+	require.Equal(t, "<nil>", sanitizeDBError(nil))
+}

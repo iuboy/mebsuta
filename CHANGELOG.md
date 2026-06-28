@@ -3,7 +3,33 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本策略参见 [VERSIONING.md](docs/VERSIONING.md)。
 
-## [Unreleased] — v0.4.0-beta.1
+## [v0.5.0] - 2026-06-28
+
+### Added
+
+- `mbta/` 子包：通过 MBTA 二进制协议将日志直送 forwarder 的 `slog.Handler`，内置异步缓冲、批量刷新与重试，`UseMBTA()` 便捷 Option
+
+### Security
+
+- **mbta**: 透传完整 TLS 凭据（`CAFile`/`CertFile`/`KeyFile`/`ServerName`）。此前 `NewHandler` 仅转发 `InsecureSkipVerify`，导致 mTLS 双向认证与自定义 CA 被静默忽略；`InsecureSkipVerify=true` 时现发出 MITM 警告
+- **mbta**: `recordToSignal` 用安全的 UUID 生成替代 `uuid.Must`，避免日志热路径在系统 PRNG 不可用时 panic
+- **database**: `BatchSize` 加上限（10000），防止无界 channel/批量分配导致的资源耗尽
+- **filerotate**: `OpenFile` 后做 inode 一致性校验（`os.SameFile`），防御 symlink 替换攻击（TOCTOU）
+- **filerotate**: cleanup 严格匹配轮转备份命名（时间戳/序号/`.gz`），避免误删同目录同前缀文件
+- **database**: 增强 DSN 凭据脱敏，覆盖 `sslpassword`/`pwd` 等 key=value 形式
+
+### Changed
+
+- **handler identity 架构重构**：防环改用递归深度上限（`maxUnwrapDepth`），内置 handler 用稳定 id 计数器去重，**全链路移除 `unsafe`**。第三方 handler 不再依赖运行时探测，靠 `Close` 幂等契约（标准 `io.Closer` 契约）
+- **go.mod 自包含**：补全 `mbta-go` 依赖；`go.work` 加入 `.gitignore`，发布形态可脱离 workspace 独立构建
+- 全链路性能优化，减少热路径内存分配与调度开销
+
+### Fixed
+
+- Go 最佳实践修复（errcheck / staticcheck 清零）
+- CI workflow 适配根目录结构与 Go 版本要求
+
+## [v0.4.0] - 2026-05-24
 
 ### ⚠️ BREAKING CHANGES
 

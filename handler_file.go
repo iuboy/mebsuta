@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"unsafe"
 
 	"github.com/iuboy/mebsuta/filerotate"
 )
@@ -15,6 +14,7 @@ import (
 // Rotation is handled by the filerotate sub-package; this handler provides slog integration with level
 // filtering and format selection.
 type FileHandler struct {
+	handlerCore
 	leveler slog.Leveler
 	inner   slog.Handler
 	writer  *filerotate.Writer
@@ -35,9 +35,10 @@ func NewFileHandler(rotateCfg filerotate.Config, cfg FileConfig) (*FileHandler, 
 	inner := newInnerHandler(w, EncodingType(cfg.Format))
 
 	h := &FileHandler{
-		leveler: cfg.Level,
-		inner:   inner,
-		writer:  w,
+		handlerCore: newHandlerCore(),
+		leveler:     cfg.Level,
+		inner:       inner,
+		writer:      w,
 	}
 
 	// Set up error handler bridge: filerotate.Error → HandlerError
@@ -60,18 +61,20 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs implements slog.Handler.
 func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &FileHandler{
-		leveler: h.leveler,
-		inner:   h.inner.WithAttrs(attrs),
-		writer:  h.writer,
+		handlerCore: newHandlerCore(),
+		leveler:     h.leveler,
+		inner:       h.inner.WithAttrs(attrs),
+		writer:      h.writer,
 	}
 }
 
 // WithGroup implements slog.Handler.
 func (h *FileHandler) WithGroup(name string) slog.Handler {
 	return &FileHandler{
-		leveler: h.leveler,
-		inner:   h.inner.WithGroup(name),
-		writer:  h.writer,
+		handlerCore: newHandlerCore(),
+		leveler:     h.leveler,
+		inner:       h.inner.WithGroup(name),
+		writer:      h.writer,
 	}
 }
 
@@ -90,8 +93,6 @@ func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
 		}
 	})
 }
-
-func (h *FileHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 // Compile-time assertions
 var (

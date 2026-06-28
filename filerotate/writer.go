@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -48,17 +49,9 @@ func New(cfg Config) (*Writer, error) {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, cfg.FileMode)
+	f, fi, err := openAppend(cfg.Path, cfg.FileMode)
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
-	}
-
-	fi, err := f.Stat()
-	if err != nil {
-		if cerr := f.Close(); cerr != nil {
-			return nil, fmt.Errorf("stat log file: %w (close: %v)", err, cerr)
-		}
-		return nil, fmt.Errorf("stat log file: %w", err)
 	}
 
 	w := &Writer{
@@ -185,7 +178,7 @@ func (w *Writer) rotateLocked() {
 		return
 	}
 
-	f, err := os.OpenFile(w.cfg.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, w.cfg.FileMode)
+	f, _, err := openAppend(w.cfg.Path, w.cfg.FileMode)
 	if err != nil {
 		reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("create new log file: %w", err)})
 		if renameBackErr := os.Rename(backup, w.cfg.Path); renameBackErr != nil {
@@ -212,7 +205,7 @@ func (w *Writer) rotateLocked() {
 
 // recoverOpen attempts to reopen the log file after a rotation failure.
 func (w *Writer) recoverOpen(path string, onError func(error)) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, w.cfg.FileMode)
+	f, _, err := openAppend(path, w.cfg.FileMode)
 	if err != nil {
 		reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("recover open failed: %w", err)})
 		w.closed.Store(true)
@@ -282,6 +275,13 @@ func (w *Writer) cleanupBackupsLocked() {
 		if name == base || !strings.HasPrefix(name, prefix) {
 			continue
 		}
+		// Only consider files whose suffix matches a real rotation artifact
+		// (timestamp, optional sequence number, optional .gz). A bare prefix
+		// match could otherwise sweep up unrelated same-prefix files that
+		// happen to share the log directory.
+		if !isBackupName(base, name) {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue
@@ -337,6 +337,22 @@ func defaultOnError(err error) {
 	fmt.Fprintf(os.Stderr, "mebsuta/file: %v\n", err)
 }
 
+// backupSuffixRe matches the suffix appended to a rotated backup filename:
+// either a millisecond timestamp (with optional sequence number) or a
+// unix-nano fallback, each optionally followed by ".gz" for compressed copies.
+// Used to avoid deleting unrelated same-prefix files during cleanup.
+var backupSuffixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}|\d+)(\.\d+)?(\.gz)?$`)
+
+// isBackupName reports whether name is a rotation artifact of base
+// (i.e. base + "." + a suffix matching backupSuffixRe).
+func isBackupName(base, name string) bool {
+	suffix, ok := strings.CutPrefix(name, base+".")
+	if !ok {
+		return false
+	}
+	return backupSuffixRe.MatchString(suffix)
+}
+
 // Compile-time assertions.
 var (
 	_ io.Writer = (*Writer)(nil)
@@ -344,7 +360,9 @@ var (
 )
 
 // checkNotSymlink verifies the log file path is not a symlink. If the file does not
-// exist yet, it checks the parent directory. Returns an error if a symlink is detected.
+// exist yet, it checks the parent directory. Intermediate system directories (e.g.
+// macOS /var → /private/var) are intentionally not walked — those are legitimate
+// symlinks, and TOCTOU protection is handled by openAppend's post-open inode check.
 func checkNotSymlink(path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -366,4 +384,33 @@ func checkNotSymlink(path string) error {
 		return fmt.Errorf("log file %s is a symlink, refusing to write", path)
 	}
 	return nil
+}
+
+// openAppend opens path for create+append and defends against symlink substitution
+// (TOCTOU): if the file existed before open, the opened descriptor's inode must
+// match the pre-open Lstat. Without this check, an attacker who replaces the log
+// path with a symlink between checkNotSymlink and OpenFile could redirect log
+// writes to an arbitrary file.
+func openAppend(path string, mode os.FileMode) (*os.File, os.FileInfo, error) {
+	lstat, lerr := os.Lstat(path)
+	preExist := lerr == nil
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mode)
+	if err != nil {
+		return nil, nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("log file %s resolved to a symlink, refusing to write", path)
+	}
+	if preExist && !os.SameFile(lstat, fi) {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("log file %s was replaced between stat and open (possible symlink substitution)", path)
+	}
+	return f, fi, nil
 }

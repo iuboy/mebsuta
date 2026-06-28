@@ -11,8 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// closeCountHandler tracks how many times Close was called.
+// closeCountHandler tracks how many times Close was called. It embeds handlerCore
+// to opt into CloseAll deduplication (the contract built-in handlers satisfy).
 type closeCountHandler struct {
+	handlerCore
 	closeCount atomic.Int32
 	inner      slog.Handler
 }
@@ -24,10 +26,10 @@ func (h *closeCountHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.inner.Handle(ctx, r)
 }
 func (h *closeCountHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &closeCountHandler{inner: h.inner.WithAttrs(attrs)}
+	return &closeCountHandler{handlerCore: newHandlerCore(), inner: h.inner.WithAttrs(attrs)}
 }
 func (h *closeCountHandler) WithGroup(name string) slog.Handler {
-	return &closeCountHandler{inner: h.inner.WithGroup(name)}
+	return &closeCountHandler{handlerCore: newHandlerCore(), inner: h.inner.WithGroup(name)}
 }
 func (h *closeCountHandler) Close() error {
 	h.closeCount.Add(1)
@@ -35,11 +37,12 @@ func (h *closeCountHandler) Close() error {
 }
 
 // TestCloseAll_SharedHandler_Dedup verifies that when fanout branches share the same
-// terminal handler, CloseAll calls Close only once (visited map dedup).
+// terminal handler that opts into deduplication (handlerIdentifier), CloseAll calls
+// Close only once.
 func TestCloseAll_SharedHandler_Dedup(t *testing.T) {
 	inner, err := NewStdoutHandler(StdoutConfig{})
 	require.NoError(t, err)
-	shared := &closeCountHandler{inner: inner}
+	shared := &closeCountHandler{handlerCore: newHandlerCore(), inner: inner}
 
 	// Build: safeMulti([shared, shared])
 	multi := safeMultiHandler([]slog.Handler{shared, shared}, nil)
@@ -50,10 +53,14 @@ func TestCloseAll_SharedHandler_Dedup(t *testing.T) {
 		"shared handler should be closed exactly once, got %d", shared.closeCount.Load())
 }
 
-// selfRefHandler implements handlerUnwrapper but returns itself from unwrapHandler,
-// which would cause infinite recursion without visited map protection.
+// selfRefHandler implements handlerUnwrapper but returns itself from unwrapHandler.
+// It deliberately does NOT implement handlerIdentifier, modeling a third-party
+// handler. Termination is guaranteed by maxUnwrapDepth (not identity), and repeated
+// Close calls are absorbed by idempotent Close — the documented contract for
+// handlers that do not opt into deduplication.
 type selfRefHandler struct {
-	closed atomic.Int32
+	closed atomic.Bool
+	count  atomic.Int32
 }
 
 func (h *selfRefHandler) Enabled(context.Context, slog.Level) bool  { return false }
@@ -61,18 +68,21 @@ func (h *selfRefHandler) Handle(context.Context, slog.Record) error { return nil
 func (h *selfRefHandler) WithAttrs(attrs []slog.Attr) slog.Handler  { return h }
 func (h *selfRefHandler) WithGroup(name string) slog.Handler        { return h }
 func (h *selfRefHandler) Close() error {
-	h.closed.Add(1)
+	if h.closed.CompareAndSwap(false, true) {
+		h.count.Add(1)
+	}
 	return nil
 }
 func (h *selfRefHandler) unwrapHandler() slog.Handler { return h } // returns self!
 
 // TestCloseAll_SelfReferencingHandler verifies that a handler whose unwrapHandler
-// returns itself does not cause infinite recursion.
+// returns itself does not cause infinite recursion (terminated by maxUnwrapDepth),
+// and that idempotent Close absorbs the repeated calls.
 func TestCloseAll_SelfReferencingHandler(t *testing.T) {
 	h := &selfRefHandler{}
 	err := CloseAll(h)
 	require.NoError(t, err)
-	require.Equal(t, int32(1), h.closed.Load(), "should close exactly once")
+	require.Equal(t, int32(1), h.count.Load(), "idempotent Close should record exactly one effective close")
 }
 
 // errorOnCloseHandler returns an error on Close for testing error aggregation.
@@ -133,4 +143,24 @@ func TestCloseAll_UnwrapsMiddlewareChain(t *testing.T) {
 	err = CloseAll(spy)
 	require.NoError(t, err)
 	require.Equal(t, int32(1), spy.unwrapped.Load(), "unwrapHandler should be called once")
+}
+
+// plainHandler implements slog.Handler but neither handlerIdentifier nor
+// handlerUnwrapper, modeling a third-party handler that does not opt into
+// CloseAll deduplication.
+type plainHandler struct{ _ int }
+
+func (h *plainHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (h *plainHandler) Handle(context.Context, slog.Record) error { return nil }
+func (h *plainHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h *plainHandler) WithGroup(string) slog.Handler             { return h }
+
+// TestHandlerIdentity_NoFallbackForThirdParty verifies that a handler without
+// handlerIdentifier yields no identity — closeAll does not attempt any unsafe
+// or reflect-based probing. Such handlers are not deduplicated; cycle protection
+// comes from maxUnwrapDepth and repeated Close is absorbed by idempotent Close.
+func TestHandlerIdentity_NoFallbackForThirdParty(t *testing.T) {
+	h := &plainHandler{}
+	_, ok := handlerIdentity(h)
+	require.False(t, ok, "third-party handler without handlerIdentifier must not get an identity")
 }

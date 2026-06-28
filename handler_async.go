@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 // SelfBufferedHandler is a marker interface for handlers with built-in async
@@ -33,6 +32,7 @@ type asyncRecord struct {
 // AsyncHandler delegates log writes to a background goroutine.
 // Do not wrap syslog.Handler or database.Handler — they have built-in async mechanisms.
 type AsyncHandler struct {
+	handlerCore
 	inner        slog.Handler
 	ch           chan asyncRecord
 	wg           sync.WaitGroup
@@ -72,10 +72,11 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 
 	eh := DefaultErrorHandler
 	h := &AsyncHandler{
-		inner:  inner,
-		ch:     make(chan asyncRecord, bufferSize),
-		ctx:    ctx,
-		cancel: cancel,
+		handlerCore: newHandlerCore(),
+		inner:       inner,
+		ch:          make(chan asyncRecord, bufferSize),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 	h.errorHandler.Store(&eh)
 	h.wg.Add(1)
@@ -306,10 +307,6 @@ func AsyncDropped(h slog.Handler) int64 {
 		return 0
 	}
 }
-
-func (h *AsyncHandler) handlerAddr() uintptr      { return uintptr(unsafe.Pointer(h)) }
-func (h *asyncAttrsHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
-func (h *asyncGroupHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler     = (*AsyncHandler)(nil)

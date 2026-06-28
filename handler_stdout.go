@@ -6,11 +6,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"unsafe"
 )
 
 // StdoutHandler writes log records to stdout.
 type StdoutHandler struct {
+	handlerCore
 	cfg   StdoutConfig
 	inner slog.Handler // underlying contractJSONHandler or slog.TextHandler
 }
@@ -23,7 +23,8 @@ func NewStdoutHandler(cfg StdoutConfig) (*StdoutHandler, error) {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 	h := &StdoutHandler{
-		cfg: cfg,
+		handlerCore: newHandlerCore(),
+		cfg:         cfg,
 	}
 	h.inner = newInnerHandler(os.Stdout, EncodingType(cfg.Format))
 	return h, nil
@@ -35,7 +36,8 @@ func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, 
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 	h := &StdoutHandler{
-		cfg: cfg,
+		handlerCore: newHandlerCore(),
+		cfg:         cfg,
 	}
 	h.inner = newInnerHandler(w, EncodingType(cfg.Format))
 	return h, nil
@@ -54,16 +56,18 @@ func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs implements slog.Handler.
 func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
-		cfg:   h.cfg,
-		inner: h.inner.WithAttrs(attrs),
+		handlerCore: newHandlerCore(),
+		cfg:         h.cfg,
+		inner:       h.inner.WithAttrs(attrs),
 	}
 }
 
 // WithGroup implements slog.Handler.
 func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
-		cfg:   h.cfg,
-		inner: h.inner.WithGroup(name),
+		handlerCore: newHandlerCore(),
+		cfg:         h.cfg,
+		inner:       h.inner.WithGroup(name),
 	}
 }
 
@@ -71,8 +75,6 @@ func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 func (h *StdoutHandler) Close() error {
 	return nil
 }
-
-func (h *StdoutHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var (
 	_ slog.Handler = (*StdoutHandler)(nil)

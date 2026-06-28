@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/iuboy/mebsuta/attrutil"
 )
@@ -163,7 +162,5 @@ func prefixAttr(group string, attr slog.Attr) slog.Attr {
 	attr.Key = group + "." + attr.Key
 	return attr
 }
-
-func (h *contractJSONHandler) handlerAddr() uintptr { return uintptr(unsafe.Pointer(h)) }
 
 var _ slog.Handler = (*contractJSONHandler)(nil)

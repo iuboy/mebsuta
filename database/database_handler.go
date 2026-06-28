@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -295,16 +296,28 @@ func closeSQLDB(gdb *gorm.DB) {
 	}
 }
 
-// dsnCredRe matches common credential patterns in DSNs: user:pass@host, user:pass@tcp(host),
-// password=xxx, and similar.
-var dsnCredRe = regexp.MustCompile(`:[^:@/]+@|password=[^&\s]+|passwd=[^&\s]+`)
+// dsnCredRe matches common credential patterns embedded in DSN-derived error
+// messages: the password segment of "user:pass@host" / "user:pass@tcp(host)",
+// and key=value style params (password, passwd, sslpassword, pwd).
+var dsnCredRe = regexp.MustCompile(`:[^:@/]+@|(?:password|passwd|sslpassword|pwd)=[^&;\s]+`)
 
 // sanitizeDBError removes credential-like substrings from database error messages.
 func sanitizeDBError(err error) string {
 	if err == nil {
 		return "<nil>"
 	}
-	return dsnCredRe.ReplaceAllString(err.Error(), ":***@")
+	return dsnCredRe.ReplaceAllStringFunc(err.Error(), func(m string) string {
+		// "user:pass@" style — preserve the colon separator shape.
+		if strings.HasSuffix(m, "@") {
+			return ":***@"
+		}
+		// "key=value" style — preserve the key, redact the value.
+		eq := strings.IndexByte(m, '=')
+		if eq < 0 {
+			return "***"
+		}
+		return m[:eq+1] + "***"
+	})
 }
 
 var (
