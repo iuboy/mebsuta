@@ -1,6 +1,7 @@
 package mebsuta
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -37,6 +38,9 @@ func (c FileConfig) Validate() (FileConfig, error) {
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
 	}
+	if err := validateFormat(c.Format); err != nil {
+		return c, err
+	}
 	if c.Format == "" {
 		c.Format = "json"
 	}
@@ -56,17 +60,33 @@ func (c StdoutConfig) Validate() (StdoutConfig, error) {
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
 	}
+	if err := validateFormat(c.Format); err != nil {
+		return c, err
+	}
 	if c.Format == "" {
 		c.Format = "json"
 	}
 	return c, nil
 }
 
-func (c *StdoutConfig) level() slog.Level {
+func (c StdoutConfig) level() slog.Level {
 	if lv, ok := c.Level.(slog.Level); ok {
 		return lv
 	}
 	return c.Level.Level()
+}
+
+// validateFormat rejects unsupported Format values (e.g. "text", "yaml") that
+// would otherwise silently fall through to JSON in newInnerHandler's default
+// case — a silent misconfiguration where the user requests console but gets JSON.
+// An empty format is valid and defaulted to "json" by the caller.
+func validateFormat(format string) error {
+	switch format {
+	case "", "json", "console":
+		return nil
+	default:
+		return &ConfigError{Field: "Format", Msg: fmt.Sprintf("unsupported format %q (must be \"json\" or \"console\")", format)}
+	}
 }
 
 // --- AsyncConfig ---

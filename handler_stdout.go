@@ -18,16 +18,8 @@ type StdoutHandler struct {
 // NewStdoutHandler creates a StdoutHandler that writes to stdout using cfg.
 // cfg.Validate is called internally to apply defaults.
 func NewStdoutHandler(cfg StdoutConfig) (*StdoutHandler, error) {
-	cfg, err := cfg.Validate()
-	if err != nil {
-		return nil, fmt.Errorf("mebsuta: %w", err)
-	}
-	h := &StdoutHandler{
-		handlerCore: newHandlerCore(),
-		cfg:         cfg,
-	}
-	h.inner = newInnerHandler(os.Stdout, EncodingType(cfg.Format))
-	return h, nil
+	// Delegate to newStdoutHandlerWithWriter to keep a single constructor path.
+	return newStdoutHandlerWithWriter(os.Stdout, cfg)
 }
 
 func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, error) {

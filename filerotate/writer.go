@@ -27,6 +27,17 @@ type Writer struct {
 	cfg        Config
 	onError    atomic.Pointer[errorFunc]
 	compressWg sync.WaitGroup
+	// H2: paths currently being compressed; cleanupBackupsLocked skips these.
+	// Has its own mutex so the compression goroutine can mark a path done
+	// without acquiring w.mu — Close() holds w.mu while waiting on
+	// compressWg, so re-locking w.mu from the goroutine would deadlock.
+	compressMu  sync.Mutex
+	compressing map[string]struct{}
+	// M4: rotateLocked (under w.mu) appends errors here; reportRotateErrors
+	// (outside w.mu, concurrent across Write callers) drains them. A separate
+	// mutex guards the slice so the unlock-then-report pattern stays race-free.
+	errMu               sync.Mutex
+	pendingRotateErrors []error
 }
 
 // errorFunc wraps a function type for use with atomic.Pointer.
@@ -55,10 +66,11 @@ func New(cfg Config) (*Writer, error) {
 	}
 
 	w := &Writer{
-		file:      f,
-		maxBytes:  int64(cfg.MaxSizeMB) * MiB,
-		rotatedAt: time.Now(),
-		cfg:       cfg,
+		file:        f,
+		maxBytes:    int64(cfg.MaxSizeMB) * MiB,
+		rotatedAt:   time.Now(),
+		cfg:         cfg,
+		compressing: make(map[string]struct{}),
 	}
 	w.size.Store(fi.Size())
 
@@ -80,15 +92,23 @@ func (w *Writer) Write(p []byte) (int, error) {
 	}
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	if w.closed.Load() || w.file == nil {
+		w.mu.Unlock()
 		return 0, os.ErrClosed
 	}
 
 	// Pre-write rotation check.
 	if w.needsRotation() {
 		w.rotateLocked()
+	}
+
+	// H1: rotateLocked may fail (disk full, permission, recovery failure),
+	// leaving w.file == nil. Re-check to avoid nil-pointer panic.
+	if w.file == nil {
+		w.mu.Unlock()
+		w.reportRotateErrors()
+		return 0, os.ErrClosed
 	}
 
 	n, err := w.file.Write(p)
@@ -102,11 +122,28 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if err == nil && w.needsRotation() {
 		w.rotateLocked()
 	}
+	closedAfter := w.closed.Load()
+	w.mu.Unlock()
+
+	// M4: report rotation errors outside the lock to prevent deadlock if
+	// the user's onError callback re-enters the Writer.
+	w.reportRotateErrors()
+
+	// If post-write rotation failed and closed the writer, the write itself
+	// still succeeded — surface the count but let the next Write return ErrClosed.
+	if closedAfter {
+		return n, os.ErrClosed
+	}
 
 	return n, err
 }
 
 // Close waits for async compression to finish, then closes the file.
+//
+// M6: Close blocks until all in-flight gzip compressions finish. There is no
+// deadline — a very large backup on a slow disk can delay shutdown indefinitely.
+// If your shutdown path requires a bound, drain compressions out-of-band before
+// calling Close, or skip Close and let the process exit reap the goroutines.
 func (w *Writer) Close() error {
 	if !w.closed.CompareAndSwap(false, true) {
 		return nil
@@ -121,6 +158,14 @@ func (w *Writer) Close() error {
 	defer w.mu.Unlock()
 
 	w.compressWg.Wait()
+
+	// H2: after all compressions finish, re-run cleanup to reap any backups
+	// that were skipped earlier because they were mid-compression. Without
+	// this, a high-frequency rotation burst can leave stale backups.
+	if w.file != nil {
+		w.cleanupBackupsLocked()
+		w.reportRotateErrors()
+	}
 
 	if w.file == nil {
 		return nil
@@ -156,6 +201,11 @@ func (w *Writer) needsRotation() bool {
 
 // rotateLocked performs rotation. Re-checks conditions to avoid thundering herd.
 // Caller must hold w.mu.
+//
+// M4: errors are collected and reported via reportRotateErrors *after* the lock
+// is released (by the caller, Write/rotateAndReport), so a user-provided
+// onError callback that touches the Writer cannot deadlock on the non-reentrant
+// w.mu.
 func (w *Writer) rotateLocked() {
 	if w.closed.Load() || w.file == nil {
 		return
@@ -164,27 +214,34 @@ func (w *Writer) rotateLocked() {
 		return
 	}
 
-	onError := w.loadOnError()
-
+	// M5: best-effort fsync before close so page-cache data survives a crash
+	// immediately after rotation. Sync errors are non-fatal (may be a pipe or
+	// a filesystem that doesn't support fsync); collect and continue to close.
+	var errs []error
+	if err := w.file.Sync(); err != nil {
+		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("sync for rotation: %w", err)})
+	}
 	if err := w.file.Close(); err != nil {
-		reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("close for rotation: %w", err)})
+		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("close for rotation: %w", err)})
 	}
 	w.file = nil
 
 	backup := w.backupNameLocked()
 	if err := os.Rename(w.cfg.Path, backup); err != nil {
-		reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("rename for rotation: %w", err)})
-		w.recoverOpen(w.cfg.Path, onError)
+		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("rename for rotation: %w", err)})
+		w.addRotateErrors(errs...)
+		w.recoverOpen(w.cfg.Path)
 		return
 	}
 
 	f, _, err := openAppend(w.cfg.Path, w.cfg.FileMode)
 	if err != nil {
-		reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("create new log file: %w", err)})
+		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("create new log file: %w", err)})
 		if renameBackErr := os.Rename(backup, w.cfg.Path); renameBackErr != nil {
-			reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("rename backup back failed: %w", renameBackErr)})
+			errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("rename backup back failed: %w", renameBackErr)})
 		}
-		w.recoverOpen(w.cfg.Path, onError)
+		w.addRotateErrors(errs...)
+		w.recoverOpen(w.cfg.Path)
 		return
 	}
 
@@ -193,25 +250,69 @@ func (w *Writer) rotateLocked() {
 	w.rotatedAt = time.Now()
 
 	if w.cfg.compress() {
+		// H2: track the in-flight compression path so cleanupBackupsLocked
+		// can skip it, preventing deletion of a backup still being compressed.
+		// compressMu (not w.mu) protects compressing because Close() holds
+		// w.mu while waiting on compressWg — locking w.mu here would deadlock.
+		w.compressMu.Lock()
+		w.compressing[backup] = struct{}{}
+		w.compressMu.Unlock()
 		w.compressWg.Add(1)
 		go func() {
 			defer w.compressWg.Done()
-			compressFile(backup, onError)
+			compressFile(backup, w.loadOnError())
+			w.compressMu.Lock()
+			delete(w.compressing, backup)
+			w.compressMu.Unlock()
 		}()
 	}
 
 	w.cleanupBackupsLocked()
+	w.addRotateErrors(errs...)
+}
+
+// reportRotateErrors drains pending rotation errors and reports them via onError.
+// Caller must NOT hold w.mu — this is the M4 deadlock fix. The pending slice
+// is guarded by errMu so concurrent Write callers can drain it safely.
+func (w *Writer) reportRotateErrors() {
+	w.errMu.Lock()
+	errs := w.pendingRotateErrors
+	w.pendingRotateErrors = nil
+	w.errMu.Unlock()
+
+	onError := w.loadOnError()
+	for _, e := range errs {
+		reportError(onError, e)
+	}
+}
+
+// addRotateErrors appends errors to the pending slice under errMu. Safe to
+// call while holding w.mu — the lock order is w.mu → errMu (consistent with
+// reportRotateErrors which takes errMu without w.mu).
+func (w *Writer) addRotateErrors(errs ...error) {
+	if len(errs) == 0 {
+		return
+	}
+	w.errMu.Lock()
+	w.pendingRotateErrors = append(w.pendingRotateErrors, errs...)
+	w.errMu.Unlock()
 }
 
 // recoverOpen attempts to reopen the log file after a rotation failure.
-func (w *Writer) recoverOpen(path string, onError func(error)) {
-	f, _, err := openAppend(path, w.cfg.FileMode)
+// M3: updates w.size and w.rotatedAt from the reopened file so the next
+// needsRotation() check reflects reality instead of triggering an immediate
+// re-rotation loop. Errors are collected into pendingRotateErrors and drained
+// by reportRotateErrors() outside the lock (M4).
+func (w *Writer) recoverOpen(path string) {
+	f, fi, err := openAppend(path, w.cfg.FileMode)
 	if err != nil {
-		reportError(onError, &Error{Op: "rotate", Err: fmt.Errorf("recover open failed: %w", err)})
+		w.addRotateErrors(&Error{Op: "rotate", Err: fmt.Errorf("recover open failed: %w", err)})
 		w.closed.Store(true)
 		return
 	}
 	w.file = f
+	w.size.Store(fi.Size())
+	w.rotatedAt = time.Now()
 }
 
 // backupNameLocked generates a unique backup filename. Caller must hold w.mu Lock.
@@ -260,7 +361,7 @@ func (w *Writer) cleanupBackupsLocked() {
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		reportError(w.loadOnError(), &Error{Op: "cleanup", Err: fmt.Errorf("readdir %s: %w", dir, err)})
+		w.addRotateErrors(&Error{Op: "cleanup", Err: fmt.Errorf("readdir %s: %w", dir, err)})
 		return
 	}
 
@@ -303,9 +404,28 @@ func (w *Writer) cleanupBackupsLocked() {
 		cutoff = time.Now().AddDate(0, 0, -cfg.MaxAgeDays)
 	}
 
+	// H2: snapshot the in-flight compression set under compressMu so cleanup
+	// can skip backups still being compressed. compressMu is a separate lock
+	// from w.mu to avoid the Close→Wait vs goroutine→Lock deadlock.
+	w.compressMu.Lock()
+	inFlight := make(map[string]struct{}, len(w.compressing))
+	for k := range w.compressing {
+		inFlight[k] = struct{}{}
+	}
+	w.compressMu.Unlock()
+
 	var cleanupErrs []error
+	// H2: collect errors but report them via pendingRotateErrors (drained
+	// outside the lock by reportRotateErrors) to honor the M4 non-reentrancy
+	// contract on w.mu.
 	for _, b := range backups[len(keep):] {
 		path := filepath.Join(dir, b.name)
+		// H2: skip backups still being compressed; the compression goroutine
+		// will remove the tracking entry when done, and a later cleanup pass
+		// will reap it.
+		if _, busy := inFlight[path]; busy {
+			continue
+		}
 		if err := os.Remove(path); err != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove old backup %s: %w", path, err))
 		}
@@ -314,6 +434,9 @@ func (w *Writer) cleanupBackupsLocked() {
 		for _, b := range keep {
 			if b.modTime.Before(cutoff) {
 				path := filepath.Join(dir, b.name)
+				if _, busy := inFlight[path]; busy {
+					continue
+				}
 				if err := os.Remove(path); err != nil {
 					cleanupErrs = append(cleanupErrs, fmt.Errorf("remove expired backup %s: %w", path, err))
 				}
@@ -321,7 +444,7 @@ func (w *Writer) cleanupBackupsLocked() {
 		}
 	}
 	if len(cleanupErrs) > 0 {
-		reportError(w.loadOnError(), &Error{Op: "cleanup", Err: fmt.Errorf("cleanup backups: %v", errors.Join(cleanupErrs...))})
+		w.addRotateErrors(&Error{Op: "cleanup", Err: fmt.Errorf("cleanup backups: %v", errors.Join(cleanupErrs...))})
 	}
 }
 
@@ -334,7 +457,7 @@ func reportError(onError func(error), err error) {
 
 // defaultOnError writes error details to os.Stderr.
 func defaultOnError(err error) {
-	fmt.Fprintf(os.Stderr, "mebsuta/file: %v\n", err)
+	fmt.Fprintf(os.Stderr, "filerotate: %v\n", err)
 }
 
 // backupSuffixRe matches the suffix appended to a rotated backup filename:

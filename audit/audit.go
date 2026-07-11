@@ -53,5 +53,11 @@ func AuditEvent(eventType EventType, msg string, args ...any) {
 
 // AuditEventContext logs an audit record with an explicit event type and context.
 func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
-	slog.Log(ctx, LevelAudit, msg, append(args, "event_type", string(eventType))...)
+	// M7: copy args into a fresh slice so we never mutate the caller's backing
+	// array — a variadic append footgun that can corrupt the caller's data,
+	// especially if a slice with spare capacity is reused across goroutines.
+	allArgs := make([]any, len(args), len(args)+2)
+	copy(allArgs, args)
+	allArgs = append(allArgs, "event_type", string(eventType))
+	slog.Log(ctx, LevelAudit, msg, allArgs...)
 }

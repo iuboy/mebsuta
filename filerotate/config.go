@@ -94,5 +94,11 @@ type Error struct {
 func (e *Error) Unwrap() error { return e.Err }
 
 func (e *Error) Error() string {
-	return "filerotate/" + e.Op + ": " + e.Err.Error()
+	// H3: defend against a nil Err — the Error type is exported and surfaced
+	// through OnError to user code, so it must not panic on direct construction.
+	msg := "filerotate/" + e.Op
+	if e.Err != nil {
+		msg += ": " + e.Err.Error()
+	}
+	return msg
 }

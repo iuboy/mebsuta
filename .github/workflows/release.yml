@@ -6,9 +6,17 @@ on:
       - "go/v*"
       - "v*"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       TAG_NAME: ${{ github.ref_name }}
     steps:
@@ -22,6 +30,7 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: guard
     if: startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'go/v')
     steps:
@@ -33,7 +42,7 @@ jobs:
       - run: go test -race -count=1 ./...
       - run: go vet ./...
       - run: test -z "$(gofmt -s -l .)"
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
       - name: Validate Go module path
         run: |
           module_path="$(go list -m)"
@@ -44,6 +53,7 @@ jobs:
 
   status:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [guard, go]
     if: always()
     env:
@@ -69,6 +79,9 @@ jobs:
 
   github-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
     needs: status
     if: needs.status.result == 'success'
     env:

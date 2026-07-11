@@ -50,8 +50,13 @@ func (c Config) Validate() (Config, error) {
 	if !tableNameRe.MatchString(c.Table) {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z_][a-zA-Z0-9_]*"}
 	}
-	if len(c.Table) > 64 {
-		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max 64, got %d)", len(c.Table))}
+	// M9: PostgreSQL's NAMEDATALEN-1 = 63; MySQL's limit is 64.
+	maxTableLen := 64
+	if c.Driver == "postgres" {
+		maxTableLen = 63
+	}
+	if len(c.Table) > maxTableLen {
+		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max %d for %s, got %d)", maxTableLen, c.Driver, len(c.Table))}
 	}
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
@@ -80,12 +85,24 @@ func (c Config) Validate() (Config, error) {
 }
 
 // dsnHasTLS checks whether the DSN contains TLS/SSL connection parameters.
+//
+// This is a best-effort heuristic used only to decide whether to emit a
+// no-TLS warning; it does not gate any security control. A driver-specific
+// parser (mysql.ParseDSN / url.Parse for the key=value postgres format)
+// would be more precise, but that would add a direct dependency on
+// go-sql-driver/mysql at the config layer. If a false negative occurs, the
+// only consequence is a spurious warning on an unencrypted connection.
 func dsnHasTLS(driver, dsn string) bool {
 	switch driver {
 	case "mysql":
+		// H7: MySQL DSNs use tls=true / tls=skip-verify. The previous check
+		// also matched `sslmode=`, which is a PostgreSQL-only parameter — it
+		// could never match a valid MySQL DSN and worse, a password
+		// containing that substring would suppress the no-TLS warning.
 		dsnLower := strings.ToLower(dsn)
-		return strings.Contains(dsnLower, "tls=true") || strings.Contains(dsnLower, "tls=skip-verify") || strings.Contains(dsnLower, "sslmode=")
+		return strings.Contains(dsnLower, "tls=true") || strings.Contains(dsnLower, "tls=skip-verify")
 	case "postgres":
+		// PostgreSQL key=value DSN: sslmode=require|verify-ca|verify-full.
 		dsnLower := strings.ToLower(dsn)
 		return strings.Contains(dsnLower, "sslmode=require") || strings.Contains(dsnLower, "sslmode=verify-ca") || strings.Contains(dsnLower, "sslmode=verify-full")
 	}

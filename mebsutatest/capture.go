@@ -131,7 +131,12 @@ func (h *captureAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *captureAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &captureAttrsHandler{parent: h.parent, attrs: append(h.attrs[:], attrs...), group: h.group}
+	// Allocate a fresh slice so a shared backing array can't be corrupted by
+	// a later append, matching the immutability contract of WithAttrs.
+	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	merged = append(merged, h.attrs...)
+	merged = append(merged, attrs...)
+	return &captureAttrsHandler{parent: h.parent, attrs: merged, group: h.group}
 }
 
 func (h *captureAttrsHandler) WithGroup(name string) slog.Handler {
@@ -159,7 +164,13 @@ func (h *captureGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *captureGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &captureAttrsHandler{parent: h.parent, attrs: attrs, group: h.group}
+	// Preserve attrs accumulated on the group handler — the previous code
+	// dropped h.attrs entirely, so WithGroup("g").WithAttrs([a1]).WithAttrs([a2])
+	// would lose a1.
+	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
+	merged = append(merged, h.attrs...)
+	merged = append(merged, attrs...)
+	return &captureAttrsHandler{parent: h.parent, attrs: merged, group: h.group}
 }
 
 func (h *captureGroupHandler) WithGroup(name string) slog.Handler {

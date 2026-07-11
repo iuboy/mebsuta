@@ -80,11 +80,17 @@ run_integration() {
     trap 'cd "$ROOT_DIR" && docker compose -f scripts/docker-compose.yml down' EXIT
 
     print_info "运行集成测试..."
+    # H5: set -e is active globally; without set +e a failing database test
+    # would abort the script before syslog tests run and before $?, which only
+    # captures success under set -e, is ever assigned. Both suites must run
+    # unconditionally so their results can be reported below.
+    set +e
     (cd "$ROOT_DIR" && go test -race -count=1 -tags=integration ./database/...)
     local db_result=$?
 
     (cd "$ROOT_DIR" && go test -race -count=1 -tags=integration ./syslog/...)
     local syslog_result=$?
+    set -e
 
     # Normal cleanup: remove trap and stop containers explicitly.
     trap - EXIT

@@ -93,7 +93,9 @@ func UseContextExtractor(extract ContextExtractor) HandlerOption {
 }
 
 // WithErrorHandler sets the function that handles internal handler errors. Default writes to os.Stderr.
-// Set to nil to silently discard internal errors; nil propagates to all sub-handlers.
+// To silently discard internal errors, pass SilentErrorHandler().
+// When fn is nil, handlers retain their DefaultErrorHandler (os.Stderr output) —
+// nil does not propagate and does not silence errors.
 func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	return func(o *handlerOptions) error {
 		o.errorHandler = fn

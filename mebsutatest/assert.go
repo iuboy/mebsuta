@@ -17,7 +17,7 @@ func AssertRecordCount(t testing.TB, h *CaptureHandler, n int) {
 func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value string) {
 	t.Helper()
 	records := h.Records()
-	if index >= len(records) {
+	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
 	for _, a := range records[index].Attrs {
@@ -36,7 +36,7 @@ func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value
 func AssertLevel(t testing.TB, h *CaptureHandler, index int, level slog.Level) {
 	t.Helper()
 	records := h.Records()
-	if index >= len(records) {
+	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
 	if records[index].Level != level {
@@ -48,7 +48,7 @@ func AssertLevel(t testing.TB, h *CaptureHandler, index int, level slog.Level) {
 func AssertMessage(t testing.TB, h *CaptureHandler, index int, msg string) {
 	t.Helper()
 	records := h.Records()
-	if index >= len(records) {
+	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
 	if records[index].Message != msg {

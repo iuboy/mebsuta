@@ -6,14 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       go: ${{ steps.filter.outputs.go }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b2104f8f54d74e54d66 # v3
         id: filter
         with:
           filters: |
@@ -24,6 +32,7 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
@@ -39,6 +48,7 @@ jobs:
 
   go-vulncheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
@@ -51,6 +61,7 @@ jobs:
 
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.go == 'true'
     services:
@@ -87,14 +98,17 @@ jobs:
           cache-dependency-path: go.sum
       - name: Wait for MySQL
         run: |
+          ready=0
           for i in $(seq 1 30); do
             if mysqladmin ping -h 127.0.0.1 -u root -ptest 2>/dev/null; then
               echo "MySQL ready"
+              ready=1
               break
             fi
             echo "Waiting for MySQL... ($i/30)"
             sleep 2
           done
+          [ "$ready" = 1 ] || { echo "::error::MySQL did not become ready"; exit 1; }
       - name: Run integration tests
         env:
           MEBSUTA_MYSQL_DSN: "root:test@tcp(127.0.0.1:3306)/logs?parseTime=true"
@@ -103,6 +117,7 @@ jobs:
 
   status:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [changes, go, go-vulncheck, integration]
     if: always()
     env:
@@ -123,6 +138,7 @@ jobs:
       - name: Fail if any selected job failed
         run: |
           failed=0
+          [ "${{ needs.changes.result }}" = 'success' ] || { echo "::error::changes job failed"; failed=1; }
           if [ "$GO_SEL" = 'true' ]; then
             [ "$GO_RESULT" = 'success' ] || { echo "::error::go job failed or was cancelled"; failed=1; }
             [ "$GO_VULN_RESULT" = 'success' ] || { echo "::error::go-vulncheck job failed or was cancelled"; failed=1; }

@@ -26,7 +26,11 @@ func main() {
 		mebsuta.WithHandler(dbH),
 	)
 	if err != nil {
-		panic(dbH.Close())
+		// H6: close the handler for cleanup, but panic with the actual error —
+		// the original `panic(dbH.Close())` discarded err and could even
+		// panic(nil) when Close succeeded.
+		_ = dbH.Close()
+		panic(err)
 	}
 	slog.SetDefault(logger)
 	defer mebsuta.CloseAll(logger.Handler())

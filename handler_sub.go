@@ -20,8 +20,12 @@ func (h *AttrsSub) Handle(ctx context.Context, r slog.Record) error {
 	if h.Group != "" {
 		return h.Parent.Handle(ctx, RecordWithGroupAttrs(r, h.Group, h.Attrs))
 	}
-	r.AddAttrs(h.Attrs...)
-	return h.Parent.Handle(ctx, r)
+	// M1: clone before AddAttrs to avoid mutating the caller's record.
+	// The single-handler fan-out path passes the original record un-cloned,
+	// and slog's contract forbids handlers from modifying the record.
+	newR := r.Clone()
+	newR.AddAttrs(h.Attrs...)
+	return h.Parent.Handle(ctx, newR)
 }
 
 func (h *AttrsSub) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -33,9 +37,16 @@ func (h *AttrsSub) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *AttrsSub) WithGroup(name string) slog.Handler {
+	// H4: mirror GroupSub.WithGroup's concatenation. Without this,
+	// WithGroup("a").WithAttrs(...).WithGroup("b") yields group "b"
+	// instead of "a.b", breaking the slog group nesting contract.
+	group := name
+	if h.Group != "" && name != "" {
+		group = h.Group + "." + name
+	}
 	return &GroupSub{
 		Parent: h.Parent,
-		Group:  name,
+		Group:  group,
 		Attrs:  h.Attrs,
 	}
 }
@@ -70,9 +81,17 @@ func (h *GroupSub) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *GroupSub) WithGroup(name string) slog.Handler {
+	// M2: WithGroup("") is a no-op in slog — don't append a trailing dot.
+	group := h.Group
+	if name != "" {
+		if group != "" {
+			group += "."
+		}
+		group += name
+	}
 	return &GroupSub{
 		Parent: h.Parent,
-		Group:  h.Group + "." + name,
+		Group:  group,
 		Attrs:  h.Attrs,
 	}
 }
