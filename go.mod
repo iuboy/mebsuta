@@ -22,7 +22,7 @@ require (
 	github.com/emmansun/gmsm v0.44.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/go-sql-driver/mysql v1.10.0 // indirect
-	github.com/iuboy/pollux-go v0.1.5 // indirect
+	github.com/iuboy/pollux-go v0.2.1 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/pgx/v5 v5.10.0 // indirect
