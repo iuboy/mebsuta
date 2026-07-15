@@ -60,10 +60,19 @@ func (c Config) Validate() (Config, error) {
 	if c.BufferSize <= 0 {
 		c.BufferSize = 1000
 	}
-	if c.TimeZone != "" {
-		if _, err := time.LoadLocation(c.TimeZone); err != nil {
-			return Config{}, &mebsuta.ConfigError{Field: "TimeZone", Msg: fmt.Sprintf("invalid timezone: %s", c.TimeZone)}
-		}
+	// TimeZone zero value: the doc says it defaults to "UTC", so normalize
+	// the empty string instead of leaving it unset (which would make
+	// time.LoadLocation("") in NewHandler resolve to UTC but hide the intent).
+	if c.TimeZone == "" {
+		c.TimeZone = "UTC"
+	}
+	if _, err := time.LoadLocation(c.TimeZone); err != nil {
+		return Config{}, &mebsuta.ConfigError{Field: "TimeZone", Msg: fmt.Sprintf("invalid timezone: %s", c.TimeZone)}
+	}
+	// Facility zero value is 0 (kernel). The doc states the default is 1 (user),
+	// so treat 0 as "unset" rather than an explicit kernel-facility request.
+	if c.Facility == 0 {
+		c.Facility = 1
 	}
 	return c, nil
 }

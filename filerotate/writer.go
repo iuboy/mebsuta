@@ -155,7 +155,6 @@ func (w *Writer) Close() error {
 	// file — while a rotate() that already passed its closed.Load() check
 	// starts a new compression goroutine that outlives Close.
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	w.compressWg.Wait()
 
@@ -164,15 +163,30 @@ func (w *Writer) Close() error {
 	// this, a high-frequency rotation burst can leave stale backups.
 	if w.file != nil {
 		w.cleanupBackupsLocked()
-		w.reportRotateErrors()
 	}
 
-	if w.file == nil {
-		return nil
+	var closeErr error
+	if w.file != nil {
+		closeErr = w.file.Close()
+		w.file = nil
 	}
-	err := w.file.Close()
-	w.file = nil
-	return err
+	// M7: report rotation errors AFTER releasing w.mu. reportRotateErrors
+	// invokes the user's onError callback, which may re-enter the Writer; the
+	// method's contract is "Caller must NOT hold w.mu". The previous Close
+	// reported under the lock (via defer Unlock), risking deadlock if onError
+	// touches Write/rotate. Drain pending errors to a local slice first so no
+	// concurrent Write can observe them after unlock.
+	w.errMu.Lock()
+	pending := w.pendingRotateErrors
+	w.pendingRotateErrors = nil
+	w.errMu.Unlock()
+	w.mu.Unlock()
+
+	onError := w.loadOnError()
+	for _, e := range pending {
+		reportError(onError, e)
+	}
+	return closeErr
 }
 
 // SetOnError updates the error callback. Safe to call concurrently.

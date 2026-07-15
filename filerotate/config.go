@@ -76,6 +76,13 @@ func (c Config) Validate() (Config, error) {
 	if c.FileMode == 0 {
 		c.FileMode = DefaultFileMode
 	}
+	// RotateInterval == 0 means size-only rotation (documented). A negative
+	// value is nonsensical and would make time.Since(rotatedAt) >= interval
+	// always true, forcing a rotation on every Write — reject it explicitly
+	// rather than silently degrading.
+	if c.RotateInterval < 0 {
+		return Config{}, fmt.Errorf("RotateInterval must be >= 0, got %v", c.RotateInterval)
+	}
 	return c, nil
 }
 

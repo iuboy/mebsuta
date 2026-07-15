@@ -36,7 +36,12 @@ func (h *contextExtractorHandler) Handle(ctx context.Context, r slog.Record) err
 		if h.group != "" {
 			return h.inner.Handle(ctx, RecordWithGroupAttrs(r, h.group, attrs))
 		}
-		r.AddAttrs(attrs...)
+		// slog handlers must not mutate the Record they receive — it is shared
+		// with the caller and any sibling handlers (e.g. in a multi-output
+		// fan-out). Clone before AddAttrs so injected attrs stay local.
+		r2 := r.Clone()
+		r2.AddAttrs(attrs...)
+		return h.inner.Handle(ctx, r2)
 	}
 	return h.inner.Handle(ctx, r)
 }

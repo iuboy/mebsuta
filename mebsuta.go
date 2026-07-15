@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -139,7 +140,14 @@ type ErrorHandler func(*HandlerError)
 // DefaultErrorHandler writes error details to os.Stderr.
 var DefaultErrorHandler ErrorHandler = defaultErrorHandler
 
+// defaultErrMu serializes defaultErrorHandler's writes to os.Stderr. Error
+// handlers are invoked from arbitrary goroutines (one per handler, concurrently
+// under multi-output); without a lock the interleaved Fprintf output can tear.
+var defaultErrMu sync.Mutex
+
 func defaultErrorHandler(he *HandlerError) {
+	defaultErrMu.Lock()
+	defer defaultErrMu.Unlock()
 	_, _ = fmt.Fprintf(os.Stderr, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
 }
 

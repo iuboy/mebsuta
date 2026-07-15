@@ -101,6 +101,17 @@ func NewHandler(cfg Config) (*Handler, error) {
 			InsecureSkipVerify: cfg.TLSSkipVerify,
 			MinVersion:         tls.VersionTLS12,
 		}
+		// M7: set ServerName for SNI so the server can present the right
+		// certificate and verification has a name to check against. Skip only
+		// when the user has explicitly disabled verification.
+		if !cfg.TLSSkipVerify {
+			if host, _, err := net.SplitHostPort(cfg.Address); err == nil && host != "" {
+				h.tlsCfg.ServerName = host
+			} else if err != nil {
+				// Address had no port — use it verbatim as the SNI name.
+				h.tlsCfg.ServerName = cfg.Address
+			}
+		}
 		if cfg.TLSSkipVerify {
 			mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 		}
@@ -361,17 +372,24 @@ func (h *Handler) processQueue() {
 		case <-reconnector.C:
 			if !h.isConnected() && h.reconnectEnabled {
 				delay := backoffDelay(retryCount.Load())
+				// M7: use NewTimer (not time.After) so the timer is Stop()'d on
+				// every select arm. time.After leaks its timer until it fires,
+				// which accumulates goroutines/timers under frequent reconnects.
+				timer := time.NewTimer(delay)
 				select {
-				case <-time.After(delay):
+				case <-timer.C:
 				case <-h.ctx.Done():
+					timer.Stop()
 					return
 				case msg, ok := <-h.buffer:
+					timer.Stop()
 					if !ok {
 						return
 					}
 					h.writeWithRetry(msg)
 					continue
 				}
+				timer.Stop()
 				h.reconnect()
 				retryCount.Add(1)
 			} else {
@@ -396,10 +414,14 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 	}
 
 	if level >= slog.LevelError {
+		// M7: NewTimer + explicit Stop so the timer is reaped on every arm,
+		// not held until it fires (time.After leak under load).
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
 		select {
 		case h.buffer <- data:
 			return nil
-		case <-time.After(5 * time.Second):
+		case <-timer.C:
 			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level)})
 			return fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
 		}

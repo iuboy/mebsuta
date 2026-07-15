@@ -52,8 +52,8 @@ func (c FileConfig) Validate() (FileConfig, error) {
 
 // StdoutConfig holds configuration for stdout log output.
 type StdoutConfig struct {
-	Level    slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	Format   string        // "json" or "console". Defaults to "json".
+	Level    slog.Leveler   // Log level filter. Defaults to slog.LevelInfo.
+	Format   string         // "json" or "console". Defaults to "json".
 	Timezone *time.Location // 日志时间展示时区，nil 用 UTC。
 }
 

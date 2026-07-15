@@ -654,6 +654,9 @@ func TestSanitizeDBError_Credentials(t *testing.T) {
 		{"connect: password=hunter2&db=x", "hunter2"},
 		{"connect: sslpassword=letmein;", "letmein"},
 		{"connect: passwd=foo;", "foo"},
+		// Passwords containing ':' must be fully redacted. The previous
+		// regex (:[^:@/]+@) stopped at the embedded ':', leaking "word".
+		{"dial tcp: user:pa:ssword@tcp(host)/db", "ssword"},
 	}
 	for _, c := range cases {
 		got := sanitizeDBError(errors.New(c.in))

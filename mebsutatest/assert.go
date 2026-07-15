@@ -14,22 +14,56 @@ func AssertRecordCount(t testing.TB, h *CaptureHandler, n int) {
 }
 
 // AssertHasAttr asserts that record[index] has an attribute with the given key and value.
+//
+// value is a string; the captured attribute's value is compared after Resolve()
+// against slog.AnyValue(value) so the comparison works across slog.Value kinds
+// (string, int, bool, …) instead of only string-valued attrs. The previous
+// implementation called a.Value.String() directly, which stringifies every kind
+// and silently mismatches non-string attrs (e.g. an Int(42) vs the string "42").
 func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value string) {
 	t.Helper()
 	records := h.Records()
 	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
+	want := slog.AnyValue(value).Resolve()
 	for _, a := range records[index].Attrs {
 		if a.Key == key {
-			got := a.Value.String()
-			if got != value {
-				t.Fatalf("attr %q: expected value %q, got %q", key, value, got)
+			got := a.Value.Resolve()
+			if !valueEqual(got, want) {
+				t.Fatalf("attr %q: expected value %v (kind=%s), got %v (kind=%s)",
+					key, want, want.Kind(), got, got.Kind())
 			}
 			return
 		}
 	}
 	t.Fatalf("record[%d] has no attr with key %q", index, key)
+}
+
+// valueEqual compares two resolved slog.Values by kind and underlying value,
+// so a captured string attr matches a string expectation exactly.
+func valueEqual(a, b slog.Value) bool {
+	if a.Kind() != b.Kind() {
+		return false
+	}
+	switch a.Kind() {
+	case slog.KindString:
+		return a.String() == b.String()
+	case slog.KindInt64:
+		return a.Int64() == b.Int64()
+	case slog.KindUint64:
+		return a.Uint64() == b.Uint64()
+	case slog.KindFloat64:
+		return a.Float64() == b.Float64()
+	case slog.KindBool:
+		return a.Bool() == b.Bool()
+	case slog.KindDuration:
+		return a.Duration() == b.Duration()
+	case slog.KindTime:
+		return a.Time().Equal(b.Time())
+	default:
+		return a.Any() == b.Any()
+	}
 }
 
 // AssertLevel asserts that record[index] has the given level.

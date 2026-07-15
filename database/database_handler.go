@@ -299,7 +299,13 @@ func closeSQLDB(gdb *gorm.DB) {
 // dsnCredRe matches common credential patterns embedded in DSN-derived error
 // messages: the password segment of "user:pass@host" / "user:pass@tcp(host)",
 // and key=value style params (password, passwd, sslpassword, pwd).
-var dsnCredRe = regexp.MustCompile(`:[^:@/]+@|(?:password|passwd|sslpassword|pwd)=[^&;\s]+`)
+//
+// The password-segment pattern is :[^@/]*@ — it allows ':' inside the password
+// (a previous :[^:@/]+@ variant leaked anything after an embedded ':' ) and
+// stops at the first '@' or '/'. Passwords containing '@' cannot be reliably
+// separated from the host delimiter by regex alone; such DSNs should be parsed
+// driver-side. This is a best-effort redactor for error messages, not a parser.
+var dsnCredRe = regexp.MustCompile(`:[^@/]*@|(?:password|passwd|sslpassword|pwd)=[^&;\s]+`)
 
 // sanitizeDBError removes credential-like substrings from database error messages.
 func sanitizeDBError(err error) string {

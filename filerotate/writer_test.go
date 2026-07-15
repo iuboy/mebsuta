@@ -370,6 +370,21 @@ func TestConfig_RelativePath(t *testing.T) {
 	}
 }
 
+// TestConfig_NegativeRotateInterval verifies that a negative RotateInterval is
+// rejected. A negative interval makes time.Since(rotatedAt) >= interval always
+// true, forcing rotation on every Write.
+func TestConfig_NegativeRotateInterval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+	_, err := New(Config{Path: path, RotateInterval: -1 * time.Second})
+	if err == nil {
+		t.Fatal("expected error for negative RotateInterval")
+	}
+	if !strings.Contains(err.Error(), "RotateInterval") {
+		t.Errorf("error should mention RotateInterval, got: %v", err)
+	}
+}
+
 func TestConfig_Defaults(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

@@ -336,11 +336,18 @@ func newEventID(fallbackSeed int64) string {
 	}
 	// Fallback: deterministic, monotonic, non-zero. Collisions are practically
 	// impossible for fallback-only operation under PRNG failure.
-	return fmt.Sprintf("00000000-0000-7%03x-%x%04x-%012x",
-		(fallbackSeed>>32)&0xfff, // version nibble region
-		0x8|((fallbackSeed>>28)&0x3),
-		(fallbackSeed>>16)&0xffff,
-		uint64(fallbackSeed)&0xffffffffffff)
+	//
+	// Layout follows UUIDv7: 8-4-4-4-12 hex. Group 3 is "7" + 12 bits (version
+	// 7). Group 4 is the RFC 4122 variant field: the high nibble is 0x8|2bits
+	// (so it starts with 8/9/a/b) packed with 12 bits of data into exactly 4
+	// hex chars. The previous "%x%04x" form emitted a variable-width variant
+	// nibble followed by 4 fixed chars, producing a 5-char group and a
+	// 37-char (non-UUID) string.
+	seed := uint64(fallbackSeed)
+	return fmt.Sprintf("00000000-0000-7%03x-%04x-%012x",
+		(seed>>40)&0xfff,           // group 3: 12 bits after the version nibble
+		0x8000|((seed>>24)&0x0fff), // group 4: variant nibble (8) + 12 data bits
+		seed&0xffffffffffff)        // group 5: 48 bits
 }
 
 func attrValue(attr slog.Attr) any {

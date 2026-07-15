@@ -60,14 +60,19 @@ func TestConfig_DefaultsApplied(t *testing.T) {
 	if validated.Level != slog.LevelInfo {
 		t.Errorf("Level = %v, want Info", validated.Level)
 	}
-	if validated.Facility != 0 {
-		t.Errorf("Facility = %d, want 0", validated.Facility)
+	// Facility zero value normalizes to 1 (user), matching the struct doc
+	// ("Defaults to 1 (user)"). 0 is syslog kernel — not a sensible default.
+	if validated.Facility != 1 {
+		t.Errorf("Facility = %d, want 1 (user)", validated.Facility)
 	}
 	if validated.RetryDelay != 500*time.Millisecond {
 		t.Errorf("RetryDelay = %v, want 500ms", validated.RetryDelay)
 	}
 	if validated.BufferSize != 1000 {
 		t.Errorf("BufferSize = %d, want 1000", validated.BufferSize)
+	}
+	if validated.TimeZone != "UTC" {
+		t.Errorf("TimeZone = %q, want UTC", validated.TimeZone)
 	}
 	if validated.Reconnect == nil || !*validated.Reconnect {
 		t.Error("Reconnect should default to true")

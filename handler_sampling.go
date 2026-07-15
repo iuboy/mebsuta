@@ -112,8 +112,13 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 }
 
 // Close implements io.Closer.
-// No-op: no background goroutine to stop (window reset is done lazily in Handle).
+// The sampler owns no resources of its own, but the wrapped handler may
+// (e.g. file/syslog/database). Delegate Close to the inner handler when it
+// implements io.Closer so those resources are released; otherwise no-op.
 func (h *SamplingHandler) Close() error {
+	if c, ok := h.inner.(io.Closer); ok {
+		return c.Close()
+	}
 	return nil
 }
 

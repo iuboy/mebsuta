@@ -23,18 +23,30 @@ func ReportError(eh ErrorHandler, he *HandlerError) {
 
 // safeMultiHandler wraps multiple sub-handlers, adding panic recovery to each call. Prevents a single handler panic from crashing the entire log call.
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
-	return &safeMulti{
-		handlerCore:  newHandlerCore(),
-		handlers:     handlers,
-		errorHandler: eh,
+	sm := &safeMulti{
+		handlerCore: newHandlerCore(),
+		handlers:    handlers,
 	}
+	sm.errorHandler.Store(&eh)
+	return sm
 }
 
 // safeMulti fans out log records to multiple handlers with per-handler panic recovery.
 type safeMulti struct {
 	handlerCore
 	handlers     []slog.Handler
-	errorHandler ErrorHandler
+	errorHandler atomic.Pointer[ErrorHandler]
+}
+
+// loadEH returns the configured ErrorHandler, or nil if none was set.
+// setErrorHandler writes this field concurrently with Handle reads, so it is
+// stored in an atomic.Pointer (matching syslog/database/async handlers).
+func (h *safeMulti) loadEH() ErrorHandler {
+	v := h.errorHandler.Load()
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 func (h *safeMulti) Close() error {
@@ -61,7 +73,7 @@ func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *safeMulti) handleWithRecovery(handler slog.Handler, ctx context.Context, r slog.Record) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			ReportError(h.errorHandler, &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
+			ReportError(h.loadEH(), &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
 			err = nil
 		}
 	}()
@@ -130,11 +142,7 @@ func (h *safeMulti) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for i, hh := range h.handlers {
 		propagated[i] = hh.WithAttrs(attrs)
 	}
-	return &safeMulti{
-		handlerCore:  newHandlerCore(),
-		handlers:     propagated,
-		errorHandler: h.errorHandler,
-	}
+	return h.cloneWith(propagated)
 }
 
 func (h *safeMulti) WithGroup(name string) slog.Handler {
@@ -142,14 +150,24 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 	for i, hh := range h.handlers {
 		propagated[i] = hh.WithGroup(name)
 	}
-	return &safeMulti{
-		handlerCore:  newHandlerCore(),
-		handlers:     propagated,
-		errorHandler: h.errorHandler,
-	}
+	return h.cloneWith(propagated)
 }
+
+// cloneWith returns a new safeMulti sharing the current error handler (by
+// pointer, so a later setErrorHandler on either instance is visible to both).
+func (h *safeMulti) cloneWith(handlers []slog.Handler) slog.Handler {
+	next := &safeMulti{
+		handlerCore: newHandlerCore(),
+		handlers:    handlers,
+	}
+	if eh := h.errorHandler.Load(); eh != nil {
+		next.errorHandler.Store(eh)
+	}
+	return next
+}
+
 func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler = fn
+	h.errorHandler.Store(&fn)
 	for _, hh := range h.handlers {
 		propagateErrorHandler(hh, fn)
 	}
