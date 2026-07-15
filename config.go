@@ -29,8 +29,9 @@ const (
 // FileConfig holds mebsuta-specific configuration for file log output (format and level).
 // Rotation configuration is handled by filerotate.Config.
 type FileConfig struct {
-	Level  slog.Leveler // Log level filter. Defaults to slog.LevelInfo.
-	Format string       // "json" or "console". Defaults to "json".
+	Level    slog.Leveler   // Log level filter. Defaults to slog.LevelInfo.
+	Format   string         // "json" or "console". Defaults to "json".
+	Timezone *time.Location // 日志时间展示时区，nil 用 UTC。
 }
 
 // Validate returns a normalized copy with defaults applied.
@@ -51,8 +52,9 @@ func (c FileConfig) Validate() (FileConfig, error) {
 
 // StdoutConfig holds configuration for stdout log output.
 type StdoutConfig struct {
-	Level  slog.Leveler // Log level filter. Defaults to slog.LevelInfo.
-	Format string       // "json" or "console". Defaults to "json".
+	Level    slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
+	Format   string        // "json" or "console". Defaults to "json".
+	Timezone *time.Location // 日志时间展示时区，nil 用 UTC。
 }
 
 // Validate checks required fields and returns a normalized copy with defaults applied.

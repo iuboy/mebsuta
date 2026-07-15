@@ -37,6 +37,7 @@ type contractJSONHandler struct {
 	w     io.Writer
 	attrs []slog.Attr
 	group string
+	loc   *time.Location // 日志时间展示时区，nil 时用 UTC
 }
 
 // jsonEntry is the JSON output structure for log records.
@@ -52,12 +53,21 @@ type jsonEntry struct {
 }
 
 // newContractJSONHandler returns a slog.Handler that writes stable-contract JSON to w.
-func newContractJSONHandler(w io.Writer) slog.Handler {
-	return &contractJSONHandler{w: w, mu: &sync.Mutex{}}
+// loc controls the timezone of the "time" field; nil defaults to UTC.
+func newContractJSONHandler(w io.Writer, loc *time.Location) slog.Handler {
+	return &contractJSONHandler{w: w, mu: &sync.Mutex{}, loc: loc}
 }
 
 func (h *contractJSONHandler) Enabled(context.Context, slog.Level) bool {
 	return true
+}
+
+// timezone 返回配置的时区，nil 时用 UTC。
+func (h *contractJSONHandler) timezone() *time.Location {
+	if h.loc == nil {
+		return time.UTC
+	}
+	return h.loc
 }
 
 func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
@@ -101,7 +111,7 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	entry := &jsonEntry{
-		Time:       r.Time.UTC().Format(time.RFC3339Nano),
+		Time:       r.Time.In(h.timezone()).Format(time.RFC3339Nano),
 		Level:      level,
 		Source:     source,
 		EventType:  eventType,
@@ -129,6 +139,7 @@ func (h *contractJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		mu:    h.mu,
 		attrs: make([]slog.Attr, 0, len(h.attrs)+len(attrs)),
 		group: h.group,
+		loc:   h.loc,
 	}
 	next.attrs = append(next.attrs, h.attrs...)
 	if h.group == "" {
@@ -151,6 +162,7 @@ func (h *contractJSONHandler) WithGroup(name string) slog.Handler {
 		mu:    h.mu,
 		attrs: append([]slog.Attr(nil), h.attrs...),
 		group: group,
+		loc:   h.loc,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 )
 
 // StdoutHandler writes log records to stdout.
@@ -31,7 +32,7 @@ func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, 
 		handlerCore: newHandlerCore(),
 		cfg:         cfg,
 	}
-	h.inner = newInnerHandler(w, EncodingType(cfg.Format))
+	h.inner = newInnerHandler(w, EncodingType(cfg.Format), timezoneReplaceAttr(cfg.Timezone), cfg.Timezone)
 	return h, nil
 }
 
@@ -73,17 +74,36 @@ var (
 	_ io.Closer    = (*StdoutHandler)(nil)
 )
 
+// timezoneReplaceAttr 返回一个 ReplaceAttr 函数，把 slog 的 time 属性转到指定时区。
+// 用于 console/TextHandler 的时区展示。loc 为 nil 时用 UTC。
+func timezoneReplaceAttr(loc *time.Location) func([]string, slog.Attr) slog.Attr {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return func(groups []string, a slog.Attr) slog.Attr {
+		if a.Key == slog.TimeKey && len(groups) == 0 {
+			if t, ok := a.Value.Any().(time.Time); ok {
+				return slog.Time(slog.TimeKey, t.In(loc))
+			}
+		}
+		return a
+	}
+}
+
 // newInnerHandler creates the underlying slog handler for the given format.
 // JSON format uses a contract-enforcing JSON handler; Console uses slog.TextHandler.
 // Level filtering is done by the outer handler, so the inner handler accepts all levels.
-func newInnerHandler(w io.Writer, format EncodingType) slog.Handler {
+// replaceAttr is forwarded to the TextHandler (for console timezone conversion).
+// loc is forwarded to the contractJSONHandler (for JSON timezone conversion).
+func newInnerHandler(w io.Writer, format EncodingType, replaceAttr func([]string, slog.Attr) slog.Attr, loc *time.Location) slog.Handler {
 	opts := &slog.HandlerOptions{
-		Level: slog.LevelDebug, // level filtering is controlled by the outer handler
+		Level:       slog.LevelDebug, // level filtering is controlled by the outer handler
+		ReplaceAttr: replaceAttr,
 	}
 	switch format {
 	case Console:
 		return slog.NewTextHandler(w, opts)
 	default:
-		return newContractJSONHandler(w)
+		return newContractJSONHandler(w, loc)
 	}
 }

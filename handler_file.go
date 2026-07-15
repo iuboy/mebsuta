@@ -32,7 +32,7 @@ func NewFileHandler(rotateCfg filerotate.Config, cfg FileConfig) (*FileHandler, 
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
-	inner := newInnerHandler(w, EncodingType(cfg.Format))
+	inner := newInnerHandler(w, EncodingType(cfg.Format), timezoneReplaceAttr(cfg.Timezone), cfg.Timezone)
 
 	h := &FileHandler{
 		handlerCore: newHandlerCore(),

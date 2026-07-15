@@ -15,7 +15,7 @@ import (
 func newJSONHandler(t *testing.T) (*contractJSONHandler, *bytes.Buffer) {
 	t.Helper()
 	var buf bytes.Buffer
-	h := newContractJSONHandler(&buf).(*contractJSONHandler)
+	h := newContractJSONHandler(&buf, nil).(*contractJSONHandler)
 	return h, &buf
 }
 
