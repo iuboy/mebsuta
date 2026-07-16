@@ -2,6 +2,7 @@ package mebsutatest
 
 import (
 	"log/slog"
+	"reflect"
 	"testing"
 )
 
@@ -62,7 +63,10 @@ func valueEqual(a, b slog.Value) bool {
 	case slog.KindTime:
 		return a.Time().Equal(b.Time())
 	default:
-		return a.Any() == b.Any()
+		// a.Any()/b.Any() may return a non-comparable type (e.g. KindGroup
+		// returns []slog.Attr, KindAny may hold a slice/map). Using == on such
+		// dynamic values panics at runtime; fall back to reflect.DeepEqual.
+		return reflect.DeepEqual(a.Any(), b.Any())
 	}
 }
 
