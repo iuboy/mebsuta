@@ -65,6 +65,7 @@ docs/plan/
 .gitnexus
 .gstack
 .claude
+.zcode
 
 # AI assistant generated files
 AGENTS.md
