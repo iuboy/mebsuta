@@ -207,6 +207,52 @@ func TestWriter_Compress(t *testing.T) {
 	}
 }
 
+// TestWriter_LogicalBackupCount verifies that MaxBackups counts LOGICAL
+// backups, not files: an uncompressed backup and its .gz compressed copy share
+// one logical identity (same name minus ".gz") and must count as one. Without
+// the dedup fix, MaxBackups=3 with compression could retain ~6 files (3 pairs)
+// or, more often, drop too aggressively because the raw + .gz were each counted.
+func TestWriter_LogicalBackupCount(t *testing.T) {
+	const maxBackups = 3
+	w, path := newTestWriter(t, withMaxSizeMB(1), withMaxBackups(maxBackups), withCompress(true))
+
+	// Force well more than maxBackups rotations.
+	data := []byte(strings.Repeat("x", 1024) + "\n")
+	for range 2000 {
+		_, _ = w.Write(data)
+	}
+	_ = w.Close() // waits for in-flight compressions to finish
+
+	// Collect distinct logical backup keys (name without trailing ".gz").
+	backups := matchBackups(path)
+	keys := make(map[string]struct{}, len(backups))
+	raw, gz := 0, 0
+	for _, b := range backups {
+		if strings.HasSuffix(b, ".gz.tmp") {
+			continue
+		}
+		if strings.HasSuffix(b, ".gz") {
+			gz++
+		} else if !strings.HasSuffix(b, ".tmp") {
+			raw++
+		}
+		keys[strings.TrimSuffix(b, ".gz")] = struct{}{}
+	}
+
+	// After compression completes, every backup should be a .gz and its raw
+	// counterpart removed — so no stray raw backups should remain.
+	if raw != 0 {
+		t.Errorf("expected all backups compressed (.gz), but found %d raw (uncompressed) backups: %v", raw, backups)
+	}
+	if gz == 0 {
+		t.Fatalf("expected compressed backups, got: %v", backups)
+	}
+	// Logical backup count must not exceed MaxBackups.
+	if len(keys) > maxBackups {
+		t.Errorf("logical backup count = %d (keys=%v), want <= %d", len(keys), keys, maxBackups)
+	}
+}
+
 // =============================================================================
 // 残留文件压缩
 // =============================================================================

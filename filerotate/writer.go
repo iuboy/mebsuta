@@ -408,9 +408,25 @@ func (w *Writer) cleanupBackupsLocked() {
 		return backups[i].modTime.After(backups[j].modTime)
 	})
 
+	// M7: MaxBackups counts LOGICAL backups, not files. A backup and its .gz
+	// compressed copy share a logical key (name without ".gz"), so they must
+	// count as one. Keep the first MaxBackups distinct logical keys (backups is
+	// sorted newest-first, so the newest representative of each key wins) and
+	// build the keep set from every file whose key is retained.
 	keep := backups
-	if cfg.MaxBackups > 0 && len(keep) > cfg.MaxBackups {
-		keep = keep[:cfg.MaxBackups]
+	if cfg.MaxBackups > 0 {
+		retainedKeys := make(map[string]struct{}, cfg.MaxBackups)
+		keep = make([]backupInfo, 0, len(backups))
+		for _, b := range backups {
+			key := logicalBackupKey(b.name)
+			if _, kept := retainedKeys[key]; !kept {
+				if len(retainedKeys) >= cfg.MaxBackups {
+					continue
+				}
+				retainedKeys[key] = struct{}{}
+			}
+			keep = append(keep, b)
+		}
 	}
 
 	cutoff := time.Time{}
@@ -429,10 +445,19 @@ func (w *Writer) cleanupBackupsLocked() {
 	w.compressMu.Unlock()
 
 	var cleanupErrs []error
+	// M7: keep is no longer a prefix slice of backups (it is a deduplicated
+	// subset), so compute the delete set by membership rather than index range.
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, b := range keep {
+		keepSet[b.name] = struct{}{}
+	}
 	// H2: collect errors but report them via pendingRotateErrors (drained
 	// outside the lock by reportRotateErrors) to honor the M4 non-reentrancy
 	// contract on w.mu.
-	for _, b := range backups[len(keep):] {
+	for _, b := range backups {
+		if _, kept := keepSet[b.name]; kept {
+			continue
+		}
 		path := filepath.Join(dir, b.name)
 		// H2: skip backups still being compressed; the compression goroutine
 		// will remove the tracking entry when done, and a later cleanup pass
@@ -488,6 +513,15 @@ func isBackupName(base, name string) bool {
 		return false
 	}
 	return backupSuffixRe.MatchString(suffix)
+}
+
+// logicalBackupKey returns the logical backup identity for a backup filename,
+// stripping a trailing ".gz" so that an uncompressed backup and its compressed
+// copy count as ONE logical backup for MaxBackups accounting. Without this,
+// MaxBackups=N could retain only ~N/2 logical backups while both the raw and
+// .gz forms briefly coexist.
+func logicalBackupKey(name string) string {
+	return strings.TrimSuffix(name, ".gz")
 }
 
 // Compile-time assertions.

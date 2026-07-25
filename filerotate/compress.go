@@ -117,8 +117,14 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 	const maxConcurrent = 4
 	sem := make(chan struct{}, maxConcurrent)
 	for _, path := range toCompress {
-		sem <- struct{}{}
+		// M7: register with the WaitGroup BEFORE acquiring the semaphore slot.
+		// The previous order (sem <- then wg.Add) left a window where the caller
+		// held a slot but the goroutine was not yet tracked — if New() returned
+		// and Close() ran in that gap, Wait could observe zero goroutines while a
+		// compression was about to start. Add-then-acquire guarantees every
+		// in-flight slot is also Wait-tracked.
 		wg.Add(1)
+		sem <- struct{}{}
 		go func(path string) {
 			defer wg.Done()
 			defer func() { <-sem }()

@@ -316,13 +316,18 @@ func (h *Handler) writeWithRetry(msg []byte) {
 		if h.closing.Load() {
 			return
 		}
-		if i == 0 {
-			h.disconnect()
-			if h.reconnectEnabled {
-				h.reconnect()
-			}
+		// M7: drop the stale connection on every failure (not just i==0) and
+		// attempt a reconnect when enabled. Previously only i==0 disconnected +
+		// reconnected; iterations 1..4 kept writing to a known-bad (or nil)
+		// connection, burning the retry budget on writes that could never
+		// succeed and delaying the eventual drop+report.
+		h.disconnect()
+		if h.reconnectEnabled && !h.isConnected() {
+			h.reconnect()
 		}
-		time.Sleep(h.cfg.RetryDelay)
+		if i < maxRetries-1 {
+			time.Sleep(h.cfg.RetryDelay)
+		}
 	}
 	mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts", maxRetries)})
 }

@@ -71,16 +71,31 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	windowEnd := h.state.windowEnd.Load()
 	if now >= windowEnd {
 		// CAS ensures only one goroutine advances the window and resets the counter.
-		// Other goroutines that also see the expired window will pass their record
-		// through (correct: the first record in a new window should always be logged).
+		// The winner does Store(0) so the first record of the new window starts the
+		// counter fresh. CAS losers must NOT Add against the stale (old-window)
+		// counter value: between the winner's windowEnd CAS and its count.Store(0),
+		// a loser's Add could observe the old count and later get mis-sampled.
+		// Re-load windowEnd after losing the CAS; if the winner has already
+		// advanced it, fall through to the normal counting path below, which reads
+		// the now-reset counter coherently.
 		newEnd := now + h.state.windowNanos
 		if h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
 			h.state.count.Store(0)
+			h.state.count.Add(1)
+			return h.inner.Handle(ctx, r)
 		}
+		if advanced := h.state.windowEnd.Load(); advanced > windowEnd && advanced > now {
+			// Window was advanced by the winner; count this record in the new
+			// window via the normal path instead of assuming "first record".
+			goto normalCount
+		}
+		// Winner advanced but the new window already expired again (clock skew /
+		// extremely long stall): treat as new-window first record.
 		h.state.count.Add(1)
 		return h.inner.Handle(ctx, r)
 	}
 
+normalCount:
 	count := h.state.count.Add(1)
 	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
