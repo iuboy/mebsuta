@@ -20,8 +20,8 @@ jobs:
     outputs:
       go: ${{ steps.filter.outputs.go }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b2104f8f54d74e54d66 # v3
+      - uses: actions/checkout@v5.0.1
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
         id: filter
         with:
           filters: |
@@ -36,8 +36,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -52,8 +52,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -92,8 +92,8 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
