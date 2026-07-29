@@ -21,7 +21,7 @@ type Writer struct {
 	mu         sync.Mutex
 	file       *os.File
 	size       atomic.Int64
-	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * MiB, avoids multiplication on every Write
+	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * mib, avoids multiplication on every Write
 	rotatedAt  time.Time
 	closed     atomic.Bool
 	cfg        Config
@@ -67,7 +67,7 @@ func New(cfg Config) (*Writer, error) {
 
 	w := &Writer{
 		file:        f,
-		maxBytes:    int64(cfg.MaxSizeMB) * MiB,
+		maxBytes:    int64(cfg.MaxSizeMB) * mib,
 		rotatedAt:   time.Now(),
 		cfg:         cfg,
 		compressing: make(map[string]struct{}),
@@ -122,7 +122,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if err == nil && w.needsRotation() {
 		w.rotateLocked()
 	}
-	closedAfter := w.closed.Load()
+	// Snapshot closed while still holding mu so that a concurrent Close
+	// does not cause a successful write to return a spurious os.ErrClosed.
+	isClosed := w.closed.Load()
 	w.mu.Unlock()
 
 	// M4: report rotation errors outside the lock to prevent deadlock if
@@ -131,7 +133,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 
 	// If post-write rotation failed and closed the writer, the write itself
 	// still succeeded — surface the count but let the next Write return ErrClosed.
-	if closedAfter {
+	if isClosed {
 		return n, os.ErrClosed
 	}
 
@@ -316,7 +318,7 @@ func (w *Writer) recoverOpen(path string) {
 }
 
 // backupNameLocked generates a unique backup filename. Caller must hold w.mu Lock.
-// Uses a single ReadDir call + in-memory set to avoid up to MaxRotationSuffixSeq Stat syscalls.
+// Uses a single ReadDir call + in-memory set to avoid up to maxRotationSuffixSeq Stat syscalls.
 func (w *Writer) backupNameLocked() string {
 	ts := time.Now().Format("2006-01-02T15-04-05.000")
 	name := w.cfg.Path + "." + ts
@@ -339,7 +341,7 @@ func (w *Writer) backupNameLocked() string {
 	if _, found := existing[base]; !found {
 		return name
 	}
-	for i := 1; i < MaxRotationSuffixSeq; i++ {
+	for i := 1; i < maxRotationSuffixSeq; i++ {
 		candidate := fmt.Sprintf("%s.%d", base, i)
 		if _, found := existing[candidate]; !found {
 			return filepath.Join(dir, candidate)
@@ -352,7 +354,7 @@ func (w *Writer) backupNameLocked() string {
 // Caller must hold w.mu Lock.
 func (w *Writer) cleanupBackupsLocked() {
 	cfg := w.cfg
-	if cfg.MaxBackups <= 0 && cfg.MaxAgeDays <= 0 {
+	if cfg.MaxBackups == 0 && cfg.MaxAgeDays == 0 {
 		return
 	}
 
@@ -395,11 +397,13 @@ func (w *Writer) cleanupBackupsLocked() {
 	})
 
 	keep := backups
+	// Negative MaxBackups means unlimited (keep all backups).
 	if cfg.MaxBackups > 0 && len(keep) > cfg.MaxBackups {
 		keep = keep[:cfg.MaxBackups]
 	}
 
 	cutoff := time.Time{}
+	// Negative MaxAgeDays means unlimited (no age-based removal).
 	if cfg.MaxAgeDays > 0 {
 		cutoff = time.Now().AddDate(0, 0, -cfg.MaxAgeDays)
 	}

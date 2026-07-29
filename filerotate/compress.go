@@ -45,26 +45,43 @@ func compressFile(path string, onError func(error)) {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("create temp: %w", err)})
 		return
 	}
+	// Ensure dst is always closed — gzip.Writer.Close() does NOT close the
+	// underlying writer (contrary to common assumption). Without this, the
+	// temp file descriptor leaks on every compression, eventually causing
+	// EMFILE ("too many open files") in long-running processes.
+	dstClosed := false
+	defer func() {
+		if !dstClosed {
+			dst.Close()
+		}
+	}()
 
 	gw := gzip.NewWriter(dst)
 	_, err = io.Copy(gw, src)
 	if err != nil {
+		gw.Close()
 		cleanupTemp(dst, tmpPath, onError)
+		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("compress data: %w", err)})
 		return
 	}
 
+	// gw.Close() flushes the gzip footer; it does NOT close dst.
 	if err := gw.Close(); err != nil {
 		cleanupTemp(dst, tmpPath, onError)
+		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("flush: %w", err)})
 		return
 	}
 
+	// Close dst before renaming — on Windows, renaming an open file fails.
 	if err := dst.Close(); err != nil {
-		cleanupTemp(nil, tmpPath, onError)
+		cleanupTemp(nil, tmpPath, onError) // dst already closed
+		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("close temp: %w", err)})
 		return
 	}
+	dstClosed = true
 
 	if err := os.Rename(tmpPath, gzPath); err != nil {
 		cleanupTemp(nil, tmpPath, onError)
@@ -72,8 +89,17 @@ func compressFile(path string, onError func(error)) {
 		return
 	}
 
+	// Remove the original uncompressed file after successful compression.
+	// If removal fails, both .gz and the original coexist — remove the .gz
+	// (not rename it back) to avoid corrupting the original log with gzip bytes.
 	if err := os.Remove(path); err != nil {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("remove original %s: %w", path, err)})
+		// Best-effort: remove the .gz so compressResidual re-attempts on next
+		// startup. Do NOT rename .gz→path (that would overwrite the original
+		// uncompressed log with gzip binary data).
+		if rerr := os.Remove(gzPath); rerr != nil {
+			reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("cleanup orphaned .gz %s: %w", gzPath, rerr)})
+		}
 	}
 }
 
@@ -106,7 +132,13 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 		}
 
 		if compress {
-			toCompress = append(toCompress, filepath.Join(dir, name))
+			fullPath := filepath.Join(dir, name)
+			// Skip if .gz already exists — avoids duplicate compression on
+			// repeated New calls (e.g., after a crash restart).
+			if _, err := os.Stat(fullPath + ".gz"); err == nil {
+				continue
+			}
+			toCompress = append(toCompress, fullPath)
 		}
 	}
 

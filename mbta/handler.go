@@ -110,7 +110,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 // Enabled implements slog.Handler.
 func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.leveler.Level()
+	return level >= mebsuta.SafeLevel(h.leveler)
 }
 
 // Handle implements slog.Handler.
@@ -119,7 +119,7 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 		return nil
 	}
 
-	record := recordToSignal(r, h.hostname)
+	record := recordToSignal(r)
 	return h.safeSend(record, r.Level)
 }
 
@@ -130,8 +130,8 @@ func (h *Handler) Close() error {
 	}
 
 	close(h.buffer)
-	h.wg.Wait()
 	h.cancel()
+	h.wg.Wait()
 
 	if h.client != nil {
 		return h.client.Close()
@@ -299,7 +299,7 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 }
 
 // recordToSignal converts a slog.Record into a core.SignalRecord.
-func recordToSignal(r slog.Record, _ string) *core.SignalRecord {
+func recordToSignal(r slog.Record) *core.SignalRecord {
 	attrs := make(map[string]any)
 	r.Attrs(func(attr slog.Attr) bool {
 		attrs[attr.Key] = attrValue(attr)

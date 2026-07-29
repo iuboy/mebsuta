@@ -70,10 +70,11 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: test
           MYSQL_DATABASE: logs
+          MYSQL_PWD: test
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -u root -ptest"
+          --health-cmd="mysqladmin ping -h localhost -u root"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
@@ -100,7 +101,7 @@ jobs:
         run: |
           ready=0
           for i in $(seq 1 30); do
-            if mysqladmin ping -h 127.0.0.1 -u root -ptest 2>/dev/null; then
+            if MYSQL_PWD=test mysqladmin ping -h 127.0.0.1 -u root 2>/dev/null; then
               echo "MySQL ready"
               ready=1
               break
@@ -125,6 +126,7 @@ jobs:
       GO_RESULT: ${{ needs.go.result }}
       GO_VULN_RESULT: ${{ needs.go-vulncheck.result }}
       INTEGRATION_RESULT: ${{ needs.integration.result }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
     steps:
       - name: Report selected jobs
         run: |
@@ -138,7 +140,7 @@ jobs:
       - name: Fail if any selected job failed
         run: |
           failed=0
-          [ "${{ needs.changes.result }}" = 'success' ] || { echo "::error::changes job failed"; failed=1; }
+          [ "$CHANGES_RESULT" = 'success' ] || { echo "::error::changes job failed"; failed=1; }
           if [ "$GO_SEL" = 'true' ]; then
             [ "$GO_RESULT" = 'success' ] || { echo "::error::go job failed or was cancelled"; failed=1; }
             [ "$GO_VULN_RESULT" = 'success' ] || { echo "::error::go-vulncheck job failed or was cancelled"; failed=1; }

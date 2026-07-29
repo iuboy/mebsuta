@@ -16,7 +16,9 @@ const LevelAudit slog.Level = slog.LevelError + 4 // 12
 
 // Compile-time assertion: LevelAudit must be >= LevelError so that
 // all handlers' `level >= slog.LevelError` checks include Audit records.
-var _ [LevelAudit - slog.LevelError]struct{}
+// A zero-size array [0]struct{} is valid Go, so equality (LevelAudit == LevelError)
+// also passes this check.
+var _ = [LevelAudit - slog.LevelError]struct{}{}
 
 // EventType identifies the operation class for audit records.
 type EventType string
@@ -52,6 +54,11 @@ func AuditEvent(eventType EventType, msg string, args ...any) {
 }
 
 // AuditEventContext logs an audit record with an explicit event type and context.
+//
+// The event_type is appended as the last key=value pair in the log attributes.
+// If the caller passes "event_type" as one of the args, this function's value
+// takes precedence (slog uses the last value for duplicate keys). Callers should
+// not include "event_type" in args to avoid confusion about which value is logged.
 func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
 	// M7: copy args into a fresh slice so we never mutate the caller's backing
 	// array — a variadic append footgun that can corrupt the caller's data,

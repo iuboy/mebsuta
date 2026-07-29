@@ -2,7 +2,6 @@ package mebsuta
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -32,10 +31,9 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner
 	}
-	cfg, err := cfg.Validate()
-	if err != nil {
-		ReportError(DefaultErrorHandler, &HandlerError{Component: "sampling", Operation: "init", Err: fmt.Errorf("invalid config: %w", err)})
-	}
+	// Validate always succeeds for SamplingConfig (it only applies defaults,
+	// never returns errors), so we can safely ignore the error return.
+	cfg, _ = cfg.Validate()
 
 	s := &samplingState{
 		windowNanos: int64(cfg.Window),
@@ -71,14 +69,34 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	windowEnd := h.state.windowEnd.Load()
 	if now >= windowEnd {
 		// CAS ensures only one goroutine advances the window and resets the counter.
-		// Other goroutines that also see the expired window will pass their record
-		// through (correct: the first record in a new window should always be logged).
 		newEnd := now + h.state.windowNanos
 		if h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
 			h.state.count.Store(0)
+		} else {
+			// CAS lost: another goroutine advanced the window. If extreme clock
+			// skew caused the new window end to also be in the past, try again.
+			// This is best-effort — during clock anomalies it's safer to let all
+			// records through than to silently drop them.
+			advanced := h.state.windowEnd.Load()
+			if now >= advanced {
+				retryEnd := now + h.state.windowNanos
+				h.state.windowEnd.CompareAndSwap(advanced, retryEnd)
+			}
 		}
-		h.state.count.Add(1)
-		return h.inner.Handle(ctx, r)
+		// Re-read count after potential reset: if we lost the CAS race, the
+		// winner already reset the counter. Our Add(1) returns the post-increment
+		// value, which will be ≤ concurrent goroutines that missed CAS, well
+		// within the Initial budget.
+		count := h.state.count.Add(1)
+		if count <= int64(h.cfg.Initial) {
+			return h.inner.Handle(ctx, r)
+		}
+		// Apply Thereafter consistently with the steady-state path so records
+		// during the window-reset transition are sampled the same way.
+		if (count-int64(h.cfg.Initial))%int64(h.cfg.Thereafter) == 0 {
+			return h.inner.Handle(ctx, r)
+		}
+		return nil
 	}
 
 	count := h.state.count.Add(1)

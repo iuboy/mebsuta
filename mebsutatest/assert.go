@@ -3,6 +3,7 @@ package mebsutatest
 import (
 	"log/slog"
 	"testing"
+	"time"
 )
 
 // AssertRecordCount asserts that the CaptureHandler captured exactly n records.
@@ -14,17 +15,42 @@ func AssertRecordCount(t testing.TB, h *CaptureHandler, n int) {
 }
 
 // AssertHasAttr asserts that record[index] has an attribute with the given key and value.
-func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value string) {
+// The value comparison uses slog.Value.Equal, which works for all attribute types
+// (string, int64, bool, float64, duration, time, etc.), not just strings.
+// If multiple attributes share the same key, the LAST one is checked (matching
+// slog's "last value wins" semantics for duplicate keys).
+func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value any) {
 	t.Helper()
 	records := h.Records()
 	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
-	for _, a := range records[index].Attrs {
+	// Convert the expected value to a slog.Value for type-safe comparison.
+	var expected slog.Value
+	switch v := value.(type) {
+	case string:
+		expected = slog.StringValue(v)
+	case int:
+		expected = slog.Int64Value(int64(v))
+	case int64:
+		expected = slog.Int64Value(v)
+	case bool:
+		expected = slog.BoolValue(v)
+	case float64:
+		expected = slog.Float64Value(v)
+	case time.Duration:
+		expected = slog.DurationValue(v)
+	case time.Time:
+		expected = slog.TimeValue(v)
+	default:
+		expected = slog.AnyValue(v)
+	}
+	// Search from the end to match slog's "last value wins" semantics.
+	for i := len(records[index].Attrs) - 1; i >= 0; i-- {
+		a := records[index].Attrs[i]
 		if a.Key == key {
-			got := a.Value.String()
-			if got != value {
-				t.Fatalf("attr %q: expected value %q, got %q", key, value, got)
+			if !a.Value.Equal(expected) {
+				t.Fatalf("attr %q: expected value %v, got %v", key, value, a.Value)
 			}
 			return
 		}

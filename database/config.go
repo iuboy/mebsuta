@@ -10,7 +10,12 @@ import (
 	"github.com/iuboy/mebsuta"
 )
 
-var tableNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+// tableNameRe validates SQL table names. Allows alphanumeric characters plus
+// underscore, including digits as the first character (supported by MySQL and
+// PostgreSQL via quoting/backticks). Schema-qualified names (schema.table) are
+// also accepted. Digits-first is explicitly allowed because it's a legal table
+// name in both supported databases.
+var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)?$`)
 
 const (
 	// maxBatchSize caps the batch size to prevent unbounded channel/batch
@@ -20,12 +25,15 @@ const (
 
 // Config holds configuration for database log output.
 type Config struct {
-	Driver          string        // Required: "mysql" or "postgres".
-	DSN             string        // Required: database connection string.
-	Table           string        // Required: log table name.
-	Level           slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	BatchSize       int           // Records per batch. 0 → 100.
-	BatchInterval   time.Duration // Flush interval. 0 → 5s.
+	Driver        string        // Required: "mysql" or "postgres".
+	DSN           string        // Required: database connection string.
+	Table         string        // Required: log table name.
+	Level         slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
+	BatchSize     int           // Records per batch. 0 → 100.
+	BatchInterval time.Duration // Flush interval. 0 → 5s.
+	// MaxConnLifetime is the maximum connection lifetime. 0 = no limit (unlike
+	// other fields where 0 means "use default", this follows database/sql
+	// convention where 0 means unlimited).
 	MaxConnLifetime time.Duration // Max connection lifetime. 0 = no limit.
 	MaxOpenConns    int           // Max open connections. 0 → 10.
 	MaxIdleConns    int           // Max idle connections. 0 → 5.
@@ -48,7 +56,7 @@ func (c Config) Validate() (Config, error) {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name is required"}
 	}
 	if !tableNameRe.MatchString(c.Table) {
-		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z_][a-zA-Z0-9_]*"}
+		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z0-9_](.[a-zA-Z0-9_])?"}
 	}
 	// M9: PostgreSQL's NAMEDATALEN-1 = 63; MySQL's limit is 64.
 	maxTableLen := 64
@@ -75,6 +83,10 @@ func (c Config) Validate() (Config, error) {
 	if c.MaxIdleConns <= 0 {
 		c.MaxIdleConns = 5
 	}
+	// Ensure idle pool does not exceed the open connection limit.
+	if c.MaxIdleConns > c.MaxOpenConns {
+		c.MaxIdleConns = c.MaxOpenConns
+	}
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = 500 * time.Millisecond
 	}
@@ -95,16 +107,18 @@ func (c Config) Validate() (Config, error) {
 func dsnHasTLS(driver, dsn string) bool {
 	switch driver {
 	case "mysql":
-		// H7: MySQL DSNs use tls=true / tls=skip-verify. The previous check
-		// also matched `sslmode=`, which is a PostgreSQL-only parameter — it
-		// could never match a valid MySQL DSN and worse, a password
-		// containing that substring would suppress the no-TLS warning.
+		// MySQL DSN parameter tls=<value>: any non-empty value means TLS is
+		// configured (tls=true, tls=skip-verify, tls=custom, tls=preferred).
 		dsnLower := strings.ToLower(dsn)
-		return strings.Contains(dsnLower, "tls=true") || strings.Contains(dsnLower, "tls=skip-verify")
+		return strings.Contains(dsnLower, "tls=") && !strings.Contains(dsnLower, "tls=false")
 	case "postgres":
-		// PostgreSQL key=value DSN: sslmode=require|verify-ca|verify-full.
+		// PostgreSQL key=value DSN: any sslmode except "disable" enables TLS
+		// (require, verify-ca, verify-full, prefer, allow).
 		dsnLower := strings.ToLower(dsn)
-		return strings.Contains(dsnLower, "sslmode=require") || strings.Contains(dsnLower, "sslmode=verify-ca") || strings.Contains(dsnLower, "sslmode=verify-full")
+		if !strings.Contains(dsnLower, "sslmode=") {
+			return false
+		}
+		return !strings.Contains(dsnLower, "sslmode=disable")
 	}
 	return false
 }

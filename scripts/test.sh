@@ -51,7 +51,10 @@ run_staticcheck() {
     print_info "运行 staticcheck..."
     if ! command -v staticcheck &> /dev/null; then
         print_info "staticcheck 未安装，正在安装..."
-        (cd "$ROOT_DIR" && go install honnef.co/go/tools/cmd/staticcheck@latest)
+        if ! (cd "$ROOT_DIR" && go install honnef.co/go/tools/cmd/staticcheck@latest); then
+            print_error "staticcheck 安装失败，跳过静态检查"
+            return 0
+        fi
     fi
     (cd "$ROOT_DIR" && staticcheck ./...)
 }
@@ -62,7 +65,9 @@ run_fmt_check() {
     if [ -n "$unformatted" ]; then
         print_error "以下文件需要格式化:"
         echo "$unformatted"
-        exit 1
+        # Don't exit — let the caller decide how to handle format issues.
+        # In CI mode, callers should check the return code.
+        return 1
     fi
     print_success "代码格式正确"
 }
@@ -92,10 +97,15 @@ run_integration() {
     local syslog_result=$?
     set -e
 
-    # Normal cleanup: remove trap and stop containers explicitly.
+    # Normal cleanup: remove trap first, then explicitly stop containers.
+    # The trap ensures cleanup even if the script is interrupted between
+    # trap - EXIT and docker compose down. If docker compose down fails,
+    # the containers remain — but at least we tried gracefully.
     trap - EXIT
     print_info "停止 Docker 服务..."
-    (cd "$ROOT_DIR" && docker compose -f scripts/docker-compose.yml down)
+    if ! (cd "$ROOT_DIR" && docker compose -f scripts/docker-compose.yml down); then
+        print_error "Docker 服务停止失败，可能有残留容器"
+    fi
 
     if [ $db_result -ne 0 ]; then
         print_error "数据库集成测试失败"
@@ -143,8 +153,11 @@ main() {
             run_vet
             run_staticcheck
             run_fmt_check
+            # Run coverage even if fmt check fails — formatting issues
+            # shouldn't block developers from seeing coverage metrics.
             run_coverage
-            ;;
+            cleanup
+            ;;)
         unit)
             run_unit_tests
             ;;

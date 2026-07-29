@@ -24,6 +24,7 @@ const (
 
 	DefaultSamplingInitial    = 100
 	DefaultSamplingThereafter = 10
+	DefaultSamplingWindow     = time.Second
 )
 
 // FileConfig holds mebsuta-specific configuration for file log output (format and level).
@@ -35,7 +36,7 @@ type FileConfig struct {
 
 // Validate returns a normalized copy with defaults applied.
 func (c FileConfig) Validate() (FileConfig, error) {
-	if c.Level == nil {
+	if isNilLeveler(c.Level) {
 		c.Level = slog.LevelInfo
 	}
 	if err := validateFormat(c.Format); err != nil {
@@ -50,6 +51,10 @@ func (c FileConfig) Validate() (FileConfig, error) {
 // --- StdoutConfig ---
 
 // StdoutConfig holds configuration for stdout log output.
+// It intentionally mirrors FileConfig rather than sharing a common embedded type,
+// because file and stdout output may diverge in the future (e.g., stdout gaining
+// color/theme options, file gaining compression settings). Keeping them separate
+// avoids breaking API changes when they evolve independently.
 type StdoutConfig struct {
 	Level  slog.Leveler // Log level filter. Defaults to slog.LevelInfo.
 	Format string       // "json" or "console". Defaults to "json".
@@ -57,7 +62,7 @@ type StdoutConfig struct {
 
 // Validate checks required fields and returns a normalized copy with defaults applied.
 func (c StdoutConfig) Validate() (StdoutConfig, error) {
-	if c.Level == nil {
+	if isNilLeveler(c.Level) {
 		c.Level = slog.LevelInfo
 	}
 	if err := validateFormat(c.Format); err != nil {
@@ -69,9 +74,15 @@ func (c StdoutConfig) Validate() (StdoutConfig, error) {
 	return c, nil
 }
 
+// level returns the effective slog.Level, resolving any Leveler implementation.
+// Unlike calling c.Level.Level() directly, this avoids panicking when a typed nil
+// pointer (e.g. (*slog.Level)(nil)) is stored in the Leveler interface.
 func (c StdoutConfig) level() slog.Level {
 	if lv, ok := c.Level.(slog.Level); ok {
 		return lv
+	}
+	if isNilLeveler(c.Level) {
+		return slog.LevelInfo
 	}
 	return c.Level.Level()
 }
@@ -87,6 +98,38 @@ func validateFormat(format string) error {
 	default:
 		return &ConfigError{Field: "Format", Msg: fmt.Sprintf("unsupported format %q (must be \"json\" or \"console\")", format)}
 	}
+}
+
+// isNilLeveler checks whether l is a nil interface or contains a nil pointer,
+// both of which would cause a panic if l.Level() is called.
+func isNilLeveler(l slog.Leveler) bool {
+	if l == nil {
+		return true
+	}
+	// Detect typed nil pointers stored in the interface. slog.Level and
+	// slog.LevelVar both implement Leveler via pointer receiver; a nil
+	// *slog.Level or *slog.LevelVar passed to the interface makes the
+	// interface non-nil (it holds the type), but calling l.Level()
+	// dereferences nil and panics.
+	if lv, ok := l.(*slog.Level); ok && lv == nil {
+		return true
+	}
+	if lv, ok := l.(*slog.LevelVar); ok && lv == nil {
+		return true
+	}
+	return false
+}
+
+// SafeLevel calls l.Level() defensively. If l is nil or contains a nil pointer
+// (e.g. (*slog.Level)(nil) or (*slog.LevelVar)(nil) stored in the Leveler
+// interface), it returns slog.LevelInfo as a safe default instead of panicking.
+// Exported for use by sub-packages (database, syslog, mbta) that hold a
+// slog.Leveler field.
+func SafeLevel(l slog.Leveler) slog.Level {
+	if isNilLeveler(l) {
+		return slog.LevelInfo
+	}
+	return l.Level()
 }
 
 // --- AsyncConfig ---
@@ -126,7 +169,7 @@ func (c SamplingConfig) Validate() (SamplingConfig, error) {
 		c.Thereafter = DefaultSamplingThereafter
 	}
 	if c.Window <= 0 {
-		c.Window = time.Second
+		c.Window = DefaultSamplingWindow
 	}
 	return c, nil
 }

@@ -48,7 +48,7 @@ func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs implements slog.Handler.
 func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
-		handlerCore: newHandlerCore(),
+		handlerCore: h.handlerCore, // preserve identity for CloseAll dedup
 		cfg:         h.cfg,
 		inner:       h.inner.WithAttrs(attrs),
 	}
@@ -57,7 +57,7 @@ func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup implements slog.Handler.
 func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
-		handlerCore: newHandlerCore(),
+		handlerCore: h.handlerCore, // preserve identity for CloseAll dedup
 		cfg:         h.cfg,
 		inner:       h.inner.WithGroup(name),
 	}
@@ -68,9 +68,20 @@ func (h *StdoutHandler) Close() error {
 	return nil
 }
 
+// unwrapHandler implements handlerUnwrapper so CloseAll can traverse through
+// StdoutHandler to reach inner handlers that may need closing.
+func (h *StdoutHandler) unwrapHandler() slog.Handler {
+	return h.inner
+}
+
+// setErrorHandler is a no-op: propagateErrorHandler recurses via unwrapHandler
+// to reach the inner handler.
+func (h *StdoutHandler) setErrorHandler(fn ErrorHandler) {}
+
 var (
-	_ slog.Handler = (*StdoutHandler)(nil)
-	_ io.Closer    = (*StdoutHandler)(nil)
+	_ slog.Handler     = (*StdoutHandler)(nil)
+	_ io.Closer        = (*StdoutHandler)(nil)
+	_ handlerUnwrapper = (*StdoutHandler)(nil)
 )
 
 // newInnerHandler creates the underlying slog handler for the given format.

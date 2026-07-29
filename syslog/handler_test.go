@@ -60,8 +60,8 @@ func TestConfig_DefaultsApplied(t *testing.T) {
 	if validated.Level != slog.LevelInfo {
 		t.Errorf("Level = %v, want Info", validated.Level)
 	}
-	if validated.Facility != 0 {
-		t.Errorf("Facility = %d, want 0", validated.Facility)
+	if validated.Facility != DefaultFacility {
+		t.Errorf("Facility = %d, want %d (DefaultFacility)", validated.Facility, DefaultFacility)
 	}
 	if validated.RetryDelay != 500*time.Millisecond {
 		t.Errorf("RetryDelay = %v, want 500ms", validated.RetryDelay)

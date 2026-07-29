@@ -2,6 +2,7 @@
 package metrics
 
 import (
+	"math"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -177,9 +178,13 @@ func (m *Metrics) IncBatchFailure() {
 	m.batchFailures.Inc()
 }
 
-// SetBufferUsage sets the buffer usage gauge (0 to 1).
+// SetBufferUsage sets the buffer usage gauge. The ratio is clamped to [0, 1].
+// NaN and Inf values are treated as 0 to avoid corrupting the metric.
 func (m *Metrics) SetBufferUsage(ratio float64) {
-	m.bufferUsage.Set(ratio)
+	if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		ratio = 0
+	}
+	m.bufferUsage.Set(math.Max(0, math.Min(1, ratio)))
 }
 
 // IncBufferFull increments the buffer-full event counter.
@@ -217,46 +222,48 @@ func (m *Metrics) ObserveHandle(duration time.Duration) {
 	m.writeLatency.Observe(duration.Seconds())
 }
 
-// IncError increments the error counter for the named handler, implementing the mebsuta.HandlerMetrics interface.
-func (m *Metrics) IncError(handlerName string) {
-	m.logErrors.WithLabelValues("handle", handlerName).Inc()
+// IncError increments the error counter for the given output target (handler name),
+// implementing the mebsuta.HandlerMetrics interface.
+func (m *Metrics) IncError(output string) {
+	m.logErrors.WithLabelValues("handle", output).Inc()
 }
 
-// IncDropped increments the dropped counter for the named handler, implementing the mebsuta.HandlerMetrics interface.
-func (m *Metrics) IncDropped(handlerName string) {
-	m.logDropped.WithLabelValues("overflow", handlerName).Inc()
+// IncDropped increments the dropped counter for the given output target (handler name),
+// implementing the mebsuta.HandlerMetrics interface.
+func (m *Metrics) IncDropped(output string) {
+	m.logDropped.WithLabelValues("overflow", output).Inc()
+}
+
+// collectors returns every registered metric collector in a single slice so that
+// Describe and Collect remain in sync when new metrics are added.
+func (m *Metrics) collectors() []prometheus.Collector {
+	return []prometheus.Collector{
+		m.logWrites,
+		m.logDropped,
+		m.logErrors,
+		m.batchWrites,
+		m.batchSize,
+		m.batchLatency,
+		m.batchFailures,
+		m.bufferUsage,
+		m.bufferFull,
+		m.activeConns,
+		m.idleConns,
+		m.writeLatency,
+		m.activeGoroutines,
+	}
 }
 
 // Describe implements prometheus.Collector.
 func (m *Metrics) Describe(ch chan<- *prometheus.Desc) {
-	m.logWrites.Describe(ch)
-	m.logDropped.Describe(ch)
-	m.logErrors.Describe(ch)
-	m.batchWrites.Describe(ch)
-	m.batchSize.Describe(ch)
-	m.batchLatency.Describe(ch)
-	m.batchFailures.Describe(ch)
-	m.bufferUsage.Describe(ch)
-	m.bufferFull.Describe(ch)
-	m.activeConns.Describe(ch)
-	m.idleConns.Describe(ch)
-	m.writeLatency.Describe(ch)
-	m.activeGoroutines.Describe(ch)
+	for _, c := range m.collectors() {
+		c.Describe(ch)
+	}
 }
 
 // Collect implements prometheus.Collector.
 func (m *Metrics) Collect(ch chan<- prometheus.Metric) {
-	m.logWrites.Collect(ch)
-	m.logDropped.Collect(ch)
-	m.logErrors.Collect(ch)
-	m.batchWrites.Collect(ch)
-	m.batchSize.Collect(ch)
-	m.batchLatency.Collect(ch)
-	m.batchFailures.Collect(ch)
-	m.bufferUsage.Collect(ch)
-	m.bufferFull.Collect(ch)
-	m.activeConns.Collect(ch)
-	m.idleConns.Collect(ch)
-	m.writeLatency.Collect(ch)
-	m.activeGoroutines.Collect(ch)
+	for _, c := range m.collectors() {
+		c.Collect(ch)
+	}
 }
