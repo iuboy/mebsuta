@@ -259,18 +259,21 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return fmt.Errorf("async handler is closed, log dropped")
 	}
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
+	// Use RecordWithGroupAttrs to prefix only the record attrs with the group,
+	// while keeping preset attrs (h.attrs) at the root level. This matches the
+	// slog contract: attrs added BEFORE WithGroup are NOT inside the group.
+	// Forward to the ungrouped inner (h.inner), not h.groupInner, because
+	// RecordWithGroupAttrs already applied the prefix manually.
+	grouped := RecordWithGroupAttrs(r, h.group, h.attrs)
 	ar := asyncRecord{
-		Time:    r.Time,
-		Level:   r.Level,
-		Message: r.Message,
-		PC:      r.PC,
-		inner:   h.groupInner,
+		Time:    grouped.Time,
+		Level:   grouped.Level,
+		Message: grouped.Message,
+		PC:      grouped.PC,
+		inner:   h.inner,
 		ctx:     ctx,
 	}
-	r.Attrs(func(attr slog.Attr) bool {
+	grouped.Attrs(func(attr slog.Attr) bool {
 		ar.Attrs = append(ar.Attrs, attr)
 		return true
 	})
@@ -292,6 +295,13 @@ func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
 		attrs:        h.attrs,
 		groupInner:   h.inner.WithGroup(combined),
 	}
+}
+
+// unwrapHandler returns the group-prefixed inner handler so that CloseAll
+// traverses through the group layer correctly. The inherited unwrapHandler
+// from AsyncHandler returns h.inner, which skips the group wrapping.
+func (h *asyncGroupHandler) unwrapHandler() slog.Handler {
+	return h.groupInner
 }
 
 // AsyncDropped extracts the total number of dropped records from an AsyncHandler in the handler chain.

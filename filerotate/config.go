@@ -25,8 +25,8 @@ const (
 	DefaultMaxBackups = 5
 	DefaultMaxAgeDays = 30
 
-	MiB                  = 1 << 20
-	MaxRotationSuffixSeq = 1000
+	mib                  = 1 << 20
+	maxRotationSuffixSeq = 1000
 )
 
 // DefaultFileMode is the default file permission for log files and rotated backups.
@@ -36,11 +36,13 @@ const DefaultFileMode os.FileMode = 0600
 type Config struct {
 	// Path is the absolute path to the log file. Required.
 	Path string
-	// MaxSizeMB is the maximum file size in MiB before rotation. 0 → 100.
+	// MaxSizeMB is the maximum file size in MiB before rotation. ≤0 → 100.
 	MaxSizeMB int
-	// MaxBackups is the maximum number of rotated backup files. 0 → 5.
+	// MaxBackups is the maximum number of rotated backup files to retain.
+	// 0 → default (5). <0 → unlimited (keep all backups).
 	MaxBackups int
-	// MaxAgeDays is the maximum age of backup files in days. 0 → 30.
+	// MaxAgeDays is the maximum age of backup files in days.
+	// 0 → default (30). <0 → unlimited (no age-based removal).
 	MaxAgeDays int
 	// Compress enables gzip compression of rotated backups. nil → true.
 	Compress *bool
@@ -53,6 +55,12 @@ type Config struct {
 	OnError func(error)
 }
 
+// UnlimitedBackups is the sentinel value for MaxBackups that means "keep all backups".
+const UnlimitedBackups = -1
+
+// UnlimitedAge is the sentinel value for MaxAgeDays that means "no age-based removal".
+const UnlimitedAge = -1
+
 // Validate checks required fields and returns a normalized copy with defaults applied.
 func (c Config) Validate() (Config, error) {
 	if c.Path == "" {
@@ -64,10 +72,10 @@ func (c Config) Validate() (Config, error) {
 	if c.MaxSizeMB <= 0 {
 		c.MaxSizeMB = DefaultMaxSizeMB
 	}
-	if c.MaxBackups <= 0 {
+	if c.MaxBackups == 0 {
 		c.MaxBackups = DefaultMaxBackups
 	}
-	if c.MaxAgeDays <= 0 {
+	if c.MaxAgeDays == 0 {
 		c.MaxAgeDays = DefaultMaxAgeDays
 	}
 	if c.Compress == nil {

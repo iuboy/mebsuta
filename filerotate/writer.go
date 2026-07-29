@@ -21,7 +21,7 @@ type Writer struct {
 	mu         sync.Mutex
 	file       *os.File
 	size       atomic.Int64
-	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * MiB, avoids multiplication on every Write
+	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * mib, avoids multiplication on every Write
 	rotatedAt  time.Time
 	closed     atomic.Bool
 	cfg        Config
@@ -67,7 +67,7 @@ func New(cfg Config) (*Writer, error) {
 
 	w := &Writer{
 		file:        f,
-		maxBytes:    int64(cfg.MaxSizeMB) * MiB,
+		maxBytes:    int64(cfg.MaxSizeMB) * mib,
 		rotatedAt:   time.Now(),
 		cfg:         cfg,
 		compressing: make(map[string]struct{}),
@@ -122,7 +122,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if err == nil && w.needsRotation() {
 		w.rotateLocked()
 	}
-	closedAfter := w.closed.Load()
+	// Snapshot closed while still holding mu so that a concurrent Close
+	// does not cause a successful write to return a spurious os.ErrClosed.
+	isClosed := w.closed.Load()
 	w.mu.Unlock()
 
 	// M4: report rotation errors outside the lock to prevent deadlock if
@@ -131,7 +133,7 @@ func (w *Writer) Write(p []byte) (int, error) {
 
 	// If post-write rotation failed and closed the writer, the write itself
 	// still succeeded — surface the count but let the next Write return ErrClosed.
-	if closedAfter {
+	if isClosed {
 		return n, os.ErrClosed
 	}
 
@@ -155,6 +157,7 @@ func (w *Writer) Close() error {
 	// file — while a rotate() that already passed its closed.Load() check
 	// starts a new compression goroutine that outlives Close.
 	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	w.compressWg.Wait()
 
@@ -163,30 +166,15 @@ func (w *Writer) Close() error {
 	// this, a high-frequency rotation burst can leave stale backups.
 	if w.file != nil {
 		w.cleanupBackupsLocked()
+		w.reportRotateErrors()
 	}
 
-	var closeErr error
-	if w.file != nil {
-		closeErr = w.file.Close()
-		w.file = nil
+	if w.file == nil {
+		return nil
 	}
-	// M7: report rotation errors AFTER releasing w.mu. reportRotateErrors
-	// invokes the user's onError callback, which may re-enter the Writer; the
-	// method's contract is "Caller must NOT hold w.mu". The previous Close
-	// reported under the lock (via defer Unlock), risking deadlock if onError
-	// touches Write/rotate. Drain pending errors to a local slice first so no
-	// concurrent Write can observe them after unlock.
-	w.errMu.Lock()
-	pending := w.pendingRotateErrors
-	w.pendingRotateErrors = nil
-	w.errMu.Unlock()
-	w.mu.Unlock()
-
-	onError := w.loadOnError()
-	for _, e := range pending {
-		reportError(onError, e)
-	}
-	return closeErr
+	err := w.file.Close()
+	w.file = nil
+	return err
 }
 
 // SetOnError updates the error callback. Safe to call concurrently.
@@ -330,7 +318,7 @@ func (w *Writer) recoverOpen(path string) {
 }
 
 // backupNameLocked generates a unique backup filename. Caller must hold w.mu Lock.
-// Uses a single ReadDir call + in-memory set to avoid up to MaxRotationSuffixSeq Stat syscalls.
+// Uses a single ReadDir call + in-memory set to avoid up to maxRotationSuffixSeq Stat syscalls.
 func (w *Writer) backupNameLocked() string {
 	ts := time.Now().Format("2006-01-02T15-04-05.000")
 	name := w.cfg.Path + "." + ts
@@ -353,7 +341,7 @@ func (w *Writer) backupNameLocked() string {
 	if _, found := existing[base]; !found {
 		return name
 	}
-	for i := 1; i < MaxRotationSuffixSeq; i++ {
+	for i := 1; i < maxRotationSuffixSeq; i++ {
 		candidate := fmt.Sprintf("%s.%d", base, i)
 		if _, found := existing[candidate]; !found {
 			return filepath.Join(dir, candidate)
@@ -366,7 +354,7 @@ func (w *Writer) backupNameLocked() string {
 // Caller must hold w.mu Lock.
 func (w *Writer) cleanupBackupsLocked() {
 	cfg := w.cfg
-	if cfg.MaxBackups <= 0 && cfg.MaxAgeDays <= 0 {
+	if cfg.MaxBackups == 0 && cfg.MaxAgeDays == 0 {
 		return
 	}
 
@@ -408,28 +396,14 @@ func (w *Writer) cleanupBackupsLocked() {
 		return backups[i].modTime.After(backups[j].modTime)
 	})
 
-	// M7: MaxBackups counts LOGICAL backups, not files. A backup and its .gz
-	// compressed copy share a logical key (name without ".gz"), so they must
-	// count as one. Keep the first MaxBackups distinct logical keys (backups is
-	// sorted newest-first, so the newest representative of each key wins) and
-	// build the keep set from every file whose key is retained.
 	keep := backups
-	if cfg.MaxBackups > 0 {
-		retainedKeys := make(map[string]struct{}, cfg.MaxBackups)
-		keep = make([]backupInfo, 0, len(backups))
-		for _, b := range backups {
-			key := logicalBackupKey(b.name)
-			if _, kept := retainedKeys[key]; !kept {
-				if len(retainedKeys) >= cfg.MaxBackups {
-					continue
-				}
-				retainedKeys[key] = struct{}{}
-			}
-			keep = append(keep, b)
-		}
+	// Negative MaxBackups means unlimited (keep all backups).
+	if cfg.MaxBackups > 0 && len(keep) > cfg.MaxBackups {
+		keep = keep[:cfg.MaxBackups]
 	}
 
 	cutoff := time.Time{}
+	// Negative MaxAgeDays means unlimited (no age-based removal).
 	if cfg.MaxAgeDays > 0 {
 		cutoff = time.Now().AddDate(0, 0, -cfg.MaxAgeDays)
 	}
@@ -445,19 +419,10 @@ func (w *Writer) cleanupBackupsLocked() {
 	w.compressMu.Unlock()
 
 	var cleanupErrs []error
-	// M7: keep is no longer a prefix slice of backups (it is a deduplicated
-	// subset), so compute the delete set by membership rather than index range.
-	keepSet := make(map[string]struct{}, len(keep))
-	for _, b := range keep {
-		keepSet[b.name] = struct{}{}
-	}
 	// H2: collect errors but report them via pendingRotateErrors (drained
 	// outside the lock by reportRotateErrors) to honor the M4 non-reentrancy
 	// contract on w.mu.
-	for _, b := range backups {
-		if _, kept := keepSet[b.name]; kept {
-			continue
-		}
+	for _, b := range backups[len(keep):] {
 		path := filepath.Join(dir, b.name)
 		// H2: skip backups still being compressed; the compression goroutine
 		// will remove the tracking entry when done, and a later cleanup pass
@@ -513,15 +478,6 @@ func isBackupName(base, name string) bool {
 		return false
 	}
 	return backupSuffixRe.MatchString(suffix)
-}
-
-// logicalBackupKey returns the logical backup identity for a backup filename,
-// stripping a trailing ".gz" so that an uncompressed backup and its compressed
-// copy count as ONE logical backup for MaxBackups accounting. Without this,
-// MaxBackups=N could retain only ~N/2 logical backups while both the raw and
-// .gz forms briefly coexist.
-func logicalBackupKey(name string) string {
-	return strings.TrimSuffix(name, ".gz")
 }
 
 // Compile-time assertions.

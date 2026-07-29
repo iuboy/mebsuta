@@ -94,12 +94,14 @@ mem.prof
 debug
 debug.test
 __debug_bin
-async
-basic
-chain
-file
-sampling
-go.work.sum
+# Debug binary build outputs (e.g., go build -o async ./examples/async)
+/async
+/basic
+/chain
+/file
+/sampling
+
 # Local Go workspace (used for joint development with sibling modules like ../mbta-go;
 # must not ship in releases — would break downstream reproducible builds).
 go.work
+go.work.sum

@@ -35,6 +35,12 @@ const (
 
 // LevelAudit is the audit log level for compliance logging (GB/T 22239, GM/T 0054).
 // Severity is above Error; handlers at Error level accept Audit records, and samplers always pass them through.
+//
+// NOTE: LevelAudit = slog.LevelError + 4 = 12. Go's slog reserves levels 0–9 for the
+// standard Debug/Info/Warn/Error, but future Go versions may extend the reserved range.
+// If Go adds levels above 9, they could conflict with this value. The chance is low
+// (Go has been stable since slog's introduction in 1.21), but downstream users should
+// be aware of this boundary.
 const LevelAudit slog.Level = slog.LevelError + 4
 
 // HandlerError is a structured error reported by handlers through ErrorHandler.
@@ -124,6 +130,8 @@ func RecordToLogEntry(r slog.Record) LogEntry {
 		Time:    r.Time,
 		Level:   r.Level,
 		Message: r.Message,
+		// Pre-allocate slice to avoid multiple reallocations during append.
+		Attrs: make([]slog.Attr, 0, r.NumAttrs()),
 	}
 	r.Attrs(func(attr slog.Attr) bool {
 		e.Attrs = append(e.Attrs, attr)
@@ -165,3 +173,6 @@ func SilentErrorHandler() ErrorHandler {
 
 // BoolPtr returns a pointer to the given bool value, useful for config struct fields of type *bool.
 func BoolPtr(b bool) *bool { return &b }
+
+// IntPtr returns a pointer to the given int value, useful for config struct fields of type *int.
+func IntPtr(n int) *int { return &n }

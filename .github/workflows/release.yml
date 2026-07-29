@@ -73,7 +73,12 @@ jobs:
         run: |
           case "$TAG_NAME" in
             go/v*|v*)
-              [ "$GO_RESULT" = 'success' ] || { echo "::error::go release job failed"; exit 1; }
+              if [ "$GO_RESULT" = 'skipped' ]; then
+                echo "::warning::go release job was skipped (tag may not match go filter)"
+              elif [ "$GO_RESULT" != 'success' ]; then
+                echo "::error::go release job failed (result: $GO_RESULT)"
+                exit 1
+              fi
               ;;
           esac
 

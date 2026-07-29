@@ -87,7 +87,7 @@ func TestRecordToSignal(t *testing.T) {
 	r := newRecord(slog.LevelInfo, "hello world")
 	r.AddAttrs(slog.String("key", "value"), slog.Int("count", 42))
 
-	rec := recordToSignal(r, "testhost")
+	rec := recordToSignal(r)
 
 	if rec.SignalType != "log" {
 		t.Errorf("SignalType = %q, want %q", rec.SignalType, "log")
@@ -116,7 +116,7 @@ func TestRecordToSignal(t *testing.T) {
 
 func TestRecordToSignal_AuditLevel(t *testing.T) {
 	r := newRecord(mebsuta.LevelAudit, "audit event")
-	rec := recordToSignal(r, "testhost")
+	rec := recordToSignal(r)
 
 	if rec.SeverityText != "AUDIT" {
 		t.Errorf("SeverityText = %q, want %q", rec.SeverityText, "AUDIT")
@@ -127,7 +127,7 @@ func TestRecordToSignal_GroupAttrs(t *testing.T) {
 	r := newRecord(slog.LevelInfo, "grouped")
 	r.AddAttrs(slog.Group("request", slog.String("method", "GET"), slog.Int("status", 200)))
 
-	rec := recordToSignal(r, "testhost")
+	rec := recordToSignal(r)
 	attrs := rec.Attributes
 
 	req, ok := attrs["request"].(map[string]any)

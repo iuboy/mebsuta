@@ -75,6 +75,9 @@ func (c Config) Validate() (Config, error) {
 			c.Source = hostname
 		}
 	}
+	if c.Reconnect == nil {
+		c.Reconnect = mebsuta.BoolPtr(true)
+	}
 	return c, nil
 }
 

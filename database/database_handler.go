@@ -24,22 +24,6 @@ const (
 	finalFlushRetries = 3
 )
 
-// fieldsPool recycles map[string]any across recordToDBEntry calls to reduce GC pressure.
-var fieldsPool = sync.Pool{
-	New: func() any { return make(map[string]any, 16) },
-}
-
-func getFieldsMap() map[string]any {
-	return fieldsPool.Get().(map[string]any)
-}
-
-func putFieldsMap(m map[string]any) {
-	for k := range m {
-		delete(m, k)
-	}
-	fieldsPool.Put(m)
-}
-
 type dbLogEntry struct {
 	Time    time.Time       `gorm:"column:time"`
 	Level   string          `gorm:"column:level"`
@@ -58,7 +42,7 @@ type Handler struct {
 	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 	closed       atomic.Bool
-	closeMu      sync.Mutex // protects close(h.entries) vs channel send
+	sendMu       sync.RWMutex // RLock during channel send; Lock during close
 	errCount     atomic.Int64
 	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
@@ -122,7 +106,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 // Enabled implements slog.Handler.
 func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.leveler.Level()
+	return level >= mebsuta.SafeLevel(h.leveler)
 }
 
 // Handle implements slog.Handler.
@@ -135,39 +119,54 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	return h.sendEntry(entry, r.Level)
 }
 
-// sendEntry sends an entry to the background channel. closeMu protects against
-// the race where Close() closes the channel concurrently with a send.
+// sendEntry sends an entry to the background channel.
+//
+// Uses an RWMutex: sends take the read lock (concurrent — multiple goroutines
+// can send simultaneously), Close takes the write lock (exclusive — waits for
+// in-flight sends to finish before closing the channel). This eliminates the
+// old closeMu approach that serialized ALL sends behind a single mutex and
+// blocked Close for up to 5s per Error-level record.
 func (h *Handler) sendEntry(entry dbLogEntry, level slog.Level) error {
 	if h.closed.Load() {
 		return nil
 	}
 
-	h.closeMu.Lock()
-	defer h.closeMu.Unlock()
+	h.sendMu.RLock()
+	defer h.sendMu.RUnlock()
 
 	if h.closed.Load() {
 		return nil
 	}
 
 	if level >= slog.LevelError {
+		// Try non-blocking send first to avoid timer allocation in the common case.
+		select {
+		case h.entries <- entry:
+			return nil
+		default:
+		}
+
 		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
 		select {
 		case h.entries <- entry:
 			return nil
 		case <-timer.C:
+			// sendMu (read lock) is held, so Close cannot close the channel
+			// concurrently. The only reason to reach here is a full backlog.
 			h.errCount.Add(1)
-			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level), Dropped: 1})
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("backlog full: %v record dropped after 5s wait (buffer: %d/%d)", level, len(h.entries), cap(h.entries)), Dropped: 1})
 			return nil
 		}
 	}
 
+	// Non-Error levels: non-blocking send, drop on full buffer.
 	select {
 	case h.entries <- entry:
 		return nil
 	default:
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("buffer full, log dropped"), Dropped: 1})
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "write", Err: fmt.Errorf("backlog full: log dropped (buffer: %d/%d)", len(h.entries), cap(h.entries)), Dropped: 1})
 		return nil
 	}
 }
@@ -183,13 +182,19 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 }
 
 // Close implements io.Closer.
+//
+// Takes the write lock to wait for all in-flight sendEntry calls to complete,
+// then closes the channel. This is race-detector-clean (unlike recover-based
+// approaches) and allows concurrent sends (the read lock is shared). The
+// channel close signals run() to drain and flush remaining records with a
+// live context; cancel() is called last.
 func (h *Handler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	h.closeMu.Lock()
-	close(h.entries)
-	h.closeMu.Unlock()
+	h.sendMu.Lock()
+	close(h.entries) // safe: write lock ensures no concurrent sends
+	h.sendMu.Unlock()
 	h.wg.Wait()
 	h.cancel()
 
@@ -208,6 +213,11 @@ func (h *Handler) run(batchSize int, batchInterval, retryDelay time.Duration) {
 
 	var batch []dbLogEntry
 
+	// run() exits ONLY via channel close (the !ok path). It does NOT select
+	// on h.ctx.Done() so that Close() can: (1) close(h.entries) which signals
+	// run to exit, (2) wg.Wait() for the drain+flush to complete with a live
+	// context, (3) h.cancel() to release resources. If run() exited on
+	// ctx.Done(), the final flush would use a cancelled context and lose data.
 	for {
 		select {
 		case entry, ok := <-h.entries:
@@ -227,10 +237,6 @@ func (h *Handler) run(batchSize int, batchInterval, retryDelay time.Duration) {
 				h.flush(batch, retryDelay)
 				batch = nil
 			}
-
-		case <-h.ctx.Done():
-			h.flush(batch, retryDelay)
-			return
 		}
 	}
 }
@@ -240,9 +246,15 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 		return
 	}
 
+	// Each attempt runs inside a transaction so that a partial failure does not
+	// leave orphaned rows. Without the transaction, if CreateInBatches splits the
+	// batch into multiple INSERT statements and one fails mid-way, retrying would
+	// insert the already-persisted rows again, producing duplicates.
 	for i := range finalFlushRetries {
 		ctx, cancel := context.WithTimeout(h.ctx, finalFlushTimeout)
-		dbErr := h.db.WithContext(ctx).Table(h.table).CreateInBatches(batch, len(batch)).Error
+		dbErr := h.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			return tx.Table(h.table).CreateInBatches(batch, len(batch)).Error
+		})
 		cancel()
 
 		if dbErr == nil {
@@ -251,7 +263,13 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) {
 		h.errCount.Add(1)
 		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
 		if i < finalFlushRetries-1 {
-			time.Sleep(retryDelay)
+			// Respect context cancellation during shutdown so we don't
+			// block Close() with an unconditional sleep.
+			select {
+			case <-time.After(retryDelay):
+			case <-h.ctx.Done():
+				return
+			}
 		}
 	}
 	mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)})
@@ -264,8 +282,7 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 		Message: r.Message,
 	}
 
-	fields := getFieldsMap()
-	defer putFieldsMap(fields)
+	fields := make(map[string]any, 16)
 
 	r.Attrs(func(attr slog.Attr) bool {
 		attrutil.FlattenAttr(fields, "", attr, attrutil.NaNString)

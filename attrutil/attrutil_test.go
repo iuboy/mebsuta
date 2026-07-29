@@ -1,11 +1,35 @@
 package attrutil
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"testing"
 	"time"
 )
+
+// TestSlogValueAny_Error is the regression test for the "error":{} bug:
+// an error-typed value must return its message string, not the backing
+// struct (which json.Marshal renders as "{}").
+func TestSlogValueAny_Error(t *testing.T) {
+	wrapped := fmt.Errorf("read config file: %w", errors.New("yaml: line 10: bad key"))
+	got := SlogValueAny(slog.AnyValue(wrapped), NaNSafe)
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("SlogValueAny(error) returned %T (%v), want string", got, got)
+	}
+	if s != "read config file: yaml: line 10: bad key" {
+		t.Errorf("SlogValueAny(error) = %q, want full wrapped message", s)
+	}
+
+	// A plain (non-wrapped) error must also work.
+	plain := errors.New("plain failure")
+	got2 := SlogValueAny(slog.AnyValue(plain), NaNSafe)
+	if s2, ok := got2.(string); !ok || s2 != "plain failure" {
+		t.Errorf("plain error = %v (%T), want \"plain failure\"", got2, got2)
+	}
+}
 
 func TestSlogValueAny_Kinds(t *testing.T) {
 	tests := []struct {

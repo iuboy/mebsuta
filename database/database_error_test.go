@@ -367,14 +367,14 @@ func TestHandler_BufferFullDropsInfoRecord(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.True(t,
-		strings.Contains(errMsgs[0], "buffer full"),
-		"error should mention buffer full, got: %s", errMsgs[0])
+		strings.Contains(errMsgs[0], "backlog full"),
+		"error should mention backlog full, got: %s", errMsgs[0])
 
-	// Clean up — close the channel to stop potential goroutines.
+	// Clean up — acquire sendMu, close channel, cancel (matches Close() order).
 	h.closed.Store(true)
-	h.closeMu.Lock()
+	h.sendMu.Lock()
 	close(h.entries)
-	h.closeMu.Unlock()
+	h.sendMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
 	_ = sqlDB.Close()
@@ -459,14 +459,14 @@ func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 	defer mu.Unlock()
 	require.True(t, len(errMsgs) > 0, "error handler should be called")
 	require.True(t,
-		strings.Contains(errMsgs[len(errMsgs)-1], "buffer full timeout"),
-		"error should mention buffer full timeout, got: %s", errMsgs[len(errMsgs)-1])
+		strings.Contains(errMsgs[len(errMsgs)-1], "backlog full"),
+		"error should mention backlog full, got: %s", errMsgs[len(errMsgs)-1])
 
 	// Cleanup
 	h.closed.Store(true)
-	h.closeMu.Lock()
+	h.sendMu.Lock()
 	close(h.entries)
-	h.closeMu.Unlock()
+	h.sendMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
 	_ = sqlDB.Close()
@@ -555,9 +555,9 @@ func TestHandler_ErrCountTracksDrops(t *testing.T) {
 
 	// Cleanup
 	h.closed.Store(true)
-	h.closeMu.Lock()
+	h.sendMu.Lock()
 	close(h.entries)
-	h.closeMu.Unlock()
+	h.sendMu.Unlock()
 	cancel()
 	sqlDB, _ := gdb.DB()
 	_ = sqlDB.Close()
@@ -620,9 +620,9 @@ func TestHandler_BatchInsertError(t *testing.T) {
 	require.True(t, strings.Contains(errMsgs[0], "batch"), "error should mention batch, got: %s", errMsgs[0])
 
 	h.closed.Store(true)
-	h.closeMu.Lock()
+	h.sendMu.Lock()
 	close(h.entries)
-	h.closeMu.Unlock()
+	h.sendMu.Unlock()
 	h.wg.Wait()
 	cancel()
 	_ = sqlDB.Close()

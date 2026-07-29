@@ -50,7 +50,7 @@ func NewFileHandler(rotateCfg filerotate.Config, cfg FileConfig) (*FileHandler, 
 
 // Enabled implements slog.Handler.
 func (h *FileHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.leveler.Level()
+	return level >= SafeLevel(h.leveler)
 }
 
 // Handle implements slog.Handler.
@@ -61,7 +61,7 @@ func (h *FileHandler) Handle(ctx context.Context, r slog.Record) error {
 // WithAttrs implements slog.Handler.
 func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &FileHandler{
-		handlerCore: newHandlerCore(),
+		handlerCore: h.handlerCore, // preserve errorHandler from parent
 		leveler:     h.leveler,
 		inner:       h.inner.WithAttrs(attrs),
 		writer:      h.writer,
@@ -71,15 +71,20 @@ func (h *FileHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 // WithGroup implements slog.Handler.
 func (h *FileHandler) WithGroup(name string) slog.Handler {
 	return &FileHandler{
-		handlerCore: newHandlerCore(),
+		handlerCore: h.handlerCore, // preserve errorHandler from parent
 		leveler:     h.leveler,
 		inner:       h.inner.WithGroup(name),
 		writer:      h.writer,
 	}
 }
 
-// Close implements io.Closer.
+// Close implements io.Closer. It flushes any buffered data in the inner handler
+// before closing the underlying writer.
 func (h *FileHandler) Close() error {
+	// Flush inner handler if it supports it (e.g., async handlers with buffers).
+	if flusher, ok := h.inner.(interface{ Flush() error }); ok {
+		_ = flusher.Flush() // best-effort flush; writer.Close is the real cleanup
+	}
 	return h.writer.Close()
 }
 

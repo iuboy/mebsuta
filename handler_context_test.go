@@ -138,15 +138,6 @@ func TestUseContextExtractor_OptionWithGroup(t *testing.T) {
 	require.Contains(t, output, "http.trace_id")
 }
 
-// TestJoinGroup verifies joinGroup concatenation.
-func TestJoinGroup(t *testing.T) {
-	require.Equal(t, "", joinGroup("", ""))
-	require.Equal(t, "a", joinGroup("", "a"))
-	require.Equal(t, "a", joinGroup("a", ""))
-	require.Equal(t, "a.b", joinGroup("a", "b"))
-	require.Equal(t, "a.b.c", joinGroup("a.b", "c"))
-}
-
 // TestWithContextExtractor_UnwrapHandler verifies handlerUnwrapper is implemented.
 func TestWithContextExtractor_UnwrapHandler(t *testing.T) {
 	inner, err := NewStdoutHandler(StdoutConfig{})

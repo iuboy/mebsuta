@@ -37,11 +37,14 @@ func (h *AttrsSub) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *AttrsSub) WithGroup(name string) slog.Handler {
-	// H4: mirror GroupSub.WithGroup's concatenation. Without this,
-	// WithGroup("a").WithAttrs(...).WithGroup("b") yields group "b"
-	// instead of "a.b", breaking the slog group nesting contract.
+	// When name is empty, WithGroup is a no-op per slog spec: return the
+	// current handler unchanged.
+	if name == "" {
+		return h
+	}
+	// Join existing group with new group name, mirroring GroupSub.WithGroup.
 	group := name
-	if h.Group != "" && name != "" {
+	if h.Group != "" {
 		group = h.Group + "." + name
 	}
 	return &GroupSub{

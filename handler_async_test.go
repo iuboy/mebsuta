@@ -316,16 +316,26 @@ func TestWithContextExtractor_NilInputs(t *testing.T) {
 	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
 	require.NoError(t, err)
 
-	// nil handler
+	// nil handler → returns a safe no-op discard handler instead of nil
 	h := WithContextExtractor(nil, func(ctx context.Context) []slog.Attr { return nil })
-	if h != nil {
-		t.Error("expected nil for nil handler")
+	if h == nil {
+		t.Error("expected non-nil discard handler for nil handler")
+	}
+	// Verify the discard handler is actually safe to use
+	if h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error("discard handler should not be enabled for any level")
 	}
 
-	// nil extractor
+	// nil extractor → returns a safe no-op discard handler
 	h = WithContextExtractor(inner, nil)
-	if h != inner {
-		t.Error("expected original handler for nil extractor")
+	if h == nil {
+		t.Error("expected non-nil discard handler for nil extractor")
+	}
+	// The inner handler should not have been wrapped; a discard handler is returned instead.
+	// Verify it doesn't delegate to inner (which would write to buf).
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "test", 0))
+	if buf.Len() > 0 {
+		t.Error("discard handler should not write to inner")
 	}
 }
 

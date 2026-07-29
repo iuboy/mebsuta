@@ -1,5 +1,10 @@
 # Docker services for mebsuta integration tests
 # Usage: docker compose -f scripts/docker-compose.yml up -d --wait
+#
+# SECURITY NOTE: This file contains hardcoded test credentials used exclusively
+# for local integration testing. These containers should NEVER be exposed to
+# production networks. In production, use a secrets manager or environment
+# variable injection instead of hardcoded passwords.
 
 services:
   mysql:
@@ -8,10 +13,13 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: test
       MYSQL_DATABASE: logs
+      MYSQL_PWD: test
     ports:
       - "3306:3306"
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-ptest"]
+      # Use MYSQL_PWD env var instead of -p flag to avoid exposing the password
+      # in process listings (ps aux).
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root"]
       interval: 5s
       timeout: 10s
       retries: 10

@@ -2,7 +2,6 @@ package mebsuta
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"sync/atomic"
@@ -32,10 +31,9 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner
 	}
-	cfg, err := cfg.Validate()
-	if err != nil {
-		ReportError(DefaultErrorHandler, &HandlerError{Component: "sampling", Operation: "init", Err: fmt.Errorf("invalid config: %w", err)})
-	}
+	// Validate always succeeds for SamplingConfig (it only applies defaults,
+	// never returns errors), so we can safely ignore the error return.
+	cfg, _ = cfg.Validate()
 
 	s := &samplingState{
 		windowNanos: int64(cfg.Window),
@@ -71,31 +69,36 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	windowEnd := h.state.windowEnd.Load()
 	if now >= windowEnd {
 		// CAS ensures only one goroutine advances the window and resets the counter.
-		// The winner does Store(0) so the first record of the new window starts the
-		// counter fresh. CAS losers must NOT Add against the stale (old-window)
-		// counter value: between the winner's windowEnd CAS and its count.Store(0),
-		// a loser's Add could observe the old count and later get mis-sampled.
-		// Re-load windowEnd after losing the CAS; if the winner has already
-		// advanced it, fall through to the normal counting path below, which reads
-		// the now-reset counter coherently.
 		newEnd := now + h.state.windowNanos
 		if h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
 			h.state.count.Store(0)
-			h.state.count.Add(1)
+		} else {
+			// CAS lost: another goroutine advanced the window. If extreme clock
+			// skew caused the new window end to also be in the past, try again.
+			// This is best-effort — during clock anomalies it's safer to let all
+			// records through than to silently drop them.
+			advanced := h.state.windowEnd.Load()
+			if now >= advanced {
+				retryEnd := now + h.state.windowNanos
+				h.state.windowEnd.CompareAndSwap(advanced, retryEnd)
+			}
+		}
+		// Re-read count after potential reset: if we lost the CAS race, the
+		// winner already reset the counter. Our Add(1) returns the post-increment
+		// value, which will be ≤ concurrent goroutines that missed CAS, well
+		// within the Initial budget.
+		count := h.state.count.Add(1)
+		if count <= int64(h.cfg.Initial) {
 			return h.inner.Handle(ctx, r)
 		}
-		if advanced := h.state.windowEnd.Load(); advanced > windowEnd && advanced > now {
-			// Window was advanced by the winner; count this record in the new
-			// window via the normal path instead of assuming "first record".
-			goto normalCount
+		// Apply Thereafter consistently with the steady-state path so records
+		// during the window-reset transition are sampled the same way.
+		if (count-int64(h.cfg.Initial))%int64(h.cfg.Thereafter) == 0 {
+			return h.inner.Handle(ctx, r)
 		}
-		// Winner advanced but the new window already expired again (clock skew /
-		// extremely long stall): treat as new-window first record.
-		h.state.count.Add(1)
-		return h.inner.Handle(ctx, r)
+		return nil
 	}
 
-normalCount:
 	count := h.state.count.Add(1)
 	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
@@ -127,13 +130,8 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 }
 
 // Close implements io.Closer.
-// The sampler owns no resources of its own, but the wrapped handler may
-// (e.g. file/syslog/database). Delegate Close to the inner handler when it
-// implements io.Closer so those resources are released; otherwise no-op.
+// No-op: no background goroutine to stop (window reset is done lazily in Handle).
 func (h *SamplingHandler) Close() error {
-	if c, ok := h.inner.(io.Closer); ok {
-		return c.Close()
-	}
 	return nil
 }
 

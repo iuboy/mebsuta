@@ -124,7 +124,12 @@ func (h *captureAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 			prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 			return true
 		})
-		r = prefixed
+		// Apply group prefix to h.attrs as well so that
+		// WithGroup("g").WithAttrs(slog.String("k","v")) outputs "g.k"="v".
+		for _, a := range h.attrs {
+			prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+		}
+		return h.parent.Handle(ctx, prefixed)
 	}
 	r.AddAttrs(h.attrs...)
 	return h.parent.Handle(ctx, r)
@@ -140,7 +145,13 @@ func (h *captureAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *captureAttrsHandler) WithGroup(name string) slog.Handler {
-	return &captureGroupHandler{parent: h.parent, group: name, attrs: h.attrs}
+	// Join groups so that WithGroup("g1").WithAttrs(...).WithGroup("g2")
+	// produces "g1.g2" rather than discarding "g1".
+	joinedGroup := name
+	if h.group != "" {
+		joinedGroup = h.group + "." + name
+	}
+	return &captureGroupHandler{parent: h.parent, group: joinedGroup, attrs: h.attrs}
 }
 
 type captureGroupHandler struct {
@@ -159,7 +170,11 @@ func (h *captureGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 		return true
 	})
-	prefixed.AddAttrs(h.attrs...)
+	// Apply group prefix to h.attrs as well so that
+	// WithGroup("g").WithAttrs(slog.String("k","v")) outputs "g.k"="v".
+	for _, a := range h.attrs {
+		prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
+	}
 	return h.parent.Handle(ctx, prefixed)
 }
 

@@ -134,7 +134,13 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	if len(o.handlers) == 1 {
 		handler = o.handlers[0]
 	} else {
-		handler = safeMultiHandler(o.handlers, o.errorHandler)
+		// When no custom error handler is set, use the default (os.Stderr)
+		// so that panic recovery errors in safeMulti are not silently discarded.
+		eh := o.errorHandler
+		if eh == nil {
+			eh = DefaultErrorHandler
+		}
+		handler = safeMultiHandler(o.handlers, eh)
 	}
 
 	// Apply middlewares: declared later wraps outermost

@@ -23,34 +23,25 @@ func ReportError(eh ErrorHandler, he *HandlerError) {
 
 // safeMultiHandler wraps multiple sub-handlers, adding panic recovery to each call. Prevents a single handler panic from crashing the entire log call.
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
-	sm := &safeMulti{
-		handlerCore: newHandlerCore(),
-		handlers:    handlers,
+	return &safeMulti{
+		handlerCore:  newHandlerCore(),
+		handlers:     handlers,
+		errorHandler: &eh,
 	}
-	sm.errorHandler.Store(&eh)
-	return sm
 }
 
 // safeMulti fans out log records to multiple handlers with per-handler panic recovery.
+// errorHandler is a *ErrorHandler so that clones produced by WithAttrs/WithGroup
+// share the same ErrorHandler value: calling setErrorHandler on the original or
+// any clone is visible to all.
 type safeMulti struct {
 	handlerCore
 	handlers     []slog.Handler
-	errorHandler atomic.Pointer[ErrorHandler]
-}
-
-// loadEH returns the configured ErrorHandler, or nil if none was set.
-// setErrorHandler writes this field concurrently with Handle reads, so it is
-// stored in an atomic.Pointer (matching syslog/database/async handlers).
-func (h *safeMulti) loadEH() ErrorHandler {
-	v := h.errorHandler.Load()
-	if v == nil {
-		return nil
-	}
-	return *v
+	errorHandler *ErrorHandler
 }
 
 func (h *safeMulti) Close() error {
-	visited := make(map[uint64]bool)
+	visited := &sync.Map{}
 	var errs []error
 	for _, hh := range h.handlers {
 		if err := closeAll(hh, visited, 0); err != nil {
@@ -73,7 +64,7 @@ func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *safeMulti) handleWithRecovery(handler slog.Handler, ctx context.Context, r slog.Record) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			ReportError(h.loadEH(), &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
+			ReportError(*h.errorHandler, &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
 			err = nil
 		}
 	}()
@@ -116,7 +107,7 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 	}
 
 	// For 4+ enabled handlers, fan out with goroutines.
-	var firstErr error
+	var errs []error
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
@@ -126,15 +117,13 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 			defer wg.Done()
 			if err := h.handleWithRecovery(handler, ctx, r.Clone()); err != nil {
 				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
+				errs = append(errs, err)
 				mu.Unlock()
 			}
 		}(hh)
 	}
 	wg.Wait()
-	return firstErr
+	return errors.Join(errs...)
 }
 
 func (h *safeMulti) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -142,7 +131,11 @@ func (h *safeMulti) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for i, hh := range h.handlers {
 		propagated[i] = hh.WithAttrs(attrs)
 	}
-	return h.cloneWith(propagated)
+	return &safeMulti{
+		handlerCore:  newHandlerCore(),
+		handlers:     propagated,
+		errorHandler: h.errorHandler,
+	}
 }
 
 func (h *safeMulti) WithGroup(name string) slog.Handler {
@@ -150,24 +143,14 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 	for i, hh := range h.handlers {
 		propagated[i] = hh.WithGroup(name)
 	}
-	return h.cloneWith(propagated)
-}
-
-// cloneWith returns a new safeMulti sharing the current error handler (by
-// pointer, so a later setErrorHandler on either instance is visible to both).
-func (h *safeMulti) cloneWith(handlers []slog.Handler) slog.Handler {
-	next := &safeMulti{
-		handlerCore: newHandlerCore(),
-		handlers:    handlers,
+	return &safeMulti{
+		handlerCore:  newHandlerCore(),
+		handlers:     propagated,
+		errorHandler: h.errorHandler,
 	}
-	if eh := h.errorHandler.Load(); eh != nil {
-		next.errorHandler.Store(eh)
-	}
-	return next
 }
-
 func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler.Store(&fn)
+	*h.errorHandler = fn
 	for _, hh := range h.handlers {
 		propagateErrorHandler(hh, fn)
 	}
@@ -203,7 +186,7 @@ type handlerUnwrapper interface {
 // Built-in handlers are deduplicated by stable id; cycle protection is guaranteed
 // by maxUnwrapDepth regardless of identity.
 func CloseAll(handler slog.Handler) error {
-	return closeAll(handler, make(map[uint64]bool), 0)
+	return closeAll(handler, &sync.Map{}, 0)
 }
 
 // handlerSeq assigns a unique, stable id to each built-in handler instance,
@@ -244,7 +227,7 @@ func handlerIdentity(h slog.Handler) (uint64, bool) {
 // decorator chains are shallow (<10 layers); 64 is a generous safety bound.
 const maxUnwrapDepth = 64
 
-func closeAll(handler slog.Handler, visited map[uint64]bool, depth int) error {
+func closeAll(handler slog.Handler, visited *sync.Map, depth int) error {
 	if handler == nil {
 		return nil
 	}
@@ -256,10 +239,9 @@ func closeAll(handler slog.Handler, visited map[uint64]bool, depth int) error {
 	// Dedupe built-in handlers by stable id. External handlers without
 	// handlerIdentifier are not deduplicated; their Close must be idempotent.
 	if ptr, ok := handlerIdentity(handler); ok {
-		if visited[ptr] {
+		if _, loaded := visited.LoadOrStore(ptr, true); loaded {
 			return nil
 		}
-		visited[ptr] = true
 	}
 
 	var errs []error
@@ -296,13 +278,24 @@ func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
 	return merged
 }
 
-// RecordWithGroupAttrs creates a new slog.Record with group-prefixed attrs from the original record plus extraAttrs.
+// RecordWithGroupAttrs creates a new slog.Record with group-prefixed attrs from the
+// original record plus extraAttrs. extraAttrs are assumed to already be group-prefixed
+// (they were built by MergeAttrs at construction time). The prefix semantics for
+// record attrs match prefixAttrs: when group is empty attrs are passed through unchanged;
+// otherwise "group." is prepended to each record attr key.
 func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
 	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
-	r.Attrs(func(attr slog.Attr) bool {
-		newR.AddAttrs(slog.Attr{Key: group + "." + attr.Key, Value: attr.Value})
-		return true
-	})
+	if group == "" {
+		r.Attrs(func(attr slog.Attr) bool {
+			newR.AddAttrs(attr)
+			return true
+		})
+	} else {
+		r.Attrs(func(attr slog.Attr) bool {
+			newR.AddAttrs(slog.Attr{Key: group + "." + attr.Key, Value: attr.Value})
+			return true
+		})
+	}
 	newR.AddAttrs(extraAttrs...)
 	return newR
 }

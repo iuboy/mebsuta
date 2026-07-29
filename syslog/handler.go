@@ -100,17 +100,14 @@ func NewHandler(cfg Config) (*Handler, error) {
 		h.tlsCfg = &tls.Config{
 			InsecureSkipVerify: cfg.TLSSkipVerify,
 			MinVersion:         tls.VersionTLS12,
-		}
-		// M7: set ServerName for SNI so the server can present the right
-		// certificate and verification has a name to check against. Skip only
-		// when the user has explicitly disabled verification.
-		if !cfg.TLSSkipVerify {
-			if host, _, err := net.SplitHostPort(cfg.Address); err == nil && host != "" {
-				h.tlsCfg.ServerName = host
-			} else if err != nil {
-				// Address had no port — use it verbatim as the SNI name.
-				h.tlsCfg.ServerName = cfg.Address
-			}
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			},
 		}
 		if cfg.TLSSkipVerify {
 			mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
@@ -134,7 +131,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 // Enabled implements slog.Handler.
 func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.leveler.Level()
+	return level >= mebsuta.SafeLevel(h.leveler)
 }
 
 // Handle implements slog.Handler.
@@ -316,18 +313,16 @@ func (h *Handler) writeWithRetry(msg []byte) {
 		if h.closing.Load() {
 			return
 		}
-		// M7: drop the stale connection on every failure (not just i==0) and
-		// attempt a reconnect when enabled. Previously only i==0 disconnected +
-		// reconnected; iterations 1..4 kept writing to a known-bad (or nil)
-		// connection, burning the retry budget on writes that could never
-		// succeed and delaying the eventual drop+report.
-		h.disconnect()
-		if h.reconnectEnabled && !h.isConnected() {
-			h.reconnect()
+		// Only disconnect + reconnect on the first failure. Subsequent retries
+		// reuse the same connection to avoid thrashing on transient write errors
+		// (e.g., a brief network hiccup that doesn't break the TCP session).
+		if i == 0 {
+			h.disconnect()
+			if h.reconnectEnabled {
+				h.reconnect()
+			}
 		}
-		if i < maxRetries-1 {
-			time.Sleep(h.cfg.RetryDelay)
-		}
+		time.Sleep(h.cfg.RetryDelay)
 	}
 	mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts", maxRetries)})
 }
@@ -377,26 +372,25 @@ func (h *Handler) processQueue() {
 		case <-reconnector.C:
 			if !h.isConnected() && h.reconnectEnabled {
 				delay := backoffDelay(retryCount.Load())
-				// M7: use NewTimer (not time.After) so the timer is Stop()'d on
-				// every select arm. time.After leaks its timer until it fires,
-				// which accumulates goroutines/timers under frequent reconnects.
-				timer := time.NewTimer(delay)
 				select {
-				case <-timer.C:
+				case <-time.After(delay):
 				case <-h.ctx.Done():
-					timer.Stop()
 					return
 				case msg, ok := <-h.buffer:
-					timer.Stop()
 					if !ok {
 						return
 					}
 					h.writeWithRetry(msg)
 					continue
 				}
-				timer.Stop()
-				h.reconnect()
-				retryCount.Add(1)
+				// Re-check connection state before reconnecting to avoid TOCTOU race:
+				// writeWithRetry may have already reconnected during the backoff delay.
+				if !h.isConnected() {
+					h.reconnect()
+					retryCount.Add(1)
+				} else {
+					retryCount.Store(0)
+				}
 			} else {
 				retryCount.Store(0)
 			}
@@ -419,14 +413,10 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 	}
 
 	if level >= slog.LevelError {
-		// M7: NewTimer + explicit Stop so the timer is reaped on every arm,
-		// not held until it fires (time.After leak under load).
-		timer := time.NewTimer(5 * time.Second)
-		defer timer.Stop()
 		select {
 		case h.buffer <- data:
 			return nil
-		case <-timer.C:
+		case <-time.After(h.cfg.ErrorTimeout):
 			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level)})
 			return fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
 		}
@@ -641,44 +631,82 @@ func truncateJSON(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
 		return s
 	}
-	budget := maxBytes - 13
-	if budget < 10 {
-		budget = 10
+
+	// walkJSON tracks bracket depth and string state through a prefix of s,
+	// returning the bracket stack and whether we ended inside a string.
+	walkJSON := func(prefix string) (stack []byte, inStr bool) {
+		escaped := false
+		for i := 0; i < len(prefix); i++ {
+			c := prefix[i]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' && inStr {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inStr = !inStr
+				continue
+			}
+			if inStr {
+				continue
+			}
+			switch c {
+			case '{', '[':
+				stack = append(stack, c)
+			case '}':
+				if len(stack) > 0 && stack[len(stack)-1] == '{' {
+					stack = stack[:len(stack)-1]
+				}
+			case ']':
+				if len(stack) > 0 && stack[len(stack)-1] == '[' {
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
+		return
+	}
+
+	// First pass: truncate with a generous budget to estimate the suffix length.
+	// We reserve at least 3 bytes for "..." plus closing quote and brackets.
+	budget := maxBytes - 3
+	if budget < 3 {
+		budget = 3
 	}
 	truncated := s[:lastRuneBoundary(s, budget)]
+	stack, inStr := walkJSON(truncated)
 
-	var stack []byte
-	inStr := false
-	escaped := false
-	for i := 0; i < len(truncated); i++ {
-		c := truncated[i]
-		if escaped {
-			escaped = false
-			continue
+	// Build the suffix and measure its exact length.
+	suffixLen := 3 // "..."
+	if inStr {
+		suffixLen++ // closing '"'
+	}
+	suffixLen += len(stack) // closing brackets
+
+	// Second pass: precise truncation using exact suffix length.
+	// Loop in case the new truncation point changes the bracket state
+	// (which can only shrink the required suffix).
+	for {
+		preciseBudget := maxBytes - suffixLen
+		if preciseBudget < 0 {
+			preciseBudget = 0
 		}
-		if c == '\\' && inStr {
-			escaped = true
-			continue
-		}
-		if c == '"' {
-			inStr = !inStr
-			continue
-		}
+		truncated = s[:lastRuneBoundary(s, preciseBudget)]
+		stack, inStr = walkJSON(truncated)
+
+		newSuffixLen := 3
 		if inStr {
-			continue
+			newSuffixLen++
 		}
-		switch c {
-		case '{', '[':
-			stack = append(stack, c)
-		case '}':
-			if len(stack) > 0 && stack[len(stack)-1] == '{' {
-				stack = stack[:len(stack)-1]
-			}
-		case ']':
-			if len(stack) > 0 && stack[len(stack)-1] == '[' {
-				stack = stack[:len(stack)-1]
-			}
+		newSuffixLen += len(stack)
+		if newSuffixLen <= suffixLen {
+			// Suffix has stabilized (can only shrink). Break without
+			// reassigning suffixLen — it's not read after the loop.
+			break
 		}
+		suffixLen = newSuffixLen
 	}
 
 	var suffix strings.Builder
@@ -693,11 +721,7 @@ func truncateJSON(s string, maxBytes int) string {
 			suffix.WriteByte(']')
 		}
 	}
-	result := truncated + suffix.String()
-	if len(result) > maxBytes {
-		result = truncateUTF8(result, maxBytes)
-	}
-	return result
+	return truncated + suffix.String()
 }
 
 func truncateUTF8(s string, maxBytes int) string {

@@ -2,8 +2,8 @@ package mebsutatest
 
 import (
 	"log/slog"
-	"reflect"
 	"testing"
+	"time"
 )
 
 // AssertRecordCount asserts that the CaptureHandler captured exactly n records.
@@ -15,59 +15,47 @@ func AssertRecordCount(t testing.TB, h *CaptureHandler, n int) {
 }
 
 // AssertHasAttr asserts that record[index] has an attribute with the given key and value.
-//
-// value is a string; the captured attribute's value is compared after Resolve()
-// against slog.AnyValue(value) so the comparison works across slog.Value kinds
-// (string, int, bool, …) instead of only string-valued attrs. The previous
-// implementation called a.Value.String() directly, which stringifies every kind
-// and silently mismatches non-string attrs (e.g. an Int(42) vs the string "42").
-func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value string) {
+// The value comparison uses slog.Value.Equal, which works for all attribute types
+// (string, int64, bool, float64, duration, time, etc.), not just strings.
+// If multiple attributes share the same key, the LAST one is checked (matching
+// slog's "last value wins" semantics for duplicate keys).
+func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value any) {
 	t.Helper()
 	records := h.Records()
 	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
-	want := slog.AnyValue(value).Resolve()
-	for _, a := range records[index].Attrs {
+	// Convert the expected value to a slog.Value for type-safe comparison.
+	var expected slog.Value
+	switch v := value.(type) {
+	case string:
+		expected = slog.StringValue(v)
+	case int:
+		expected = slog.Int64Value(int64(v))
+	case int64:
+		expected = slog.Int64Value(v)
+	case bool:
+		expected = slog.BoolValue(v)
+	case float64:
+		expected = slog.Float64Value(v)
+	case time.Duration:
+		expected = slog.DurationValue(v)
+	case time.Time:
+		expected = slog.TimeValue(v)
+	default:
+		expected = slog.AnyValue(v)
+	}
+	// Search from the end to match slog's "last value wins" semantics.
+	for i := len(records[index].Attrs) - 1; i >= 0; i-- {
+		a := records[index].Attrs[i]
 		if a.Key == key {
-			got := a.Value.Resolve()
-			if !valueEqual(got, want) {
-				t.Fatalf("attr %q: expected value %v (kind=%s), got %v (kind=%s)",
-					key, want, want.Kind(), got, got.Kind())
+			if !a.Value.Equal(expected) {
+				t.Fatalf("attr %q: expected value %v, got %v", key, value, a.Value)
 			}
 			return
 		}
 	}
 	t.Fatalf("record[%d] has no attr with key %q", index, key)
-}
-
-// valueEqual compares two resolved slog.Values by kind and underlying value,
-// so a captured string attr matches a string expectation exactly.
-func valueEqual(a, b slog.Value) bool {
-	if a.Kind() != b.Kind() {
-		return false
-	}
-	switch a.Kind() {
-	case slog.KindString:
-		return a.String() == b.String()
-	case slog.KindInt64:
-		return a.Int64() == b.Int64()
-	case slog.KindUint64:
-		return a.Uint64() == b.Uint64()
-	case slog.KindFloat64:
-		return a.Float64() == b.Float64()
-	case slog.KindBool:
-		return a.Bool() == b.Bool()
-	case slog.KindDuration:
-		return a.Duration() == b.Duration()
-	case slog.KindTime:
-		return a.Time().Equal(b.Time())
-	default:
-		// a.Any()/b.Any() may return a non-comparable type (e.g. KindGroup
-		// returns []slog.Attr, KindAny may hold a slice/map). Using == on such
-		// dynamic values panics at runtime; fall back to reflect.DeepEqual.
-		return reflect.DeepEqual(a.Any(), b.Any())
-	}
 }
 
 // AssertLevel asserts that record[index] has the given level.
