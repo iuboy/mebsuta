@@ -29,6 +29,10 @@ type dbLogEntry struct {
 	Level   string          `gorm:"column:level"`
 	Message string          `gorm:"column:msg"`
 	Fields  json.RawMessage `gorm:"type:json"`
+	// Integrity protection — populated when Config.IntegritySigner is set.
+	RecordHash string `gorm:"column:record_hash;default:''"`
+	Signature  []byte `gorm:"column:signature;type:bytes"`
+	SignAlgo   string `gorm:"column:sign_algo;size:32;default:''"`
 }
 
 // Handler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
@@ -295,6 +299,25 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 			data = []byte("{}")
 		}
 		entry.Fields = json.RawMessage(data)
+	}
+
+	// Integrity protection: when a signer is configured, compute a canonical
+	// representation of the record and sign it. Failure is non-fatal — we log
+	// the error and persist the record without a signature rather than dropping it.
+	if h.cfg.IntegritySigner != nil {
+		canonical := fmt.Sprintf("%s|%s|%s|%s",
+			entry.Time.Format(time.RFC3339Nano), entry.Level, entry.Message, string(entry.Fields))
+		recordHash, sig, err := h.cfg.IntegritySigner.Sign([]byte(canonical))
+		if err != nil {
+			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
+				Component: "database", Operation: "sign",
+				Err: fmt.Errorf("integrity sign failed (record persisted unsigned): %w", err),
+			})
+		} else {
+			entry.RecordHash = fmt.Sprintf("%x", recordHash)
+			entry.Signature = sig
+			entry.SignAlgo = h.cfg.IntegritySigner.Algorithm()
+		}
 	}
 
 	return entry

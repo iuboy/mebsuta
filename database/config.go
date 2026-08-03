@@ -38,7 +38,12 @@ type Config struct {
 	MaxOpenConns    int           // Max open connections. 0 → 10.
 	MaxIdleConns    int           // Max idle connections. 0 → 5.
 	RetryDelay      time.Duration // Delay between retries. 0 → 500ms.
-	warnNoTLS       bool          // internal: set by Validate when DSN lacks TLS params.
+	// IntegritySigner optionally provides per-record hash+signature for
+	// tamper-evidence. nil disables signing (default, backward compatible).
+	// When set, each record gets record_hash / signature / sign_algo columns
+	// populated before batch insert. The handler is algorithm-agnostic.
+	IntegritySigner IntegritySigner
+	warnNoTLS       bool // internal: set by Validate when DSN lacks TLS params.
 }
 
 // Validate checks required fields and returns a normalized copy with defaults applied.
