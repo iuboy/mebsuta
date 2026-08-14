@@ -15,6 +15,7 @@ import (
 
 	"github.com/iuboy/mebsuta"
 	"github.com/iuboy/mebsuta/attrutil"
+	"gorm.io/driver/gaussdb"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -35,7 +36,7 @@ type dbLogEntry struct {
 	SignAlgo   string `gorm:"column:sign_algo;size:32;default:''"`
 }
 
-// Handler writes log records in batches to a PostgreSQL database via GORM.
+// Handler writes log records in batches to a PostgreSQL or openGauss database via GORM.
 type Handler struct {
 	leveler      slog.Leveler
 	cfg          Config
@@ -58,7 +59,18 @@ func NewHandler(cfg Config) (*Handler, error) {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
-	gdb, err := gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{})
+	// openGauss uses the GaussDB GORM driver (gorm.io/driver/gaussdb); it
+	// speaks the PostgreSQL-compatible protocol but needs its own driver for
+	// openGauss-specific authentication (sha256) and error codes.
+	var dialector gorm.Dialector
+	switch cfg.Driver {
+	case "opengauss":
+		dialector = gaussdb.Open(cfg.DSN)
+	default: // "postgres" — the only other value Validate accepts.
+		dialector = postgres.Open(cfg.DSN)
+	}
+
+	gdb, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: connect %s database: %s", cfg.Driver, sanitizeDBError(err))
 	}
@@ -298,10 +310,10 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	// and persist the record without a signature rather than dropping it.
 	if h.cfg.IntegritySigner != nil {
 		// Cap the stored timestamp at the canonical precision so the signed
-		// form survives the database round-trip: PostgreSQL timestamptz keeps
-		// microseconds, so sub-microsecond digits would otherwise be silently
-		// dropped by the column and every later verification of an untampered
-		// record would fail.
+		// form survives the database round-trip: PostgreSQL and openGauss
+		// timestamptz keep microseconds, so sub-microsecond digits would
+		// otherwise be silently dropped by the column and every later
+		// verification of an untampered record would fail.
 		entry.Time = entry.Time.Truncate(canonicalPrecision)
 		canonical, err := CanonicalBytes(entry.Time, entry.Level, entry.Message, entry.Fields)
 		if err != nil {

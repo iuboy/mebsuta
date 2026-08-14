@@ -41,11 +41,12 @@ const (
 	// produce identical canonical bytes.
 	canonicalTimeLayout = "2006-01-02T15:04:05.000000Z07:00"
 
-	// canonicalPrecision matches the resolution of the PostgreSQL timestamptz
-	// column that stores the timestamp. Sub-microsecond digits are dropped
-	// from the canonical form and from the stored value when signing is
-	// enabled, so re-computing the hash from the stored row reproduces the
-	// signed hash exactly.
+	// canonicalPrecision matches the resolution of the timestamptz columns
+	// that store the timestamp (both PostgreSQL and openGauss keep
+	// microseconds). Sub-microsecond digits are dropped from the canonical
+	// form and from the stored value when signing is enabled, so
+	// re-computing the hash from the stored row reproduces the signed hash
+	// exactly.
 	canonicalPrecision = time.Microsecond
 )
 

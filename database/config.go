@@ -12,9 +12,9 @@ import (
 
 // tableNameRe validates SQL table names. Allows alphanumeric characters plus
 // underscore, including digits as the first character (supported by
-// PostgreSQL via quoting). Schema-qualified names (schema.table) are
-// also accepted. Digits-first is explicitly allowed because it's a legal table
-// name in PostgreSQL.
+// PostgreSQL and openGauss via quoting). Schema-qualified names
+// (schema.table) are also accepted. Digits-first is explicitly allowed
+// because it's a legal table name in both supported databases.
 var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)?$`)
 
 const (
@@ -25,7 +25,7 @@ const (
 
 // Config holds configuration for database log output.
 type Config struct {
-	Driver        string        // Required: "postgres".
+	Driver        string        // Required: "postgres" or "opengauss".
 	DSN           string        // Required: database connection string.
 	Table         string        // Required: log table name.
 	Level         slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
@@ -56,8 +56,8 @@ func (c Config) Validate() (Config, error) {
 	if c.Driver == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "driver is required"}
 	}
-	if c.Driver != "postgres" {
-		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "unsupported driver: " + c.Driver + " (supported: postgres)"}
+	if c.Driver != "postgres" && c.Driver != "opengauss" {
+		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "unsupported driver: " + c.Driver + " (supported: postgres, opengauss)"}
 	}
 	if c.DSN == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "DSN", Msg: "data source name is required"}
@@ -68,7 +68,7 @@ func (c Config) Validate() (Config, error) {
 	if !tableNameRe.MatchString(c.Table) {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z0-9_](.[a-zA-Z0-9_])?"}
 	}
-	// M9: PostgreSQL's NAMEDATALEN-1 = 63.
+	// M9: PostgreSQL's and openGauss's NAMEDATALEN-1 = 63.
 	const maxTableLen = 63
 	if len(c.Table) > maxTableLen {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max %d, got %d)", maxTableLen, len(c.Table))}
