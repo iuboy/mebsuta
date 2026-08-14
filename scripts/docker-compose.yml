@@ -7,23 +7,6 @@
 # variable injection instead of hardcoded passwords.
 
 services:
-  mysql:
-    image: mysql:8.4
-    container_name: mebsuta-mysql
-    environment:
-      MYSQL_ROOT_PASSWORD: test
-      MYSQL_DATABASE: logs
-      MYSQL_PWD: test
-    ports:
-      - "3306:3306"
-    healthcheck:
-      # Use MYSQL_PWD env var instead of -p flag to avoid exposing the password
-      # in process listings (ps aux).
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root"]
-      interval: 5s
-      timeout: 10s
-      retries: 10
-
   postgres:
     image: postgres:18-alpine
     container_name: mebsuta-postgres

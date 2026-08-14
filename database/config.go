@@ -11,10 +11,10 @@ import (
 )
 
 // tableNameRe validates SQL table names. Allows alphanumeric characters plus
-// underscore, including digits as the first character (supported by MySQL and
-// PostgreSQL via quoting/backticks). Schema-qualified names (schema.table) are
+// underscore, including digits as the first character (supported by
+// PostgreSQL via quoting). Schema-qualified names (schema.table) are
 // also accepted. Digits-first is explicitly allowed because it's a legal table
-// name in both supported databases.
+// name in PostgreSQL.
 var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)?$`)
 
 const (
@@ -25,7 +25,7 @@ const (
 
 // Config holds configuration for database log output.
 type Config struct {
-	Driver        string        // Required: "mysql" or "postgres".
+	Driver        string        // Required: "postgres".
 	DSN           string        // Required: database connection string.
 	Table         string        // Required: log table name.
 	Level         slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
@@ -44,7 +44,7 @@ type Config struct {
 	// populated before batch insert. The handler is algorithm-agnostic.
 	//
 	// The signer must be safe for concurrent use (records are signed from
-	// multiple goroutines). Signing also caps stored timestamps at millisecond
+	// multiple goroutines). Signing also caps stored timestamps at microsecond
 	// precision so signatures remain verifiable after the database round-trip
 	// (see CanonicalBytes).
 	IntegritySigner IntegritySigner
@@ -56,8 +56,8 @@ func (c Config) Validate() (Config, error) {
 	if c.Driver == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "driver is required"}
 	}
-	if c.Driver != "mysql" && c.Driver != "postgres" {
-		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "unsupported driver: " + c.Driver + " (supported: mysql, postgres)"}
+	if c.Driver != "postgres" {
+		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "unsupported driver: " + c.Driver + " (supported: postgres)"}
 	}
 	if c.DSN == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "DSN", Msg: "data source name is required"}
@@ -68,13 +68,10 @@ func (c Config) Validate() (Config, error) {
 	if !tableNameRe.MatchString(c.Table) {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z0-9_](.[a-zA-Z0-9_])?"}
 	}
-	// M9: PostgreSQL's NAMEDATALEN-1 = 63; MySQL's limit is 64.
-	maxTableLen := 64
-	if c.Driver == "postgres" {
-		maxTableLen = 63
-	}
+	// M9: PostgreSQL's NAMEDATALEN-1 = 63.
+	const maxTableLen = 63
 	if len(c.Table) > maxTableLen {
-		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max %d for %s, got %d)", maxTableLen, c.Driver, len(c.Table))}
+		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max %d, got %d)", maxTableLen, len(c.Table))}
 	}
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
@@ -101,7 +98,7 @@ func (c Config) Validate() (Config, error) {
 		c.RetryDelay = 500 * time.Millisecond
 	}
 
-	c.warnNoTLS = !dsnHasTLS(c.Driver, c.DSN)
+	c.warnNoTLS = !dsnHasTLS(c.DSN)
 
 	return c, nil
 }
@@ -109,26 +106,17 @@ func (c Config) Validate() (Config, error) {
 // dsnHasTLS checks whether the DSN contains TLS/SSL connection parameters.
 //
 // This is a best-effort heuristic used only to decide whether to emit a
-// no-TLS warning; it does not gate any security control. A driver-specific
-// parser (mysql.ParseDSN / url.Parse for the key=value postgres format)
-// would be more precise, but that would add a direct dependency on
-// go-sql-driver/mysql at the config layer. If a false negative occurs, the
-// only consequence is a spurious warning on an unencrypted connection.
-func dsnHasTLS(driver, dsn string) bool {
-	switch driver {
-	case "mysql":
-		// MySQL DSN parameter tls=<value>: any non-empty value means TLS is
-		// configured (tls=true, tls=skip-verify, tls=custom, tls=preferred).
-		dsnLower := strings.ToLower(dsn)
-		return strings.Contains(dsnLower, "tls=") && !strings.Contains(dsnLower, "tls=false")
-	case "postgres":
-		// PostgreSQL key=value DSN: any sslmode except "disable" enables TLS
-		// (require, verify-ca, verify-full, prefer, allow).
-		dsnLower := strings.ToLower(dsn)
-		if !strings.Contains(dsnLower, "sslmode=") {
-			return false
-		}
-		return !strings.Contains(dsnLower, "sslmode=disable")
+// no-TLS warning; it does not gate any security control. A proper DSN parser
+// (url.Parse for the key=value postgres format) would be more precise, but
+// the heuristic avoids edge cases with non-URL DSN forms. If a false
+// negative occurs, the only consequence is a spurious warning on an
+// unencrypted connection.
+func dsnHasTLS(dsn string) bool {
+	// PostgreSQL key=value DSN: any sslmode except "disable" enables TLS
+	// (require, verify-ca, verify-full, prefer, allow).
+	dsnLower := strings.ToLower(dsn)
+	if !strings.Contains(dsnLower, "sslmode=") {
+		return false
 	}
-	return false
+	return !strings.Contains(dsnLower, "sslmode=disable")
 }

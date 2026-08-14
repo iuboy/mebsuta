@@ -566,9 +566,9 @@ func TestHandler_ErrCountTracksDrops(t *testing.T) {
 // TestHandler_NewHandler_ConnectFailure verifies that
 // NewHandler returns an error when the database connection fails.
 func TestHandler_NewHandler_ConnectFailure(t *testing.T) {
-	// MySQL with invalid DSN should fail to connect.
-	_, err := NewHandler(Config{Driver: "mysql", DSN: "invalid:invalid@tcp(localhost:99999)/nonexistent", Table: "logs"})
-	require.Error(t, err, "should fail to connect to invalid MySQL DSN")
+	// PostgreSQL with an unreachable host should fail to connect.
+	_, err := NewHandler(Config{Driver: "postgres", DSN: "postgres://invalid:invalid@127.0.0.1:1/nonexistent?sslmode=disable", Table: "logs"})
+	require.Error(t, err, "should fail to connect to unreachable PostgreSQL DSN")
 	require.True(t, errors.Is(err, nil) || err != nil,
 		"error should be non-nil for connection failure")
 }
@@ -631,14 +631,14 @@ func TestHandler_BatchInsertError(t *testing.T) {
 // TestConfig_BatchSizeCap verifies that an oversized BatchSize is clamped to
 // maxBatchSize so the internal channel/batch cannot grow unbounded.
 func TestConfig_BatchSizeCap(t *testing.T) {
-	cfg, err := Config{Driver: "mysql", DSN: "u:p@tcp(127.0.0.1)/db", Table: "logs", BatchSize: 5_000_000}.Validate()
+	cfg, err := Config{Driver: "postgres", DSN: "postgres://u:p@127.0.0.1:5432/db", Table: "logs", BatchSize: 5_000_000}.Validate()
 	require.NoError(t, err)
 	require.Equal(t, maxBatchSize, cfg.BatchSize, "oversized BatchSize should be clamped to maxBatchSize")
 }
 
 // TestConfig_BatchSizeDefault verifies the default when BatchSize <= 0.
 func TestConfig_BatchSizeDefault(t *testing.T) {
-	cfg, err := Config{Driver: "mysql", DSN: "u:p@tcp(127.0.0.1)/db", Table: "logs"}.Validate()
+	cfg, err := Config{Driver: "postgres", DSN: "postgres://u:p@127.0.0.1:5432/db", Table: "logs"}.Validate()
 	require.NoError(t, err)
 	require.Equal(t, 100, cfg.BatchSize, "BatchSize should default to 100")
 }

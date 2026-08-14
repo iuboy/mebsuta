@@ -65,19 +65,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.go == 'true'
     services:
-      mysql:
-        image: mysql:8.4
-        env:
-          MYSQL_ROOT_PASSWORD: test
-          MYSQL_DATABASE: logs
-          MYSQL_PWD: test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost -u root"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
       postgres:
         image: postgres:18-alpine
         env:
@@ -97,22 +84,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - name: Wait for MySQL
-        run: |
-          ready=0
-          for i in $(seq 1 30); do
-            if MYSQL_PWD=test mysqladmin ping -h 127.0.0.1 -u root 2>/dev/null; then
-              echo "MySQL ready"
-              ready=1
-              break
-            fi
-            echo "Waiting for MySQL... ($i/30)"
-            sleep 2
-          done
-          [ "$ready" = 1 ] || { echo "::error::MySQL did not become ready"; exit 1; }
       - name: Run integration tests
         env:
-          MEBSUTA_MYSQL_DSN: "root:test@tcp(127.0.0.1:3306)/logs?parseTime=true"
           MEBSUTA_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=test password=test dbname=logs sslmode=disable"
         run: go test -race -count=1 -tags=integration ./database/...
 

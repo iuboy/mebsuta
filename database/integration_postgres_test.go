@@ -38,7 +38,7 @@ func newPostgresHandler(t *testing.T) (*Handler, *gorm.DB) {
 	})
 	require.NoError(t, err, "NewHandler postgres")
 
-	gdb, err := openGormDB("postgres", postgresDSN())
+	gdb, err := openGormDB(postgresDSN())
 	require.NoError(t, err, "open verification db")
 	require.NoError(t, gdb.Table(table).AutoMigrate(&dbLogEntry{}), "auto migrate")
 	t.Cleanup(func() {

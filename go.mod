@@ -7,21 +7,17 @@ require (
 	github.com/iuboy/mbta-go v0.5.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/stretchr/testify v1.11.1
-	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.2
 )
 
 require (
-	filippo.io/edwards25519 v1.2.0 // indirect
-	gitee.com/Trisia/gotlcp v1.4.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emmansun/gmsm v0.44.1 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
-	github.com/go-sql-driver/mysql v1.10.0 // indirect
 	github.com/iuboy/pollux-go v0.4.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect

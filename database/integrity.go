@@ -36,18 +36,17 @@ var (
 )
 
 const (
-	// canonicalTimeLayout renders timestamps in UTC with a fixed millisecond
+	// canonicalTimeLayout renders timestamps in UTC with a fixed microsecond
 	// fraction (no trailing-zero trimming), so identical instants always
 	// produce identical canonical bytes.
-	canonicalTimeLayout = "2006-01-02T15:04:05.000Z07:00"
+	canonicalTimeLayout = "2006-01-02T15:04:05.000000Z07:00"
 
-	// canonicalPrecision is the coarsest timestamp precision that survives a
-	// round-trip through every supported dialect (MySQL DATETIME(3) keeps
-	// milliseconds; PostgreSQL timestamptz keeps microseconds). Sub-millisecond
-	// digits are dropped from the canonical form and from the stored value
-	// when signing is enabled, so re-computing the hash from the stored row
-	// reproduces the signed hash exactly.
-	canonicalPrecision = time.Millisecond
+	// canonicalPrecision matches the resolution of the PostgreSQL timestamptz
+	// column that stores the timestamp. Sub-microsecond digits are dropped
+	// from the canonical form and from the stored value when signing is
+	// enabled, so re-computing the hash from the stored row reproduces the
+	// signed hash exactly.
+	canonicalPrecision = time.Microsecond
 )
 
 // canonicalRecord is the deterministic shape encoded by CanonicalBytes.
@@ -61,12 +60,12 @@ type canonicalRecord struct {
 }
 
 // canonicalFields normalizes raw JSON into a deterministic form: keys sorted,
-// no insignificant whitespace, Go-native escaping. Databases do not preserve
-// the exact text of a JSON column (MySQL JSON reorders keys and strips
-// whitespace; PostgreSQL jsonb normalizes too), so both the signing side and
-// the verification side must pass the column through this normalization
-// instead of comparing raw bytes. Re-marshal through any also converges
-// numbers regardless of how the dialect reformatted them.
+// no insignificant whitespace, Go-native escaping. PostgreSQL's json type
+// preserves column text exactly, so this normalization is defense in depth —
+// it keeps the canonical form stable if the column is ever migrated to jsonb
+// (which normalizes documents) and converges numbers regardless of how the
+// value was serialized. Both the signing side and the verification side pass
+// the fields column through it instead of comparing raw bytes.
 func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 	if len(fields) == 0 {
 		return nil, nil
@@ -87,9 +86,9 @@ func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 // VerifyRecord at audit time. It is deterministic and independent of the
 // storage round-trip:
 //
-//   - Time is converted to UTC and truncated to millisecond precision
-//     (canonicalPrecision), the finest precision every supported dialect
-//     preserves.
+//   - Time is converted to UTC and truncated to microsecond precision
+//     (canonicalPrecision), matching the resolution of PostgreSQL
+//     timestamptz columns.
 //   - Fields are normalized via canonicalFields, tolerating the key
 //     reordering and whitespace changes databases apply to JSON columns.
 //

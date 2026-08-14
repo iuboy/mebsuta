@@ -65,9 +65,9 @@ func TestCanonicalBytes_Deterministic(t *testing.T) {
 		f1, f2 json.RawMessage
 	}{
 		{
-			name: "sub-millisecond digits ignored",
+			name: "sub-microsecond digits ignored",
 			t1:   base,
-			t2:   time.Date(2026, 8, 3, 10, 42, 23, 123000000, time.UTC),
+			t2:   time.Date(2026, 8, 3, 10, 42, 23, 123456000, time.UTC),
 		},
 		{
 			name: "timezone independent (same instant)",
@@ -150,7 +150,7 @@ func TestRecordToDBEntry_SignsCanonicalForm(t *testing.T) {
 	rec.AddAttrs(slog.String("b", "2"), slog.String("a", "1"))
 	entry := h.recordToDBEntry(rec)
 
-	if got := entry.Time.Nanosecond() % int(time.Millisecond); got != 0 {
+	if got := entry.Time.Nanosecond() % int(time.Microsecond); got != 0 {
 		t.Errorf("entry.Time not truncated to canonical precision: nanosecond remainder %d", got)
 	}
 

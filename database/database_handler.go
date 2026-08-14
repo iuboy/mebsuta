@@ -15,7 +15,6 @@ import (
 
 	"github.com/iuboy/mebsuta"
 	"github.com/iuboy/mebsuta/attrutil"
-	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -36,7 +35,7 @@ type dbLogEntry struct {
 	SignAlgo   string `gorm:"column:sign_algo;size:32;default:''"`
 }
 
-// Handler writes log records in batches to a SQL database (MySQL or Postgres) via GORM.
+// Handler writes log records in batches to a PostgreSQL database via GORM.
 type Handler struct {
 	leveler      slog.Leveler
 	cfg          Config
@@ -59,15 +58,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		return nil, fmt.Errorf("mebsuta: %w", err)
 	}
 
-	var dialector gorm.Dialector
-	switch cfg.Driver {
-	case "mysql":
-		dialector = mysql.Open(cfg.DSN)
-	case "postgres":
-		dialector = postgres.Open(cfg.DSN)
-	}
-
-	gdb, err := gorm.Open(dialector, &gorm.Config{})
+	gdb, err := gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: connect %s database: %s", cfg.Driver, sanitizeDBError(err))
 	}
@@ -307,9 +298,10 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	// and persist the record without a signature rather than dropping it.
 	if h.cfg.IntegritySigner != nil {
 		// Cap the stored timestamp at the canonical precision so the signed
-		// form survives the database round-trip: MySQL DATETIME(3) would
-		// otherwise silently drop sub-millisecond digits and every later
-		// verification of an untampered record would fail.
+		// form survives the database round-trip: PostgreSQL timestamptz keeps
+		// microseconds, so sub-microsecond digits would otherwise be silently
+		// dropped by the column and every later verification of an untampered
+		// record would fail.
 		entry.Time = entry.Time.Truncate(canonicalPrecision)
 		canonical, err := CanonicalBytes(entry.Time, entry.Level, entry.Message, entry.Fields)
 		if err != nil {

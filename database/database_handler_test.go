@@ -22,7 +22,7 @@ func TestNewHandler_UnsupportedDriver(t *testing.T) {
 }
 
 func TestNewHandler_EmptyDSN(t *testing.T) {
-	cfg := Config{Driver: "mysql", DSN: "", Table: "logs"}
+	cfg := Config{Driver: "postgres", DSN: "", Table: "logs"}
 	_, err := NewHandler(cfg)
 	// Validate 应该返回错误，因为 DSN 不能为空
 	if err == nil {
