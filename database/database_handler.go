@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -301,22 +302,33 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 		entry.Fields = json.RawMessage(data)
 	}
 
-	// Integrity protection: when a signer is configured, compute a canonical
-	// representation of the record and sign it. Failure is non-fatal — we log
-	// the error and persist the record without a signature rather than dropping it.
+	// Integrity protection: when a signer is configured, sign the canonical
+	// representation of the record. Failure is non-fatal — we log the error
+	// and persist the record without a signature rather than dropping it.
 	if h.cfg.IntegritySigner != nil {
-		canonical := fmt.Sprintf("%s|%s|%s|%s",
-			entry.Time.Format(time.RFC3339Nano), entry.Level, entry.Message, string(entry.Fields))
-		recordHash, sig, err := h.cfg.IntegritySigner.Sign([]byte(canonical))
+		// Cap the stored timestamp at the canonical precision so the signed
+		// form survives the database round-trip: MySQL DATETIME(3) would
+		// otherwise silently drop sub-millisecond digits and every later
+		// verification of an untampered record would fail.
+		entry.Time = entry.Time.Truncate(canonicalPrecision)
+		canonical, err := CanonicalBytes(entry.Time, entry.Level, entry.Message, entry.Fields)
 		if err != nil {
 			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
 				Component: "database", Operation: "sign",
-				Err: fmt.Errorf("integrity sign failed (record persisted unsigned): %w", err),
+				Err: fmt.Errorf("integrity sign skipped, record persisted unsigned: %w", err),
 			})
 		} else {
-			entry.RecordHash = fmt.Sprintf("%x", recordHash)
-			entry.Signature = sig
-			entry.SignAlgo = h.cfg.IntegritySigner.Algorithm()
+			recordHash, sig, signErr := h.cfg.IntegritySigner.Sign(canonical)
+			if signErr != nil {
+				mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
+					Component: "database", Operation: "sign",
+					Err: fmt.Errorf("integrity sign failed, record persisted unsigned: %w", signErr),
+				})
+			} else {
+				entry.RecordHash = hex.EncodeToString(recordHash)
+				entry.Signature = sig
+				entry.SignAlgo = h.cfg.IntegritySigner.Algorithm()
+			}
 		}
 	}
 

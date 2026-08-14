@@ -42,6 +42,11 @@ type Config struct {
 	// tamper-evidence. nil disables signing (default, backward compatible).
 	// When set, each record gets record_hash / signature / sign_algo columns
 	// populated before batch insert. The handler is algorithm-agnostic.
+	//
+	// The signer must be safe for concurrent use (records are signed from
+	// multiple goroutines). Signing also caps stored timestamps at millisecond
+	// precision so signatures remain verifiable after the database round-trip
+	// (see CanonicalBytes).
 	IntegritySigner IntegritySigner
 	warnNoTLS       bool // internal: set by Validate when DSN lacks TLS params.
 }
