@@ -189,7 +189,7 @@ func TestVerifyRecord_RoundTrip(t *testing.T) {
 	rec.AddAttrs(slog.String("table", "logs"), slog.Int("retries", 3))
 	entry := h.recordToDBEntry(rec)
 
-	stored := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: entry.Fields}
+	stored := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: entry.Fields, SignAlgo: entry.SignAlgo}
 
 	if err := VerifyRecord(stored, entry.RecordHash, entry.Signature, &mockVerifier{}); err != nil {
 		t.Fatalf("untampered record failed verification: %v", err)
@@ -218,17 +218,17 @@ func TestVerifyRecord_Tampering(t *testing.T) {
 
 	// Tamper with content but keep the original hash+signature: the
 	// recomputed hash no longer matches, so this must be detected.
-	tamperedMsg := StoredRecord{Time: entry.Time, Level: entry.Level, Message: "audit event (edited)", Fields: entry.Fields}
+	tamperedMsg := StoredRecord{Time: entry.Time, Level: entry.Level, Message: "audit event (edited)", Fields: entry.Fields, SignAlgo: entry.SignAlgo}
 	if err := VerifyRecord(tamperedMsg, entry.RecordHash, entry.Signature, &mockVerifier{}); !errors.Is(err, ErrHashMismatch) {
 		t.Errorf("tampered message: got %v, want ErrHashMismatch", err)
 	}
 
-	tamperedFields := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: json.RawMessage(`{"amount":1000000,"user":"alice"}`)}
+	tamperedFields := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: json.RawMessage(`{"amount":1000000,"user":"alice"}`), SignAlgo: entry.SignAlgo}
 	if err := VerifyRecord(tamperedFields, entry.RecordHash, entry.Signature, &mockVerifier{}); !errors.Is(err, ErrHashMismatch) {
 		t.Errorf("tampered fields: got %v, want ErrHashMismatch", err)
 	}
 
-	tamperedLevel := StoredRecord{Time: entry.Time, Level: slog.LevelWarn.String(), Message: entry.Message, Fields: entry.Fields}
+	tamperedLevel := StoredRecord{Time: entry.Time, Level: slog.LevelWarn.String(), Message: entry.Message, Fields: entry.Fields, SignAlgo: entry.SignAlgo}
 	if err := VerifyRecord(tamperedLevel, entry.RecordHash, entry.Signature, &mockVerifier{}); !errors.Is(err, ErrHashMismatch) {
 		t.Errorf("tampered level: got %v, want ErrHashMismatch", err)
 	}
@@ -256,7 +256,7 @@ func TestVerifyRecord_FailClosed(t *testing.T) {
 	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}}
 	rec := slog.NewRecord(time.Date(2026, 8, 3, 10, 42, 23, 123000000, time.UTC), slog.LevelInfo, "msg", 0)
 	entry := h.recordToDBEntry(rec)
-	stored := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: entry.Fields}
+	stored := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: entry.Fields, SignAlgo: entry.SignAlgo}
 
 	// Both columns empty, and the signature-stripped case: clearing either
 	// column must not silently pass (a tamperer's easy win).

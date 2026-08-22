@@ -160,8 +160,14 @@ func defaultErrorHandler(he *HandlerError) {
 }
 
 // LogErrorHandler returns an ErrorHandler that writes to w.
+// The returned handler serializes writes: error handlers are invoked from
+// arbitrary goroutines, and concurrent Fprintf calls on one io.Writer can
+// tear and interleave (matching defaultErrorHandler's locking).
 func LogErrorHandler(w io.Writer) ErrorHandler {
+	var mu sync.Mutex
 	return func(he *HandlerError) {
+		mu.Lock()
+		defer mu.Unlock()
 		_, _ = fmt.Fprintf(w, "mebsuta/%s/%s: %v\n", he.Component, he.Operation, he.Err)
 	}
 }

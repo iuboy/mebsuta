@@ -420,6 +420,7 @@ func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &Handler{
 		leveler: slog.LevelDebug,
+		cfg:     Config{ErrorTimeout: time.Second},
 		db:      gdb,
 		table:   "logs",
 		entries: make(chan dbLogEntry, 1), // tiny buffer

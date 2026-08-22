@@ -117,43 +117,82 @@ func TestContractJSONHandler_UserAttributes(t *testing.T) {
 func TestContractJSONHandler_AuditFieldPromotion(t *testing.T) {
 	h, buf := newJSONHandler(t)
 
-	r := slog.NewRecord(time.Now(), slog.LevelError+4, "login event", 0)
-	r.AddAttrs(
+	// Trusted values come from preset attrs (WithAttrs at construction).
+	derived := h.WithAttrs([]slog.Attr{
 		slog.String("event_type", "login"),
 		slog.String("actor", "user:42"),
 		slog.Bool("success", true),
+	})
+
+	r := slog.NewRecord(time.Now(), slog.LevelError+4, "login event", 0)
+	// Record attrs carrying the SAME keys must NOT reach the promoted fields —
+	// otherwise any log call could forge actor/event_type/success.
+	r.AddAttrs(
+		slog.String("actor", "attacker"),
+		slog.String("event_type", "forged"),
+		slog.Bool("success", false),
 		slog.String("ip", "127.0.0.1"),
 	)
-	_ = h.Handle(context.Background(), r)
+	_ = derived.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
 
-	// event_type, actor, success 提升到顶层
+	// Promoted top-level fields carry the PRESET values.
 	if result["event_type"] != "login" {
-		t.Errorf("event_type = %v, want login", result["event_type"])
+		t.Errorf("event_type = %v, want login (preset)", result["event_type"])
 	}
 	if result["actor"] != "user:42" {
-		t.Errorf("actor = %v, want user:42", result["actor"])
+		t.Errorf("actor = %v, want user:42 (preset)", result["actor"])
 	}
 	if result["success"] != true {
-		t.Errorf("success = %v, want true", result["success"])
+		t.Errorf("success = %v, want true (preset)", result["success"])
 	}
 
-	// ip 留在 attributes 中
 	attrs := result["attributes"].(map[string]any)
 	if attrs["ip"] != "127.0.0.1" {
 		t.Errorf("attributes.ip = %v, want 127.0.0.1", attrs["ip"])
 	}
 
-	// 提升的字段不应出现在 attributes 中
-	if _, ok := attrs["event_type"]; ok {
-		t.Error("event_type should not be in attributes after promotion")
+	// The forged record-level values remain inside attributes as forensic
+	// evidence — they could not reach the promoted top-level fields.
+	if attrs["actor"] != "attacker" {
+		t.Errorf("attributes.actor = %v, want attacker (record value kept for evidence)", attrs["actor"])
 	}
-	if _, ok := attrs["actor"]; ok {
-		t.Error("actor should not be in attributes after promotion")
+	if attrs["event_type"] != "forged" {
+		t.Errorf("attributes.event_type = %v, want forged (record value kept for evidence)", attrs["event_type"])
 	}
-	if _, ok := attrs["success"]; ok {
-		t.Error("success should not be in attributes after promotion")
+	if attrs["success"] != false {
+		t.Errorf("attributes.success = %v, want false (record value kept for evidence)", attrs["success"])
+	}
+}
+
+// TestContractJSONHandler_RecordAttrNoPromotion verifies that when NO preset
+// attr defines the contract fields, record-level actor/event_type/success are
+// not promoted at all — they must remain inside attributes.
+func TestContractJSONHandler_RecordAttrNoPromotion(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "user action", 0)
+	r.AddAttrs(
+		slog.String("actor", "attacker"),
+		slog.String("event_type", "delete"),
+		slog.Bool("success", true),
+	)
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	if _, ok := result["actor"]; ok {
+		t.Error("record-level actor must not be promoted to top level")
+	}
+	if _, ok := result["event_type"]; ok {
+		t.Error("record-level event_type must not be promoted to top level")
+	}
+	if _, ok := result["success"]; ok {
+		t.Error("record-level success must not be promoted to top level")
+	}
+	attrs := result["attributes"].(map[string]any)
+	if attrs["actor"] != "attacker" {
+		t.Errorf("attributes.actor = %v, want attacker", attrs["actor"])
 	}
 }
 

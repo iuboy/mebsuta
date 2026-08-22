@@ -33,23 +33,34 @@ type asyncRecord struct {
 // Do not wrap syslog.Handler or database.Handler — they have built-in async mechanisms.
 type AsyncHandler struct {
 	handlerCore
-	inner        slog.Handler
-	ch           chan asyncRecord
-	wg           sync.WaitGroup
-	ctx          context.Context
-	cancel       context.CancelFunc
-	closed       atomic.Bool
-	dropped      atomic.Int64
-	errorHandler atomic.Pointer[ErrorHandler]
+	inner          slog.Handler
+	errorTimeout   time.Duration
+	ch             chan asyncRecord
+	wg             sync.WaitGroup
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closed         atomic.Bool
+	dropped        atomic.Int64
+	lastDropReport atomic.Int64 // unix nanos of the last surfaced drop report
+	errorHandler   atomic.Pointer[ErrorHandler]
 }
 
-// findSelfBuffered recursively checks whether the handler chain contains a SelfBufferedHandler.
+// findSelfBuffered recursively checks whether the handler chain contains a
+// SelfBufferedHandler. Depth is bounded so a self-referential third-party
+// unwrapHandler chain cannot overflow the stack during construction.
 func findSelfBuffered(h slog.Handler) bool {
+	return findSelfBufferedDepth(h, 0)
+}
+
+func findSelfBufferedDepth(h slog.Handler, depth int) bool {
+	if depth > maxUnwrapDepth {
+		return false
+	}
 	if _, ok := h.(SelfBufferedHandler); ok {
 		return true
 	}
 	if uw, ok := h.(handlerUnwrapper); ok {
-		return findSelfBuffered(uw.unwrapHandler())
+		return findSelfBufferedDepth(uw.unwrapHandler(), depth+1)
 	}
 	return false
 }
@@ -67,16 +78,18 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	if bufferSize <= 0 {
 		bufferSize = DefaultAsyncBufferSize
 	}
+	cfg, _ = cfg.Validate() // applies ErrorTimeout default
 
 	ctx, cancel := context.WithCancel(context.Background())
 
 	eh := DefaultErrorHandler
 	h := &AsyncHandler{
-		handlerCore: newHandlerCore(),
-		inner:       inner,
-		ch:          make(chan asyncRecord, bufferSize),
-		ctx:         ctx,
-		cancel:      cancel,
+		handlerCore:  newHandlerCore(),
+		inner:        inner,
+		errorTimeout: cfg.ErrorTimeout,
+		ch:           make(chan asyncRecord, bufferSize),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 	h.errorHandler.Store(&eh)
 	h.wg.Add(1)
@@ -92,6 +105,7 @@ func (h *AsyncHandler) Enabled(ctx context.Context, level slog.Level) bool {
 // Handle implements slog.Handler.
 func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
+		h.dropped.Add(1)
 		return fmt.Errorf("async handler is closed, log dropped")
 	}
 	ar := asyncRecord{
@@ -100,7 +114,11 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		Message: r.Message,
 		PC:      r.PC,
 		inner:   h.inner,
-		ctx:     ctx,
+		// Strip cancellation while keeping values: the record may outlive the
+		// request (buffered during Close's drain), and a cancelled request ctx
+		// would make ctx-aware inner handlers drop the final flush. Values
+		// are preserved so ctx-derived attributes still work.
+		ctx: context.WithoutCancel(ctx),
 	}
 	r.Attrs(func(attr slog.Attr) bool {
 		ar.Attrs = append(ar.Attrs, attr)
@@ -112,23 +130,42 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
 	// Fast path: check if already closing before attempting channel operations.
 	if h.closed.Load() {
+		h.dropped.Add(1)
 		return fmt.Errorf("async handler is closed, log dropped")
 	}
 
 	return h.sendRecordInner(ar)
 }
 
+// shouldReportDrop reports whether a drop should be surfaced now (at most one
+// report per second, carrying the cumulative count). Without rate limiting, a
+// flood that overflows the buffer triggers one locked stderr write per
+// dropped record — a 1:1 amplification of attack traffic.
+func (h *AsyncHandler) shouldReportDrop() int64 {
+	total := h.dropped.Load()
+	now := time.Now().UnixNano()
+	last := h.lastDropReport.Load()
+	if now-last < int64(time.Second) {
+		return 0
+	}
+	if h.lastDropReport.CompareAndSwap(last, now) {
+		return total
+	}
+	return 0
+}
+
 func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
-	// Recover guard for the rare race where Close() completes cancel()+close(ch)
+	// Recover guard for the rare race where Close() completes close(ch)
 	// between sendRecord's closed.Load() check and this select statement.
 	defer func() {
 		if r := recover(); r != nil {
+			h.dropped.Add(1)
 			retErr = fmt.Errorf("async handler is closed, log dropped")
 		}
 	}()
 
-	// Error and Audit (LevelAudit > LevelError) records: blocking send with 5s timeout.
-	// Other levels use non-blocking send and drop on buffer full.
+	// Error and Audit (LevelAudit > LevelError) records: blocking send bounded
+	// by ErrorTimeout. Other levels use non-blocking send and drop on buffer full.
 	if ar.Level >= slog.LevelError {
 		// Try non-blocking send first to avoid timer allocation in the common case.
 		select {
@@ -139,7 +176,7 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
 		default:
 		}
 
-		timer := time.NewTimer(5 * time.Second)
+		timer := time.NewTimer(h.errorTimeout)
 		defer timer.Stop()
 		select {
 		case h.ch <- ar:
@@ -148,8 +185,10 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
 			return fmt.Errorf("async handler is closed, log dropped")
 		case <-timer.C:
 			h.dropped.Add(1)
-			err := fmt.Errorf("mebsuta: buffer full timeout for %v record, dropped (total: %d)", ar.Level, h.dropped.Load())
-			ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err})
+			err := fmt.Errorf("mebsuta: buffer full timeout for %v record after %v, dropped (total: %d)", ar.Level, h.errorTimeout, h.dropped.Load())
+			if total := h.shouldReportDrop(); total > 0 {
+				ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err, Dropped: total})
+			}
 			return err
 		}
 	}
@@ -161,7 +200,9 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
 		return fmt.Errorf("async handler is closed, log dropped")
 	default:
 		h.dropped.Add(1)
-		ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: 1})
+		if total := h.shouldReportDrop(); total > 0 {
+			ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", total), Dropped: total})
+		}
 		return nil
 	}
 }
@@ -184,13 +225,20 @@ func (h *AsyncHandler) WithGroup(name string) slog.Handler {
 }
 
 // Close implements io.Closer.
+//
+// Drains before cancelling: close(ch) lets run() process every buffered
+// record, and wg.Wait() returns only after the final writes finished. The
+// earlier cancel()-first order made ctx-aware inner handlers see a cancelled
+// context during the drain and drop the final batch. Records queued by
+// in-flight senders during close(ch) are caught by the recover guard in
+// sendRecordInner.
 func (h *AsyncHandler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	h.cancel()
 	close(h.ch)
 	h.wg.Wait()
+	h.cancel()
 	return nil
 }
 
@@ -212,10 +260,28 @@ func (h *AsyncHandler) run() {
 	for ar := range h.ch {
 		r := slog.NewRecord(ar.Time, ar.Level, ar.Message, ar.PC)
 		r.AddAttrs(ar.Attrs...)
-		if err := ar.inner.Handle(ar.ctx, r); err != nil {
-			ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err})
-		}
+		h.processRecord(ar, r)
 	}
+}
+
+// processRecord dispatches one record with panic recovery. safeMulti's
+// handleWithRecovery only guards the synchronous path; when a user wraps a
+// third-party handler directly in WithAsync, an inner panic must not kill
+// the background goroutine (and with it the whole process).
+func (h *AsyncHandler) processRecord(ar asyncRecord, r slog.Record) {
+	err := h.handleInner(ar, r)
+	if err != nil {
+		ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err})
+	}
+}
+
+func (h *AsyncHandler) handleInner(ar asyncRecord, r slog.Record) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("inner handler panic recovered: %v", p)
+		}
+	}()
+	return ar.inner.Handle(ar.ctx, r)
 }
 
 // asyncAttrsHandler preserves preset attrs through the async boundary.
@@ -225,10 +291,11 @@ type asyncAttrsHandler struct {
 }
 
 func (h *asyncAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
-	for _, attr := range h.attrs {
-		r.AddAttrs(attr)
-	}
-	return h.AsyncHandler.Handle(ctx, r)
+	// Clone instead of mutating the caller's record (slog contract). The
+	// fan-out paths may share one record across handlers; AddAttrs on the
+	// original would leak preset attrs into sibling handlers.
+	grouped := RecordWithGroupAttrs(r, "", h.attrs)
+	return h.AsyncHandler.Handle(ctx, grouped)
 }
 
 func (h *asyncAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

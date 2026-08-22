@@ -157,24 +157,27 @@ func (w *Writer) Close() error {
 	// file — while a rotate() that already passed its closed.Load() check
 	// starts a new compression goroutine that outlives Close.
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	w.compressWg.Wait()
 
 	// H2: after all compressions finish, re-run cleanup to reap any backups
 	// that were skipped earlier because they were mid-compression. Without
 	// this, a high-frequency rotation burst can leave stale backups.
+	var closeErr error
 	if w.file != nil {
 		w.cleanupBackupsLocked()
-		w.reportRotateErrors()
+		closeErr = w.file.Close()
+		w.file = nil
 	}
+	w.mu.Unlock()
 
-	if w.file == nil {
-		return nil
-	}
-	err := w.file.Close()
-	w.file = nil
-	return err
+	// M4 contract: report pending rotation errors OUTSIDE w.mu. The Write
+	// path honors this; reporting under the lock deadlocks any OnError
+	// callback that re-enters the Writer (e.g. logging the error through
+	// this same writer).
+	w.reportRotateErrors()
+
+	return closeErr
 }
 
 // SetOnError updates the error callback. Safe to call concurrently.
@@ -489,7 +492,8 @@ var (
 // checkNotSymlink verifies the log file path is not a symlink. If the file does not
 // exist yet, it checks the parent directory. Intermediate system directories (e.g.
 // macOS /var → /private/var) are intentionally not walked — those are legitimate
-// symlinks, and TOCTOU protection is handled by openAppend's post-open inode check.
+// symlinks, and TOCTOU protection for the final component is handled by
+// openAppend's O_NOFOLLOW plus the post-open inode comparison.
 func checkNotSymlink(path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -513,16 +517,23 @@ func checkNotSymlink(path string) error {
 	return nil
 }
 
-// openAppend opens path for create+append and defends against symlink substitution
-// (TOCTOU): if the file existed before open, the opened descriptor's inode must
-// match the pre-open Lstat. Without this check, an attacker who replaces the log
-// path with a symlink between checkNotSymlink and OpenFile could redirect log
-// writes to an arbitrary file.
+// openAppend opens path for create+append and defends against symlink
+// substitution (TOCTOU) with two layers:
+//
+//  1. O_NOFOLLOW (Unix): the open itself refuses a symlink final component —
+//     including the critical window during rotation, where os.Rename leaves
+//     the path absent and a pre-existing symlink would otherwise be followed
+//     by O_CREATE. This covers the case the inode check cannot: when the
+//     path did not exist at Lstat time, there is no pre-open inode to
+//     compare against.
+//  2. inode comparison: if the file existed before the open, the opened
+//     descriptor's inode must match the pre-open Lstat. On Windows (no
+//     O_NOFOLLOW) this is the only defense for pre-existing files.
 func openAppend(path string, mode os.FileMode) (*os.File, os.FileInfo, error) {
 	lstat, lerr := os.Lstat(path)
 	preExist := lerr == nil
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mode)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|openNoFollow, mode)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -530,10 +541,6 @@ func openAppend(path string, mode os.FileMode) (*os.File, os.FileInfo, error) {
 	if err != nil {
 		_ = f.Close()
 		return nil, nil, err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		_ = f.Close()
-		return nil, nil, fmt.Errorf("log file %s resolved to a symlink, refusing to write", path)
 	}
 	if preExist && !os.SameFile(lstat, fi) {
 		_ = f.Close()

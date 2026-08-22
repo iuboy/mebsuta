@@ -22,6 +22,12 @@ func (e *ConfigError) Error() string {
 const (
 	DefaultAsyncBufferSize = 256
 
+	// DefaultErrorTimeout bounds how long an Error-or-above record may block
+	// the calling goroutine waiting for buffer space before being dropped.
+	// Callers of slog are typically request handlers: a long block turns a
+	// slow sink plus an Error spike into a whole-service stall.
+	DefaultErrorTimeout = time.Second
+
 	DefaultSamplingInitial    = 100
 	DefaultSamplingThereafter = 10
 	DefaultSamplingWindow     = time.Second
@@ -139,12 +145,19 @@ func SafeLevel(l slog.Leveler) slog.Level {
 // AsyncConfig holds configuration for async log processing.
 type AsyncConfig struct {
 	BufferSize int // Channel buffer size. 0 → 256.
+	// ErrorTimeout bounds how long an Error-or-above record may block the
+	// calling goroutine when the buffer is full, before the record is
+	// dropped. 0 → 1s.
+	ErrorTimeout time.Duration
 }
 
 // Validate checks required fields and returns a normalized copy with defaults applied.
 func (c AsyncConfig) Validate() (AsyncConfig, error) {
 	if c.BufferSize <= 0 {
 		c.BufferSize = DefaultAsyncBufferSize
+	}
+	if c.ErrorTimeout <= 0 {
+		c.ErrorTimeout = DefaultErrorTimeout
 	}
 	return c, nil
 }

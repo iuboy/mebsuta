@@ -3,6 +3,92 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本策略参见 [VERSIONING.md](docs/VERSIONING.md)。
 
+## [v0.8.0] - 2026-08-22
+
+全面对抗性安全审查修复（9 High / 15 Medium / 12 Low），全部附回归测试。
+
+### ⚠️ BREAKING CHANGES
+
+- **database**: 移除 MySQL 支持（v0.7.x 后的 `refactor(database)!` 延续），仅保留 PostgreSQL 与 openGauss
+- **database**: `VerifyRecord` 现在 fail-closed 校验 `sign_algo` 列 — `StoredRecord` 新增 `SignAlgo` 字段；缺失该列、或与 verifier 算法不符时返回 `ErrUnsignedRecord` / `ErrAlgoMismatch`（新增），不再静默通过。旧调用方需在读回行时填充该字段
+- **JSON 输出**: `actor`/`event_type`/`success` 审计字段只从 preset attrs（`WithAttrs`）提升；record 级同名 attr 留在 `attributes` 内（此前可被日志调用点伪造信任锚点字段）
+- **Error 级背压**: async/database/mbta 的 Error+ 记录满缓冲阻塞从硬编码 5s 改为可配置（`ErrorTimeout`，默认 1s）
+
+### Security
+
+- **database**: `CanonicalBytes` 数字精度修复 — 此前 canonical 化经 float64（53 位），≥2^53 的整数（金额、ID）可被篡改为 float64 舍入孪生值而签名仍验证通过。现用 `json.Number` 保留精确字面值，并拒绝含重复对象键或尾部多余数据的 fields 列（防 `{"k":orig,"k":forged}` 重写）。**升级后重算哈希即可检测历史行是否被此类手法篡改过**
+- **syslog**: RFC5424 SD-PARAM 值过滤控制字符 — 此前 attr 值中的 LF 可在 LF 分帧 TCP 上走私完整伪造 syslog 消息（伪造 facility/HOST/APP-NAME）
+- **filerotate**: `openAppend` 加 `O_NOFOLLOW`（Unix）— 封堵轮转 rename 窗口内植入 symlink 导致日志追加写入任意文件；移除不可达的 fstat symlink 假防线
+- **filerotate**: `compressResidual` 严格匹配轮转备份命名（`isBackupName`，含 `.gz.tmp` 清理分支）— 此前默认配置下启动即压缩并**删除**同前缀无关文件（如 `app.log.notes`）
+- **filerotate**: 压缩临时文件改用 `O_EXCL` — 预植 `<backup>.gz.tmp` symlink 无法再被 O_TRUNC 跟随清空任意文件
+- **mbta**: `Close` 先排空再取消 context — 此前关机时最终 flush 拿到已取消的 ctx，**静默丢弃全部缓冲日志**（端到端复现 0/5 送达，现 5/5）
+- **mebsuta**: JSON Marshal 失败降级输出 ERROR 兜底记录 — 此前嵌套 NaN/chan/func attr 导致整条记录无声消失（slog 吞掉错误）
+- **mebsuta**: `WithErrorHandler` 现可到达子包 handler（database/syslog/mbta 新增导出 `SetErrorHandler`，实现新的 `ErrorHandlerSetter` 接口）— 此前注入接口未导出，自定义错误处理对全部子包静默失效
+
+### Added
+
+- **database**: openGauss 支持（官方 `gorm.io/driver/gaussdb`，sha256 认证）
+- **database**: `CanonicalBytes` 导出为审计工具的规范重算入口；`VerifyRecord` 绑定算法列；批量 INSERT 按 1000 行/语句分块（修复 10000 行 × 7 列超 PostgreSQL 65535 绑定参数上限导致整管线失败）
+- **syslog**: RFC5424 结构化数据预算（128 参数 / SD-NAME 32 字符 / PARAM-VALUE 4KB / 总量 32KB，超限打 `_truncated` 标记）；RFC5424 时间戳固定 6 位小数（符合 ABNF，严格接收端不再拒收）
+- **mbta**: `Reconnect` 配置真正生效（会话非 READY 时在重试间重拨）；`CloseTimeout`（默认 5s）有界关闭 — `client.Close` 内部 drain 恒等 30s，此前无界阻塞关机直至被 SIGKILL
+- **mebsuta**: async 后台 goroutine panic 恢复；`AsyncConfig.ErrorTimeout`；丢弃报告限频（每秒至多 1 条含累计数，洪泛不再 1:1 放大 stderr）
+- **mbta**: `SeverityNumber` 按 OTel 数值映射（此前恒 0）；attr 预算与 LogValuer 解析；hostname 清洗
+
+### Changed
+
+- **Close 语义统一**: async/mbta 均改为 close → drain → cancel 顺序（与 syslog/database 一致），排空阶段下游 ctx 不再被取消；async 记录以 `context.WithoutCancel` 入队
+- **syslog**: `Close` 有界排空（10s，超时报告丢弃数）；`RetryDelay` 封顶 30s（`MaxRetryDelay`）；`Flush(≤0)` 默认 5s
+- **database**: 批次彻底失败时 `Close` 透出 flush 错误（不再静默返回 nil）；`dsnHasTLS` 文档修正假阴性方向
+- **mebsuta**: `LogErrorHandler` 写入加锁；multi 错误聚合统一 `errors.Join`；unwrap 链递归深度封顶；`contractJSONHandler.WithGroup("")` 不再重置已有分组
+- **依赖**: Go 工具链 1.26.5 → **1.26.6**（修复 crypto/tls GO-2026-6090、encoding/xml GO-2026-6088、encoding/asn1 GO-2026-5972 三个可达标准库漏洞，govulncheck 现零告警）
+
+### Fixed
+
+- filerotate `Close` 在锁外报告轮转错误（`OnError` 重入回调不再死锁）；`MaxSizeMB` 溢出校验（1 PiB 上限）
+- async `asyncAttrsHandler` 克隆 record（不再变异调用方记录）；Close 后丢弃计数
+- mbta `safeSend` recover 分支正确返回错误
+- syslog RFC3164 非 JSON 模式丢弃 attrs 的一次性告警；空 SD-NAME 参数跳过
+
+## [v0.7.1] - 2026-08-03
+
+### Added
+
+- **database**: `IntegritySigner` — 可选的每记录哈希+签名防篡改（算法无关接口，`record_hash`/`signature`/`sign_algo` 列）
+
+### Fixed
+
+- CI: staticcheck `@latest` → `@v0.7.0`（Go 1.26 兼容）；actions 版本升级 + paths-filter v4.0.2 修复 main 分支 CI
+
+## [v0.7.0] - 2026-07-29
+
+### Fixed
+
+- **audit**: 全项目代码审查修复与架构优化
+- **deps**: 升级多个依赖
+- 代码逻辑审查修复（2 Medium + 2 Low）
+
+## [v0.6.1] - 2026-07-16
+
+### Changed
+
+- CI: actions/setup-go v5 → v7.0.0（Node.js 24 runtime）
+
+## [v0.6.0] - 2026-07-16
+
+### Added
+
+- **Timezone 配置**: 日志时间展示时区（`FileConfig`/`StdoutConfig`/syslog `TimeZone`）
+
+### Fixed
+
+- **audit**: 全项目代码审查修复（16 条发现）
+- **mebsutatest**: `valueEqual` default 分支改用 `reflect.DeepEqual`
+- **deps**: mbta-go v0.3.2 → v0.4.2、pollux-go v0.2.1 → v0.2.8
+
+### Changed
+
+- CI: actions/checkout v4 → v5.0.1、dorny/paths-filter v3.0.2 → v4.0.2（Node.js 24 runtime）
+
 ## [v0.5.0] - 2026-06-28
 
 ### Added

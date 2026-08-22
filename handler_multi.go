@@ -95,15 +95,13 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 	// For 2-3 enabled handlers, use sequential calls to avoid goroutine scheduling overhead.
 	// Clone the record once per handler to prevent data races on slog.Record internals.
 	if len(enabled) <= 3 {
-		var firstErr error
+		var errs []error
 		for _, hh := range enabled {
-			func() {
-				if err := h.handleWithRecovery(hh, ctx, r.Clone()); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}()
+			if err := h.handleWithRecovery(hh, ctx, r.Clone()); err != nil {
+				errs = append(errs, err)
+			}
 		}
-		return firstErr
+		return errors.Join(errs...)
 	}
 
 	// For 4+ enabled handlers, fan out with goroutines.
@@ -152,7 +150,7 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
 	*h.errorHandler = fn
 	for _, hh := range h.handlers {
-		propagateErrorHandler(hh, fn)
+		propagateErrorHandler(hh, fn, 0)
 	}
 }
 
@@ -161,19 +159,33 @@ type errorHandlerSetter interface {
 	setErrorHandler(fn ErrorHandler)
 }
 
-// propagateErrorHandler recursively unwraps the decorator chain, injecting errorHandler into all handlers that support setErrorHandler.
-func propagateErrorHandler(h slog.Handler, fn ErrorHandler) {
+// ErrorHandlerSetter is the exported form of errorHandlerSetter for handlers
+// in other packages (database, syslog, mbta), which cannot implement an
+// interface with an unexported method. Before this interface existed,
+// WithErrorHandler silently never reached those sub-package handlers.
+type ErrorHandlerSetter interface {
+	SetErrorHandler(fn ErrorHandler)
+}
+
+// propagateErrorHandler recursively unwraps the decorator chain, injecting
+// errorHandler into all handlers that support it. Depth is bounded by
+// maxUnwrapDepth so a self-referential third-party unwrapHandler chain
+// cannot overflow the stack during logger construction.
+func propagateErrorHandler(h slog.Handler, fn ErrorHandler, depth int) {
 	// Skip nil: do not overwrite handler defaults that were set at construction time.
 	// When buildHandler is called without WithErrorHandler, fn is nil, and each
 	// handler already initialized with DefaultErrorHandler should keep it.
-	if fn == nil {
+	if fn == nil || h == nil || depth > maxUnwrapDepth {
 		return
 	}
-	if s, ok := h.(errorHandlerSetter); ok {
+	switch s := h.(type) {
+	case errorHandlerSetter:
 		s.setErrorHandler(fn)
+	case ErrorHandlerSetter:
+		s.SetErrorHandler(fn)
 	}
 	if uw, ok := h.(handlerUnwrapper); ok {
-		propagateErrorHandler(uw.unwrapHandler(), fn)
+		propagateErrorHandler(uw.unwrapHandler(), fn, depth+1)
 	}
 }
 

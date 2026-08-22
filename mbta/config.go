@@ -25,13 +25,18 @@ type Config struct {
 	InsecureSkipVerify bool
 
 	// Behavior
-	Level       slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	BufferSize  int           // Internal batch buffer. 0 -> 1000.
-	FlushPeriod time.Duration // How often to flush buffered records. 0 -> 5s.
-	BatchSize   int           // Maximum records per batch. 0 -> 100.
-	MaxRetries  int           // Maximum send retries. 0 -> 3.
-	RetryDelay  time.Duration // Base retry delay. 0 -> 1s.
-	Reconnect   *bool         // Auto-reconnect on disconnect. nil -> true.
+	Level        slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
+	BufferSize   int           // Internal batch buffer. 0 -> 1000.
+	FlushPeriod  time.Duration // How often to flush buffered records. 0 -> 5s.
+	BatchSize    int           // Maximum records per batch. 0 -> 100.
+	MaxRetries   int           // Maximum send retries. 0 -> 3.
+	RetryDelay   time.Duration // Base retry delay. 0 -> 1s.
+	ErrorTimeout time.Duration // Max wait when buffer is full for Error+ logs. 0 -> 1s.
+	CloseTimeout time.Duration // Max wait for the client's graceful close/drain. 0 -> 5s.
+	// Reconnect re-dials the forwarder between send retries when the session
+	// is no longer READY. nil -> true. Without it (or when reconnection keeps
+	// failing) batches are dropped after MaxRetries attempts.
+	Reconnect *bool // Auto-reconnect on disconnect. nil -> true.
 
 	// Metadata
 	Tag    string // Tag for SignalBatch. Defaults to "mebsuta".
@@ -63,6 +68,12 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = defaultRetryDelay
+	}
+	if c.ErrorTimeout <= 0 {
+		c.ErrorTimeout = time.Second
+	}
+	if c.CloseTimeout <= 0 {
+		c.CloseTimeout = defaultCloseTimeout
 	}
 	if c.Tag == "" {
 		c.Tag = "mebsuta"

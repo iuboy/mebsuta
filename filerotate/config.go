@@ -27,6 +27,11 @@ const (
 
 	mib                  = 1 << 20
 	maxRotationSuffixSeq = 1000
+
+	// maxConfigurableSizeMB bounds MaxSizeMB. Above this the byte conversion
+	// (int64 * mib) overflows to a negative number, which disables size
+	// rotation silently via the maxBytes > 0 check. 1<<20 MiB = 1 PiB.
+	maxConfigurableSizeMB = 1 << 20
 )
 
 // DefaultFileMode is the default file permission for log files and rotated backups.
@@ -71,6 +76,9 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.MaxSizeMB <= 0 {
 		c.MaxSizeMB = DefaultMaxSizeMB
+	}
+	if c.MaxSizeMB > maxConfigurableSizeMB {
+		return Config{}, fmt.Errorf("MaxSizeMB too large (max %d MiB): %d", maxConfigurableSizeMB, c.MaxSizeMB)
 	}
 	if c.MaxBackups == 0 {
 		c.MaxBackups = DefaultMaxBackups

@@ -40,7 +40,11 @@ func compressFile(path string, onError func(error)) {
 		}
 	}()
 
-	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// O_EXCL: never follow a pre-planted symlink at tmpPath. With plain
+	// O_TRUNC, an attacker watching for rotation could plant <backup>.gz.tmp
+	// pointing at a victim file and have it truncated then overwritten with
+	// gzip bytes.
+	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("create temp: %w", err)})
 		return
@@ -122,9 +126,23 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 			continue
 		}
 		if strings.HasSuffix(name, ".gz.tmp") {
+			// Only reap OUR stale temps (backup name + ".gz.tmp"). A bare
+			// prefix match would delete unrelated files that merely share
+			// the log's name prefix.
+			if !isBackupName(base, strings.TrimSuffix(name, ".tmp")) {
+				continue
+			}
 			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
 				reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("remove stale temp %s: %w", name, err)})
 			}
+			continue
+		}
+		// Only rotation artifacts (backup timestamp/nano suffix, optional
+		// .gz) are candidates. Without this gate — the same one
+		// cleanupBackupsLocked applies — any same-prefix file (app.log.notes,
+		// app.log.2020-manual) would be gzipped and its ORIGINAL DELETED on
+		// every startup, with Compress enabled by default.
+		if !isBackupName(base, name) {
 			continue
 		}
 		if strings.HasSuffix(name, ".gz") || strings.HasSuffix(name, ".tmp") {

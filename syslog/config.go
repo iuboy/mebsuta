@@ -15,6 +15,11 @@ import (
 // is already "non-zero" from the user's perspective.
 const DefaultFacility = 1
 
+// MaxRetryDelay caps Config.RetryDelay. Every failed write attempt sleeps for
+// RetryDelay; a misconfigured multi-minute delay multiplies into the
+// worst-case blocking time of both writeWithRetry and Close's drain.
+const MaxRetryDelay = 30 * time.Second
+
 // Config holds configuration for syslog output.
 type Config struct {
 	Network  string       // "tcp", "udp", "unix". Defaults to "tcp".
@@ -72,6 +77,9 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = 500 * time.Millisecond
+	}
+	if c.RetryDelay > MaxRetryDelay {
+		c.RetryDelay = MaxRetryDelay
 	}
 	if c.BufferSize <= 0 {
 		c.BufferSize = 1000

@@ -25,13 +25,25 @@ const (
 // NaN/Inf handling: When nan is NaNSafe and the value is NaN or ±Inf, this
 // function returns nil. Callers MUST handle nil values (e.g. by checking
 // before type-asserting to float64).
+//
+// Group nesting deeper than maxFlattenDepth returns nil instead of recursing
+// further: this exported function has no other depth guard, and a
+// self-referential LogValuer→group chain would otherwise overflow the stack
+// (an unrecoverable fatal).
 func SlogValueAny(v slog.Value, nan NaNBehavior) any {
+	return slogValueAny(v, nan, 0)
+}
+
+func slogValueAny(v slog.Value, nan NaNBehavior, depth int) any {
+	if depth >= maxFlattenDepth {
+		return nil
+	}
 	switch v.Kind() {
 	case slog.KindGroup:
 		groupAttrs := v.Group()
 		m := make(map[string]any, len(groupAttrs))
 		for _, a := range groupAttrs {
-			m[a.Key] = SlogValueAny(a.Value, nan)
+			m[a.Key] = slogValueAny(a.Value, nan, depth+1)
 		}
 		return m
 	case slog.KindLogValuer:

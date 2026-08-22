@@ -149,7 +149,7 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	}
 
 	// Propagate error handler to all layers
-	propagateErrorHandler(handler, o.errorHandler)
+	propagateErrorHandler(handler, o.errorHandler, 0)
 
 	return handler, nil
 }

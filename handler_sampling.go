@@ -18,12 +18,17 @@ type samplingState struct {
 
 // SamplingHandler is a slog.Handler decorator that samples log records within a time window.
 // Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
+//
+// The sampling budget is shared across every logger derived from the same
+// sampling chain (WithAttrs/WithGroup clones reuse one counter). A high-
+// volume component can therefore consume the budget and suppress other
+// components' sub-Error logs in the same window — that is inherent to the
+// sampling semantics. Error and Audit records are exempt and always pass.
 type SamplingHandler struct {
 	handlerCore
-	inner        slog.Handler
-	cfg          SamplingConfig
-	state        *samplingState
-	errorHandler atomic.Pointer[ErrorHandler]
+	inner slog.Handler
+	cfg   SamplingConfig
+	state *samplingState
 }
 
 // WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
@@ -137,10 +142,6 @@ func (h *SamplingHandler) Close() error {
 
 func (h *SamplingHandler) unwrapHandler() slog.Handler {
 	return h.inner
-}
-
-func (h *SamplingHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler.Store(&fn)
 }
 
 var (

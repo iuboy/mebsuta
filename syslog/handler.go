@@ -31,6 +31,28 @@ const (
 	maxMsgSize             = 4 * 1024
 	maxReconnectDelay      = 5 * time.Minute
 	maxBackoffExp          = 20
+
+	// RFC5424 structured-data budgets. The structured path builds SD directly
+	// from record attrs (attrutil's count/size caps only apply to the JSON
+	// path), so without these bounds a single attacker-controlled attr could
+	// produce a multi-megabyte frame.
+	maxSDParams     = 128       // max PARAMs per SD-ELEMENT
+	maxSDNameLen    = 32        // RFC5424: SD-NAME is 1*32 PRINTUSASCII
+	maxSDValueBytes = 4 * 1024  // per PARAM-VALUE
+	maxSDBudget     = 32 * 1024 // total SD-ELEMENT bytes
+	// rfc5424TimeLayout is RFC3339 with a fixed 6-digit fraction — RFC5424
+	// TIME-SECFRAC allows at most 6 digits, RFC3339Nano emits up to 9 and
+	// strict receivers reject the frame.
+	rfc5424TimeLayout = "2006-01-02T15:04:05.000000Z07:00"
+
+	// closeDrainTimeout bounds how long Close waits for the background queue
+	// to flush buffered messages before cancelling and dropping the rest.
+	// Without a bound, a black-holed peer (3s write timeout per message × a
+	// 10000-message buffer) could stall Close for hours.
+	closeDrainTimeout = 10 * time.Second
+
+	// defaultFlushTimeout is used when Flush is called with timeout <= 0.
+	defaultFlushTimeout = 5 * time.Second
 )
 
 var spaceRe = regexp.MustCompile(`\s+`)
@@ -51,6 +73,7 @@ type Handler struct {
 	ctx              context.Context
 	cancel           context.CancelFunc
 	closing          atomic.Bool
+	attrDropWarned   atomic.Bool // one-time warning for RFC3164 attr discarding
 	location         *time.Location
 	errorHandler     atomic.Pointer[mebsuta.ErrorHandler]
 }
@@ -147,13 +170,32 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 // Close implements io.Closer.
+//
+// Drains the buffer for at most closeDrainTimeout: a black-holed peer makes
+// each buffered message cost one 3s write timeout, so an unbounded drain
+// could block Close (and thus process exit) for hours. On timeout the
+// remaining messages are dropped and reported.
 func (h *Handler) Close() error {
 	if !h.closing.CompareAndSwap(false, true) {
 		return nil
 	}
 
 	close(h.buffer)
-	h.wg.Wait()
+	drained := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(closeDrainTimeout):
+		remaining := len(h.buffer)
+		h.cancel() // ctx gate in writeWithRetry makes remaining messages no-ops
+		<-drained
+		if remaining > 0 {
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "close", Err: fmt.Errorf("close drain timed out after %v: %d buffered records dropped", closeDrainTimeout, remaining), Dropped: int64(remaining)})
+		}
+	}
 	h.cancel()
 
 	h.connMu.Lock()
@@ -172,6 +214,9 @@ func (h *Handler) Close() error {
 func (h *Handler) Flush(timeout time.Duration) error {
 	if h.closing.Load() {
 		return nil
+	}
+	if timeout <= 0 {
+		timeout = defaultFlushTimeout
 	}
 	done := make(chan struct{})
 	select {
@@ -212,6 +257,14 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 }
 
 func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
+	h.errorHandler.Store(&fn)
+}
+
+// SetErrorHandler updates the error handler at runtime. It implements
+// mebsuta.ErrorHandlerSetter so WithErrorHandler propagates into this
+// handler (the package-internal setErrorHandler alone is unreachable from
+// another package).
+func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
@@ -303,6 +356,12 @@ func (h *Handler) write(p []byte) error {
 }
 
 func (h *Handler) writeWithRetry(msg []byte) {
+	// Context gate: once Close's drain deadline fired and cancelled the ctx,
+	// skip remaining messages immediately instead of costing one 3s write
+	// timeout each — that is what bounds the post-deadline drain.
+	if h.ctx.Err() != nil {
+		return
+	}
 	if !h.isConnected() && !h.closing.Load() && h.reconnectEnabled {
 		h.reconnect()
 	}
@@ -478,7 +537,7 @@ func (h *Handler) formatJSONMessage(entry mebsuta.LogEntry, ts time.Time, priori
 
 	if h.cfg.RFC5424 {
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - - %s`,
-			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, cleaned) + "\n"
+			priority, ts.Format(rfc5424TimeLayout), host, h.cfg.Tag, procid, cleaned) + "\n"
 	}
 	return fmt.Sprintf(`<%d>%s %s %s[%d]: %s`,
 		priority, ts.Format("Jan _2 15:04:05"), host, h.cfg.Tag, procid, cleaned) + "\n"
@@ -492,19 +551,42 @@ func (h *Handler) formatStructuredMessage(entry mebsuta.LogEntry, ts time.Time, 
 
 	if h.cfg.RFC5424 {
 		var sd strings.Builder
+		written, skipped := 0, 0
 		if len(entry.Attrs) == 0 {
 			sd.WriteByte('-')
 		} else {
 			sd.WriteString("[mebsuta")
 			for _, attr := range entry.Attrs {
-				fmt.Fprintf(&sd, " %s=\"%s\"", sanitizeSDName(attr.Key), escapeSDValue(attr.Value.String()))
+				name := sanitizeSDName(attr.Key)
+				if name == "" {
+					continue
+				}
+				// Enforce count and total-size budgets: the structured path
+				// has no attrutil caps, and an unbounded attr (e.g. a raw
+				// request body) would produce frames that fragment on UDP and
+				// amplify memory on the receiver.
+				if written >= maxSDParams || sd.Len() > maxSDBudget {
+					skipped++
+					continue
+				}
+				fmt.Fprintf(&sd, " %s=\"%s\"", name, escapeSDValue(truncateUTF8(attr.Value.String(), maxSDValueBytes)))
+				written++
+			}
+			if skipped > 0 {
+				fmt.Fprintf(&sd, " %s=\"%d params omitted (limit)\"", "_truncated", skipped)
 			}
 			sd.WriteByte(']')
 		}
 		sdStr := sd.String()
 
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - %s %s`,
-			priority, ts.Format(time.RFC3339Nano), host, h.cfg.Tag, procid, sdStr, msgContent) + "\n"
+			priority, ts.Format(rfc5424TimeLayout), host, h.cfg.Tag, procid, sdStr, msgContent) + "\n"
+	}
+
+	// RFC3164 has no structured-data field: attrs are silently discarded.
+	// Warn once so operators notice instead of assuming attrs were shipped.
+	if len(entry.Attrs) > 0 && h.attrDropWarned.CompareAndSwap(false, true) {
+		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "format", Err: fmt.Errorf("RFC3164 non-JSON mode discards attributes (first occurrence; %d attrs on this record) — enable RFC5424 or JSONInMessage to preserve them", len(entry.Attrs))})
 	}
 
 	return fmt.Sprintf(`<%d>%s %s %s[%d]: %s`,
@@ -577,6 +659,11 @@ var builderPool = sync.Pool{
 	New: func() any { return new(strings.Builder) },
 }
 
+// escapeSDValue escapes a PARAM-VALUE per RFC5424 (", \, ]) and — critically —
+// replaces control characters with spaces. RFC5424 has no escape syntax for
+// them, and a raw LF/CR inside SD-PARAM would terminate the frame early on
+// LF-framed TCP transports, letting attacker-controlled attr values smuggle
+// entire forged syslog messages (msg smuggling).
 func escapeSDValue(s string) string {
 	b := builderPool.Get().(*strings.Builder)
 	defer func() {
@@ -585,13 +672,15 @@ func escapeSDValue(s string) string {
 	}()
 	b.Grow(len(s))
 	for _, r := range s {
-		switch r {
-		case '"':
+		switch {
+		case r == '"':
 			b.WriteString(`\"`)
-		case '\\':
+		case r == '\\':
 			b.WriteString(`\\`)
-		case ']':
+		case r == ']':
 			b.WriteString(`\]`)
+		case r < 0x20 || r == 0x7f:
+			b.WriteByte(' ')
 		default:
 			b.WriteRune(r)
 		}
@@ -599,14 +688,21 @@ func escapeSDValue(s string) string {
 	return b.String()
 }
 
+// sanitizeSDName maps an attr key to a legal SD-NAME (PRINTUSASCII subset,
+// capped at RFC5424's 32-character limit). Returns "" when the input has no
+// usable characters; callers skip such params entirely — an empty SD-NAME
+// would render an illegal ` ="value"` PARAM that strict receivers reject.
 func sanitizeSDName(key string) string {
 	b := builderPool.Get().(*strings.Builder)
 	defer func() {
 		b.Reset()
 		builderPool.Put(b)
 	}()
-	b.Grow(len(key))
+	b.Grow(min(len(key), maxSDNameLen))
 	for _, r := range key {
+		if b.Len() >= maxSDNameLen {
+			break
+		}
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
 			b.WriteRune(r)

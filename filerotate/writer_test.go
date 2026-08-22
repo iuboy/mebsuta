@@ -261,13 +261,26 @@ func TestCompressResidual(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log")
 
-	backup1 := logPath + ".20260401-000000"
+	// Real rotation artifact: timestamp suffix in the writer's format.
+	backup1 := logPath + ".2026-04-01T00-00-00.000"
 	if err := os.WriteFile(backup1, []byte("old log data\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	tmpFile := logPath + ".20260401-000000.gz.tmp"
+	tmpFile := backup1 + ".gz.tmp"
 	if err := os.WriteFile(tmpFile, []byte("partial gzip"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Same-prefix files that are NOT rotation artifacts must be left alone:
+	// a bare prefix match would gzip them and DELETE the originals on every
+	// startup (Compress defaults to true).
+	notes := logPath + ".notes"
+	if err := os.WriteFile(notes, []byte("operator notes\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manual := logPath + ".2020-manual"
+	if err := os.WriteFile(manual, []byte("manually archived\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,6 +294,16 @@ func TestCompressResidual(t *testing.T) {
 
 	if _, err := os.Stat(backup1 + ".gz"); err != nil {
 		t.Errorf("backup should be compressed to .gz: %v", err)
+	}
+	if _, err := os.Stat(backup1); err == nil {
+		t.Error("compressed original should be removed after .gz creation")
+	}
+
+	if _, err := os.Stat(notes); err != nil {
+		t.Errorf("unrelated same-prefix file test.log.notes must not be compressed/removed: %v", err)
+	}
+	if _, err := os.Stat(manual); err != nil {
+		t.Errorf("unrelated same-prefix file test.log.2020-manual must not be compressed/removed: %v", err)
 	}
 }
 

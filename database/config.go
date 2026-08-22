@@ -38,6 +38,12 @@ type Config struct {
 	MaxOpenConns    int           // Max open connections. 0 → 10.
 	MaxIdleConns    int           // Max idle connections. 0 → 5.
 	RetryDelay      time.Duration // Delay between retries. 0 → 500ms.
+	// ErrorTimeout bounds how long an Error-or-above record may block the
+	// calling goroutine when the backlog channel is full, before the record
+	// is dropped. 0 → 1s. Keep this small: request handlers call slog
+	// synchronously, and a long block here lets a slow database turn Error
+	// spikes into whole-service stalls.
+	ErrorTimeout time.Duration
 	// IntegritySigner optionally provides per-record hash+signature for
 	// tamper-evidence. nil disables signing (default, backward compatible).
 	// When set, each record gets record_hash / signature / sign_algo columns
@@ -97,6 +103,9 @@ func (c Config) Validate() (Config, error) {
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = 500 * time.Millisecond
 	}
+	if c.ErrorTimeout <= 0 {
+		c.ErrorTimeout = time.Second
+	}
 
 	c.warnNoTLS = !dsnHasTLS(c.DSN)
 
@@ -106,11 +115,11 @@ func (c Config) Validate() (Config, error) {
 // dsnHasTLS checks whether the DSN contains TLS/SSL connection parameters.
 //
 // This is a best-effort heuristic used only to decide whether to emit a
-// no-TLS warning; it does not gate any security control. A proper DSN parser
-// (url.Parse for the key=value postgres format) would be more precise, but
-// the heuristic avoids edge cases with non-URL DSN forms. If a false
-// negative occurs, the only consequence is a spurious warning on an
-// unencrypted connection.
+// no-TLS warning; it does not gate any security control. It can be wrong in
+// both directions: an embedded "sslmode=" substring inside e.g. a password
+// suppresses the warning on a connection that is actually plaintext (false
+// negative), and sslmode=prefer can fall back to plaintext silently after
+// the warning was skipped. Treat the warning as advisory, not proof.
 func dsnHasTLS(dsn string) bool {
 	// PostgreSQL key=value DSN: any sslmode except "disable" enables TLS
 	// (require, verify-ca, verify-full, prefer, allow).

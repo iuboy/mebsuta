@@ -33,6 +33,12 @@ var (
 	// content differs from the stored record_hash — the content was likely
 	// tampered with after signing.
 	ErrHashMismatch = errors.New("mebsuta/database: record content does not match stored hash (possible tampering)")
+
+	// ErrAlgoMismatch indicates the stored sign_algo column names a different
+	// algorithm than the supplied verifier implements. The verifier would
+	// otherwise either fail opaquely or, worse, "verify" a signature under an
+	// algorithm the tamperer chose.
+	ErrAlgoMismatch = errors.New("mebsuta/database: stored sign_algo does not match verifier algorithm")
 )
 
 const (
@@ -64,22 +70,102 @@ type canonicalRecord struct {
 // no insignificant whitespace, Go-native escaping. PostgreSQL's json type
 // preserves column text exactly, so this normalization is defense in depth —
 // it keeps the canonical form stable if the column is ever migrated to jsonb
-// (which normalizes documents) and converges numbers regardless of how the
-// value was serialized. Both the signing side and the verification side pass
-// the fields column through it instead of comparing raw bytes.
+// (which normalizes documents). Both the signing side and the verification
+// side pass the fields column through it instead of comparing raw bytes.
+//
+// Numbers are decoded with json.Number and re-emitted verbatim, so every
+// integer and decimal keeps its exact value and literal spelling. Decoding
+// into float64 (plain Unmarshal into any) would collapse distinct values such
+// as 9007199254740992 and 9007199254740993 (both round to 2^53), letting a
+// tamperer swap stored numeric fields (amounts, IDs) while the recomputed
+// hash — and therefore the signature — still verifies.
+//
+// Documents containing duplicate object keys are rejected outright. The
+// writer never produces them (it marshals a Go map), and last-wins decoding
+// would silently mask a {"k":original,"k":forged} rewrite.
 func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 	if len(fields) == 0 {
 		return nil, nil
 	}
+	if err := checkNoDuplicateKeys(fields); err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(fields))
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal(fields, &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return nil, fmt.Errorf("mebsuta/database: fields are not valid JSON: %w", err)
+	}
+	if dec.More() {
+		return nil, fmt.Errorf("mebsuta/database: fields contain trailing data after the JSON value")
 	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta/database: canonicalize fields: %w", err)
 	}
 	return data, nil
+}
+
+// maxDupCheckDepth bounds checkNoDuplicateKeys' recursion so an adversarially
+// deep document cannot overflow the stack during verification.
+const maxDupCheckDepth = 64
+
+// checkNoDuplicateKeys walks the JSON token stream and returns an error when
+// any object repeats a key. encoding/json's decoder silently keeps the last
+// duplicate, which would let {"a":1,"a":2} validate identically to {"a":2}
+// and hide a tampered column behind an unchanged canonical form.
+func checkNoDuplicateKeys(data []byte) error {
+	if err := checkValueDupKeys(json.NewDecoder(bytes.NewReader(data)), 0); err != nil {
+		return fmt.Errorf("mebsuta/database: fields JSON is not acceptable: %w", err)
+	}
+	return nil
+}
+
+func checkValueDupKeys(dec *json.Decoder, depth int) error {
+	if depth > maxDupCheckDepth {
+		return fmt.Errorf("nesting deeper than %d levels", maxDupCheckDepth)
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // scalar value
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("unexpected non-string object key %v", keyTok)
+			}
+			if _, dup := seen[key]; dup {
+				return fmt.Errorf("duplicate object key %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := checkValueDupKeys(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // consume '}'
+		return err
+	case '[':
+		for dec.More() {
+			if err := checkValueDupKeys(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // consume ']'
+		return err
+	default:
+		return nil // standalone delimiters cannot occur as values
+	}
 }
 
 // CanonicalBytes returns the canonical byte representation of a record: the
@@ -92,6 +178,8 @@ func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 //     timestamptz columns.
 //   - Fields are normalized via canonicalFields, tolerating the key
 //     reordering and whitespace changes databases apply to JSON columns.
+//     Numbers keep their exact value and literal spelling (json.Number);
+//     documents with duplicate object keys are rejected.
 //
 // Auditing tools should use this function (not a hand-rolled serialization)
 // when re-computing hashes of stored records.
@@ -160,30 +248,44 @@ type IntegrityVerifier interface {
 // StoredRecord carries the persisted columns of one log entry as read back
 // from the database, for verification with VerifyRecord.
 type StoredRecord struct {
-	Time    time.Time       // contents of the time column.
-	Level   string          // contents of the level column.
-	Message string          // contents of the msg column.
-	Fields  json.RawMessage // contents of the fields column; any key order or whitespace.
+	Time     time.Time       // contents of the time column.
+	Level    string          // contents of the level column.
+	Message  string          // contents of the msg column.
+	Fields   json.RawMessage // contents of the fields column; any key order or whitespace.
+	SignAlgo string          // contents of the sign_algo column; empty means the row is unsigned.
 }
 
 // VerifyRecord checks the integrity of a stored log entry end to end:
 //
-//  1. The hash recomputed from the record content (via CanonicalBytes and
+//  1. The row must carry all three integrity columns (record_hash, signature,
+//     sign_algo); any missing one is reported as ErrUnsignedRecord.
+//  2. The stored sign_algo must equal verifier.Algorithm(), so the verifier
+//     cannot be steered into checking a signature under an algorithm the
+//     tamperer picked (ErrAlgoMismatch otherwise).
+//  3. The hash recomputed from the record content (via CanonicalBytes and
 //     verifier.Hash) must equal the stored record_hash — this binds the hash
 //     to the content, so editing the message or fields after the fact is
 //     detected even if the stored hash and signature are left untouched.
-//  2. The stored signature must verify against that hash.
+//  4. The stored signature must verify against that hash.
 //
-// It fails closed: records lacking a hash or signature return
+// It fails closed: records lacking any integrity column return
 // ErrUnsignedRecord rather than passing silently — a tamperer who clears the
 // signature column must not get a free pass. Callers that deliberately allow
 // unsigned records can match this error with errors.Is.
+//
+// Scope limitation: signatures are per-record and independent. Whole-row
+// deletion, insertion, and reordering are NOT detectable by VerifyRecord —
+// pair it with an external anchor (row-count manifests, a periodic head/tail
+// hash checkpoint, or a database-level audit log) if those threats matter.
 func VerifyRecord(rec StoredRecord, recordHashHex string, signature []byte, verifier IntegrityVerifier) error {
-	if len(recordHashHex) == 0 || len(signature) == 0 {
+	if len(recordHashHex) == 0 || len(signature) == 0 || rec.SignAlgo == "" {
 		return ErrUnsignedRecord
 	}
 	if isNilVerifier(verifier) {
 		return ErrNilVerifier
+	}
+	if rec.SignAlgo != verifier.Algorithm() {
+		return fmt.Errorf("%w: stored %q, verifier %q", ErrAlgoMismatch, rec.SignAlgo, verifier.Algorithm())
 	}
 
 	canonical, err := CanonicalBytes(rec.Time, rec.Level, rec.Message, rec.Fields)

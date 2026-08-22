@@ -76,14 +76,14 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 
 	eventType, actor, success := "", "", (*bool)(nil)
 
+	// Promote the audit contract fields from PRESET attrs only (set via
+	// WithAttrs at logger construction). Record attrs with the same keys stay
+	// inside "attributes": letting per-call attrs promote would let any log
+	// site override the trusted actor/event_type/success — audit forgery by
+	// key collision.
 	for _, attr := range h.attrs {
 		attrutil.FlattenAttr(attributes, "", attr, attrutil.NaNSafe)
 	}
-	r.Attrs(func(attr slog.Attr) bool {
-		attrutil.FlattenAttr(attributes, h.group, attr, attrutil.NaNSafe)
-		return true
-	})
-
 	if v, ok := attributes["event_type"].(string); ok {
 		eventType = v
 		delete(attributes, "event_type")
@@ -96,6 +96,14 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		success = &v
 		delete(attributes, "success")
 	}
+
+	// Record attrs land in attributes only; keys colliding with preset values
+	// overwrite the attribute map entry but can no longer reach the promoted
+	// top-level fields.
+	r.Attrs(func(attr slog.Attr) bool {
+		attrutil.FlattenAttr(attributes, h.group, attr, attrutil.NaNSafe)
+		return true
+	})
 
 	level := r.Level.String()
 	if r.Level == LevelAudit {
@@ -122,15 +130,48 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	}
 
 	data, err := json.Marshal(entry)
-
 	if err != nil {
-		return err
+		// NaNSafe only sanitizes TOP-LEVEL floats; a NaN/chan/func hidden
+		// inside a nested map or struct still fails Marshal here. Returning
+		// the error would silently discard the whole record (slog.Logger
+		// ignores Handle errors) — instead, degrade to a fallback record so
+		// the audit trail keeps a trace of what was lost and why.
+		data = h.marshalFallback(r, level, err)
+		if data == nil {
+			return err
+		}
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	_, err = h.w.Write(append(data, '\n'))
 	return err
+}
+
+// marshalFallback renders a minimal ERROR record describing the marshal
+// failure. It must never use the pooled attributes map (already returned to
+// the pool by the caller's defer) and must never itself fail to marshal:
+// every value below is a plain string.
+func (h *contractJSONHandler) marshalFallback(r slog.Record, level string, cause error) []byte {
+	msg := r.Message
+	if len(msg) > 1024 {
+		msg = msg[:1024] + "..."
+	}
+	fallback := &jsonEntry{
+		Time:    r.Time.In(h.timezone()).Format(time.RFC3339Nano),
+		Level:   "ERROR",
+		Message: "mebsuta: log record marshal failed; original message truncated below",
+		Attributes: map[string]any{
+			"original_level":   level,
+			"original_message": msg,
+			"marshal_error":    cause.Error(),
+		},
+	}
+	data, err := json.Marshal(fallback)
+	if err != nil {
+		return nil // genuinely unreachable: all values are strings
+	}
+	return data
 }
 
 func (h *contractJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -153,8 +194,13 @@ func (h *contractJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *contractJSONHandler) WithGroup(name string) slog.Handler {
+	// slog: WithGroup("") is a no-op — the previous code reset an existing
+	// group to empty, releasing already-grouped attrs to the root namespace.
+	if name == "" {
+		return h
+	}
 	group := name
-	if h.group != "" && name != "" {
+	if h.group != "" {
 		group = h.group + "." + name
 	}
 	return &contractJSONHandler{
