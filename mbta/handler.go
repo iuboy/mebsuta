@@ -308,9 +308,12 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 	batch := &core.SignalBatch{
 		SchemaURL: "https://mebsuta.dev/schemas/v1/logs",
 		Resource: core.Resource{
+			// mbta-go v0.6.0 removed the per-call tag/source parameters:
+			// the metadata now lives in the batch resource attributes.
 			Attributes: map[string]any{
 				"host.name": h.hostname,
 				"service":   h.cfg.Tag,
+				"source":    h.cfg.Source,
 			},
 		},
 		Scope: core.Scope{
@@ -322,7 +325,7 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 	}
 
 	for attempt := range h.cfg.MaxRetries {
-		_, err := h.client.SendBatch(h.ctx, batch, h.cfg.Tag, h.cfg.Source)
+		_, err := h.client.SendBatch(h.ctx, batch)
 		if err == nil {
 			return
 		}

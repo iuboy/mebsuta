@@ -28,14 +28,15 @@ type countingSink struct {
 	count atomic.Int64
 }
 
-func (s *countingSink) OnSignalBatch(_ context.Context, _ string, batch *core.SignalBatch) error {
-	for range batch.Signals {
-		s.count.Add(1)
+// handler adapts the counter to mbta-go v0.6.0's BatchHandler sink contract.
+func (s *countingSink) handler() core.BatchHandler {
+	return func(_ context.Context, ev core.BatchEvent, done func(core.Outcome)) {
+		if ev.Decoded != nil {
+			s.count.Add(int64(len(ev.Decoded.Signals)))
+		}
+		done(core.Outcome{Level: core.OutcomeAccepted})
 	}
-	return nil
 }
-
-func (s *countingSink) OnPressure(string) core.PressureState { return core.PressureNormal }
 
 // writeSelfSignedCert creates a throwaway self-signed server certificate and
 // returns the cert/key file paths.
@@ -88,16 +89,18 @@ func startTestServer(t *testing.T, sink *countingSink) (addr string, stop func()
 	conn.Close()
 
 	server, err := mbtago.NewServer(
-		mbtago.WithEventSink(sink),
 		mbtago.WithAuth(core.NewStaticTokenValidator(map[string]string{
 			"test-token": "test-agent",
 		})),
-		mbtago.WithPolicy(core.Policy{
-			SupportedCapabilities: []string{"codec_proto", "cs_intl"},
-			DefaultCodec:          corepb.Codec_CODEC_PROTO,
-			DefaultCompression:    corepb.Compression_COMPRESSION_NONE,
-			CipherSuite:           corepb.CipherSuite_CIPHER_SUITE_INTL,
+		mbtago.WithPolicy(core.ServerPolicy{
+			Profile:              corepb.Profile_PROFILE_INTL,
+			AckMode:              corepb.AckMode_ACK_MODE_ACCEPTED_ONLY,
+			InitialCreditBatches: 64,
+			InitialCreditBytes:   8 << 20,
+			MaxFrameBytes:        core.MaxFrameBytes,
+			MaxBatchBytes:        8 << 20,
 		}),
+		mbtago.WithSink(core.SinkOptions{}, sink.handler()),
 		mbtago.WithV1(v1.QUICServerConfig{
 			Address: addr,
 			Credentials: &v1.ServerCredentials{
