@@ -46,17 +46,20 @@ const (
 // Handler ships log records to a mebsuta-forwarder via MBTA protocol.
 // It implements slog.Handler, io.Closer, and mebsuta.SelfBufferedHandler.
 type Handler struct {
-	leveler      slog.Leveler
-	cfg          Config
-	client       *mbtago.Client
-	buffer       chan *core.SignalRecord
-	flushCh      chan chan struct{}
-	wg           sync.WaitGroup
-	ctx          context.Context
-	cancel       context.CancelFunc
-	closing      atomic.Bool
-	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
-	hostname     string
+	leveler        slog.Leveler
+	cfg            Config
+	client         *mbtago.Client
+	buffer         chan *core.SignalRecord
+	sendMu         sync.RWMutex // RLock during buffer send; Lock during Close's close(buffer)
+	flushCh        chan chan struct{}
+	wg             sync.WaitGroup
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closing        atomic.Bool
+	dropped        atomic.Int64
+	lastDropReport atomic.Int64 // unix nanos of the last surfaced drop report
+	errorHandler   atomic.Pointer[mebsuta.ErrorHandler]
+	hostname       string
 }
 
 // NewHandler creates a Handler that connects to the forwarder specified in cfg.
@@ -147,8 +150,31 @@ func (h *Handler) Close() error {
 		return nil
 	}
 
+	// sendMu makes close(buffer) race-free against in-flight sends.
+	h.sendMu.Lock()
 	close(h.buffer)
-	h.wg.Wait()
+	h.sendMu.Unlock()
+
+	// Bounded drain: the final flush costs up to MaxRetries × (send deadline
+	// + RetryDelay) — both config-capped — but even the capped worst case can
+	// exceed CloseTimeout, so the drain itself is deadline-bounded and the
+	// remainder is dropped and reported.
+	drained := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(h.cfg.CloseTimeout):
+		remaining := len(h.buffer)
+		h.cancel() // processQueue exits via ctx.Done; sendBatch aborts on ctx.Err
+		<-drained
+		if remaining > 0 {
+			h.dropped.Add(int64(remaining))
+			h.reportErr("close", fmt.Errorf("close drain timed out after %v: %d buffered records dropped", h.cfg.CloseTimeout, remaining))
+		}
+	}
 	h.cancel()
 
 	if h.client != nil {
@@ -227,15 +253,22 @@ func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }
 
-func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) (err error) {
-	// Named return: the recover branch must set err — with a bare return the
-	// caller saw nil and the drop vanished silently.
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("mebsuta/mbta: handler closed, log dropped")
-			h.reportErr("send", err)
-		}
-	}()
+// shouldReportDrop reports whether a drop should be surfaced now: at most one
+// report per second, so a flood that overflows the buffer cannot amplify into
+// one error-handler invocation per dropped record.
+func (h *Handler) shouldReportDrop() bool {
+	now := time.Now().UnixNano()
+	last := h.lastDropReport.Load()
+	if now-last < int64(time.Second) {
+		return false
+	}
+	return h.lastDropReport.CompareAndSwap(last, now)
+}
+
+func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) error {
+	// sendMu makes Close's close(buffer) race-free against in-flight sends.
+	h.sendMu.RLock()
+	defer h.sendMu.RUnlock()
 
 	if h.closing.Load() {
 		return fmt.Errorf("mebsuta/mbta: handler closed, log dropped")
@@ -246,7 +279,10 @@ func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) (err err
 		case h.buffer <- record:
 			return nil
 		case <-time.After(h.cfg.ErrorTimeout):
-			h.reportErr("send", fmt.Errorf("buffer full timeout for %v record, dropped", level))
+			h.dropped.Add(1)
+			if h.shouldReportDrop() {
+				h.reportErr("send", fmt.Errorf("buffer full timeout for %v record, dropped (total dropped: %d)", level, h.dropped.Load()))
+			}
 			return fmt.Errorf("mebsuta/mbta: buffer full timeout for %v record", level)
 		}
 	}
@@ -255,7 +291,10 @@ func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) (err err
 	case h.buffer <- record:
 		return nil
 	default:
-		h.reportErr("send", fmt.Errorf("buffer full, log dropped"))
+		h.dropped.Add(1)
+		if h.shouldReportDrop() {
+			h.reportErr("send", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
+		}
 		return fmt.Errorf("mebsuta/mbta: buffer full")
 	}
 }
@@ -476,7 +515,7 @@ func newEventID(fallbackSeed int64) string {
 
 func attrValue(attr slog.Attr, depth int) any {
 	if depth > maxAttrDepth {
-		return nil
+		return "<max-depth>" // distinguishable from null (NaN/absent) downstream
 	}
 	// slog contract: handlers must resolve LogValuer values. Unresolved
 	// values leak their backing structs into the encoder, which renders them

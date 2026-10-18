@@ -67,11 +67,9 @@ type canonicalRecord struct {
 }
 
 // canonicalFields normalizes raw JSON into a deterministic form: keys sorted,
-// no insignificant whitespace, Go-native escaping. PostgreSQL's json type
-// preserves column text exactly, so this normalization is defense in depth —
-// it keeps the canonical form stable if the column is ever migrated to jsonb
-// (which normalizes documents). Both the signing side and the verification
-// side pass the fields column through it instead of comparing raw bytes.
+// no insignificant whitespace, Go-native escaping. Both the signing side and
+// the verification side pass the fields column through it instead of
+// comparing raw bytes.
 //
 // Numbers are decoded with json.Number and re-emitted verbatim, so every
 // integer and decimal keeps its exact value and literal spelling. Decoding
@@ -79,6 +77,12 @@ type canonicalRecord struct {
 // as 9007199254740992 and 9007199254740993 (both round to 2^53), letting a
 // tamperer swap stored numeric fields (amounts, IDs) while the recomputed
 // hash — and therefore the signature — still verifies.
+//
+// Migration caveat: because numeric SPELLING is preserved exactly, a json →
+// jsonb column migration is NOT transparent when signing is enabled — jsonb
+// rewrites numeric literals (e.g. 1e+21 → plain decimal) and every migrated
+// row would then fail verification with ErrHashMismatch. Keep the column as
+// json (text-preserving), or re-sign rows after migration.
 //
 // Documents containing duplicate object keys are rejected outright. The
 // writer never produces them (it marshals a Go map), and last-wins decoding
@@ -115,15 +119,21 @@ const maxDupCheckDepth = 64
 // duplicate, which would let {"a":1,"a":2} validate identically to {"a":2}
 // and hide a tampered column behind an unchanged canonical form.
 func checkNoDuplicateKeys(data []byte) error {
-	if err := checkValueDupKeys(json.NewDecoder(bytes.NewReader(data)), 0); err != nil {
+	// UseNumber: without it the token walk parses numbers as float64 and a
+	// huge literal like 1e999 (which the writer can legitimately produce via
+	// json.Number) fails HERE while the strict UseNumber decode below accepts
+	// it — the mismatch silently downgraded such records to unsigned.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := checkValueDupKeys(dec, 0); err != nil {
 		return fmt.Errorf("mebsuta/database: fields JSON is not acceptable: %w", err)
 	}
 	return nil
 }
 
 func checkValueDupKeys(dec *json.Decoder, depth int) error {
-	if depth > maxDupCheckDepth {
-		return fmt.Errorf("nesting deeper than %d levels", maxDupCheckDepth)
+	if depth >= maxDupCheckDepth {
+		return fmt.Errorf("nesting deeper than %d levels", maxDupCheckDepth-1)
 	}
 	tok, err := dec.Token()
 	if err != nil {

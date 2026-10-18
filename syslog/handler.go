@@ -40,6 +40,9 @@ const (
 	maxSDNameLen    = 32        // RFC5424: SD-NAME is 1*32 PRINTUSASCII
 	maxSDValueBytes = 4 * 1024  // per PARAM-VALUE
 	maxSDBudget     = 32 * 1024 // total SD-ELEMENT bytes
+	// sdTruncationMark is the reserved PARAM-NAME for the omission marker;
+	// user params sanitizing to the same name are skipped (counted).
+	sdTruncationMark = "_truncated"
 	// rfc5424TimeLayout is RFC3339 with a fixed 6-digit fraction — RFC5424
 	// TIME-SECFRAC allows at most 6 digits, RFC3339Nano emits up to 9 and
 	// strict receivers reject the frame.
@@ -68,12 +71,15 @@ type Handler struct {
 	tlsCfg           *tls.Config
 	hostname         string
 	buffer           chan []byte
+	sendMu           sync.RWMutex // RLock during buffer send; Lock during Close's close(buffer)
 	flushCh          chan chan struct{}
 	wg               sync.WaitGroup
 	ctx              context.Context
 	cancel           context.CancelFunc
 	closing          atomic.Bool
 	attrDropWarned   atomic.Bool // one-time warning for RFC3164 attr discarding
+	dropped          atomic.Int64
+	lastDropReport   atomic.Int64 // unix nanos of the last surfaced drop report
 	location         *time.Location
 	errorHandler     atomic.Pointer[mebsuta.ErrorHandler]
 }
@@ -180,7 +186,12 @@ func (h *Handler) Close() error {
 		return nil
 	}
 
+	// sendMu (write lock around close) makes close-vs-send race-detector
+	// clean: no in-flight safeSend can touch a closed channel.
+	h.sendMu.Lock()
 	close(h.buffer)
+	h.sendMu.Unlock()
+
 	drained := make(chan struct{})
 	go func() {
 		h.wg.Wait()
@@ -193,6 +204,7 @@ func (h *Handler) Close() error {
 		h.cancel() // ctx gate in writeWithRetry makes remaining messages no-ops
 		<-drained
 		if remaining > 0 {
+			h.dropped.Add(int64(remaining))
 			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "close", Err: fmt.Errorf("close drain timed out after %v: %d buffered records dropped", closeDrainTimeout, remaining), Dropped: int64(remaining)})
 		}
 	}
@@ -381,7 +393,14 @@ func (h *Handler) writeWithRetry(msg []byte) {
 				h.reconnect()
 			}
 		}
-		time.Sleep(h.cfg.RetryDelay)
+		// Interruptible sleep: after Close's drain deadline cancels the ctx,
+		// the in-flight retry must not sit out the full RetryDelay — that
+		// would make the 10s Close bound soft by up to RetryDelay.
+		select {
+		case <-time.After(h.cfg.RetryDelay):
+		case <-h.ctx.Done():
+			return
+		}
 	}
 	mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts", maxRetries)})
 }
@@ -460,12 +479,24 @@ func (h *Handler) processQueue() {
 	}
 }
 
-func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
-		}
-	}()
+// shouldReportDrop reports whether a drop should be surfaced now: at most one
+// report per second, so a flood that overflows the buffer cannot amplify into
+// one locked stderr write per dropped record. Callers always count the drop.
+func (h *Handler) shouldReportDrop() bool {
+	now := time.Now().UnixNano()
+	last := h.lastDropReport.Load()
+	if now-last < int64(time.Second) {
+		return false
+	}
+	return h.lastDropReport.CompareAndSwap(last, now)
+}
+
+func (h *Handler) safeSend(data []byte, level slog.Level) error {
+	// sendMu makes Close's close(buffer) race-free against in-flight sends
+	// (same pattern as database.Handler; the recover guard is no longer
+	// needed and was a -race DATA RACE even though the panic was caught).
+	h.sendMu.RLock()
+	defer h.sendMu.RUnlock()
 
 	if h.closing.Load() {
 		return fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
@@ -476,7 +507,10 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 		case h.buffer <- data:
 			return nil
 		case <-time.After(h.cfg.ErrorTimeout):
-			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped", level)})
+			h.dropped.Add(1)
+			if h.shouldReportDrop() {
+				mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped (total dropped: %d)", level, h.dropped.Load()), Dropped: h.dropped.Load()})
+			}
 			return fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
 		}
 	}
@@ -485,7 +519,10 @@ func (h *Handler) safeSend(data []byte, level slog.Level) (err error) {
 	case h.buffer <- data:
 		return nil
 	default:
-		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full, log dropped")})
+		h.dropped.Add(1)
+		if h.shouldReportDrop() {
+			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: h.dropped.Load()})
+		}
 		return fmt.Errorf("mebsuta/syslog: buffer full")
 	}
 }
@@ -556,11 +593,25 @@ func (h *Handler) formatStructuredMessage(entry mebsuta.LogEntry, ts time.Time, 
 			sd.WriteByte('-')
 		} else {
 			sd.WriteString("[mebsuta")
+			// RFC5424 §6.3.2 requires PARAM-NAMEs to be unique within an
+			// SD-ELEMENT; sanitization can collide distinct keys ("a/b" and
+			// "a_b" both become "a_b"), and strict receivers reject the whole
+			// frame on duplicates. Deduplicate post-sanitization and count the
+			// losers in the truncation marker.
+			seen := make(map[string]struct{}, len(entry.Attrs))
 			for _, attr := range entry.Attrs {
 				name := sanitizeSDName(attr.Key)
-				if name == "" {
+				if name == "" || name == sdTruncationMark {
+					// The truncation-marker name is reserved so the marker
+					// itself can never collide with a user param.
+					skipped++
 					continue
 				}
+				if _, dup := seen[name]; dup {
+					skipped++
+					continue
+				}
+				seen[name] = struct{}{}
 				// Enforce count and total-size budgets: the structured path
 				// has no attrutil caps, and an unbounded attr (e.g. a raw
 				// request body) would produce frames that fragment on UDP and
@@ -573,7 +624,7 @@ func (h *Handler) formatStructuredMessage(entry mebsuta.LogEntry, ts time.Time, 
 				written++
 			}
 			if skipped > 0 {
-				fmt.Fprintf(&sd, " %s=\"%d params omitted (limit)\"", "_truncated", skipped)
+				fmt.Fprintf(&sd, " %s=\"%d params omitted\"", sdTruncationMark, skipped)
 			}
 			sd.WriteByte(']')
 		}

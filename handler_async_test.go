@@ -326,16 +326,15 @@ func TestWithContextExtractor_NilInputs(t *testing.T) {
 		t.Error("discard handler should not be enabled for any level")
 	}
 
-	// nil extractor → returns a safe no-op discard handler
+	// nil extractor → pass-through: the inner chain must survive (a discard
+	// handler silently ate every log, audit records included)
 	h = WithContextExtractor(inner, nil)
-	if h == nil {
-		t.Error("expected non-nil discard handler for nil extractor")
+	if h != slog.Handler(inner) {
+		t.Errorf("nil extractor should return inner unchanged, got %T", h)
 	}
-	// The inner handler should not have been wrapped; a discard handler is returned instead.
-	// Verify it doesn't delegate to inner (which would write to buf).
-	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "test", 0))
-	if buf.Len() > 0 {
-		t.Error("discard handler should not write to inner")
+	require.NoError(t, h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "test", 0)))
+	if buf.Len() == 0 {
+		t.Error("pass-through handler must still write to inner")
 	}
 }
 

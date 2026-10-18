@@ -357,6 +357,13 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) error {
 	return err
 }
 
+// fieldsMapPool recycles the per-record attr map: one map allocation per log
+// record is measurable GC pressure at high volume, and the map is dead once
+// marshaled into entry.Fields.
+var fieldsMapPool = sync.Pool{
+	New: func() any { return make(map[string]any, 16) },
+}
+
 func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	entry := dbLogEntry{
 		Time:    r.Time,
@@ -364,7 +371,16 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 		Message: r.Message,
 	}
 
-	fields := make(map[string]any, 16)
+	fields, _ := fieldsMapPool.Get().(map[string]any)
+	if fields == nil {
+		fields = make(map[string]any, 16)
+	}
+	defer func() {
+		for k := range fields {
+			delete(fields, k)
+		}
+		fieldsMapPool.Put(fields)
+	}()
 
 	r.Attrs(func(attr slog.Attr) bool {
 		attrutil.FlattenAttr(fields, "", attr, attrutil.NaNString)
@@ -427,6 +443,13 @@ func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
 
 // SelfBuffered marks Handler as having built-in async buffering.
 func (*Handler) SelfBuffered() {}
+
+// Dropped returns the total number of records dropped due to a full backlog
+// (or after Close) — the database-side counterpart of mebsuta.AsyncDropped,
+// previously counted but unreadable.
+func (h *Handler) Dropped() int64 {
+	return h.dropped.Load()
+}
 
 func closeSQLDB(gdb *gorm.DB) {
 	if db, err := gdb.DB(); err == nil {

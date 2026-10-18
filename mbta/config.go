@@ -9,6 +9,16 @@ import (
 	"github.com/iuboy/mebsuta"
 )
 
+// Retry/delay caps: every failed batch costs MaxRetries × (send deadline +
+// RetryDelay) during both runtime and Close's drain, so unbounded values make
+// shutdown unbounded. Mirrors syslog.MaxRetryDelay.
+const (
+	// MaxRetryDelay caps Config.RetryDelay.
+	MaxRetryDelay = 30 * time.Second
+	// MaxMaxRetries caps Config.MaxRetries.
+	MaxMaxRetries = 10
+)
+
 // Config holds configuration for the MBTA log shipping handler.
 type Config struct {
 	// Connection settings
@@ -68,6 +78,15 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = defaultRetryDelay
+	}
+	// Caps keep Close's drain bounded: the final flush costs up to
+	// MaxRetries × (SendBatch deadline + RetryDelay), so unbounded values
+	// would make "bounded close" a lie.
+	if c.RetryDelay > MaxRetryDelay {
+		c.RetryDelay = MaxRetryDelay
+	}
+	if c.MaxRetries > MaxMaxRetries {
+		c.MaxRetries = MaxMaxRetries
 	}
 	if c.ErrorTimeout <= 0 {
 		c.ErrorTimeout = time.Second

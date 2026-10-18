@@ -470,8 +470,11 @@ func defaultOnError(err error) {
 // backupSuffixRe matches the suffix appended to a rotated backup filename:
 // either a millisecond timestamp (with optional sequence number) or a
 // unix-nano fallback, each optionally followed by ".gz" for compressed copies.
-// Used to avoid deleting unrelated same-prefix files during cleanup.
-var backupSuffixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}|\d+)(\.\d+)?(\.gz)?$`)
+// The nano fallback requires 15+ digits: nanosecond timestamps are 19 digits
+// today and were 18 as recently as 2001, while a bare \d+ would sweep up
+// unrelated same-prefix files like app.log.12345 — which compressResidual
+// (Compress defaults to true) would then gzip and DELETE on every startup.
+var backupSuffixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}|\d{15,})(\.\d+)?(\.gz)?$`)
 
 // isBackupName reports whether name is a rotation artifact of base
 // (i.e. base + "." + a suffix matching backupSuffixRe).

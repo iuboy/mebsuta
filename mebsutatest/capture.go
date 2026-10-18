@@ -131,7 +131,12 @@ func (h *captureAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 		}
 		return h.parent.Handle(ctx, prefixed)
 	}
-	r.AddAttrs(h.attrs...)
+	// Clone before AddAttrs (slog contract): in fan-out setups the original
+	// record is shared with sibling handlers, and mutating it would leak the
+	// capture preset attrs into their records.
+	newR := r.Clone()
+	newR.AddAttrs(h.attrs...)
+	r = newR
 	return h.parent.Handle(ctx, r)
 }
 

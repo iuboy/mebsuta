@@ -1,6 +1,7 @@
 package mebsuta
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,29 @@ import (
 // attrMapPool recycles map[string]any across Handle calls to reduce GC pressure.
 var attrMapPool = sync.Pool{
 	New: func() any { return make(map[string]any, 16) },
+}
+
+// jsonEncoder bundles a buffer with the encoder bound to it. Pooling the pair
+// keeps encode+newline outside the handler mutex (parallel marshal, serialized
+// write only) while still avoiding the per-record Marshal allocation and the
+// append(data, '\n') reallocation — json.Encoder appends the newline natively.
+type jsonEncoder struct {
+	buf *bytes.Buffer
+	enc *json.Encoder
+}
+
+var jsonEncoderPool = sync.Pool{
+	New: func() any {
+		buf := new(bytes.Buffer)
+		return &jsonEncoder{buf: buf, enc: json.NewEncoder(buf)}
+	},
+}
+
+func getJSONEncoder() *jsonEncoder { return jsonEncoderPool.Get().(*jsonEncoder) }
+
+func putJSONEncoder(je *jsonEncoder) {
+	je.buf.Reset()
+	jsonEncoderPool.Put(je)
 }
 
 func getAttrMap() map[string]any {
@@ -129,35 +153,37 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		Attributes: attributes,
 	}
 
-	data, err := json.Marshal(entry)
-	if err != nil {
+	je := getJSONEncoder()
+	defer putJSONEncoder(je)
+
+	if err := je.enc.Encode(entry); err != nil {
 		// NaNSafe only sanitizes TOP-LEVEL floats; a NaN/chan/func hidden
-		// inside a nested map or struct still fails Marshal here. Returning
+		// inside a nested map or struct still fails encoding here. Returning
 		// the error would silently discard the whole record (slog.Logger
 		// ignores Handle errors) — instead, degrade to a fallback record so
 		// the audit trail keeps a trace of what was lost and why.
-		data = h.marshalFallback(r, level, err)
-		if data == nil {
-			return err
+		je.buf.Reset()
+		if encErr := je.enc.Encode(h.fallbackEntry(r, level, err)); encErr != nil {
+			return err // genuinely unreachable: all fallback values are strings
 		}
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err = h.w.Write(append(data, '\n'))
+	_, err := h.w.Write(je.buf.Bytes())
 	return err
 }
 
-// marshalFallback renders a minimal ERROR record describing the marshal
-// failure. It must never use the pooled attributes map (already returned to
-// the pool by the caller's defer) and must never itself fail to marshal:
-// every value below is a plain string.
-func (h *contractJSONHandler) marshalFallback(r slog.Record, level string, cause error) []byte {
+// fallbackEntry builds the minimal ERROR record describing a marshal failure.
+// It must never use the pooled attributes map (already returned to the pool
+// by the caller's defer) and must never fail to encode: every value below is
+// a plain string.
+func (h *contractJSONHandler) fallbackEntry(r slog.Record, level string, cause error) *jsonEntry {
 	msg := r.Message
 	if len(msg) > 1024 {
 		msg = msg[:1024] + "..."
 	}
-	fallback := &jsonEntry{
+	return &jsonEntry{
 		Time:    r.Time.In(h.timezone()).Format(time.RFC3339Nano),
 		Level:   "ERROR",
 		Message: "mebsuta: log record marshal failed; original message truncated below",
@@ -167,11 +193,6 @@ func (h *contractJSONHandler) marshalFallback(r slog.Record, level string, cause
 			"marshal_error":    cause.Error(),
 		},
 	}
-	data, err := json.Marshal(fallback)
-	if err != nil {
-		return nil // genuinely unreachable: all values are strings
-	}
-	return data
 }
 
 func (h *contractJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {

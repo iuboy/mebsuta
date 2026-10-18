@@ -137,3 +137,34 @@ func TestCompressFile_TmpIsExclusive(t *testing.T) {
 	// Clean up the planted link so TempDir removal works.
 	_ = os.Remove(src + ".gz.tmp")
 }
+
+// TestIsBackupName_NanoFallbackTightness: the unix-nano fallback branch
+// requires 15+ digits so unrelated <base>.<digits> files (app.log.12345) are
+// not treated as rotation artifacts — compressResidual would gzip and DELETE
+// them on every startup with Compress enabled by default.
+func TestIsBackupName_NanoFallbackTightness(t *testing.T) {
+	base := "app.log"
+	yes := []string{
+		"app.log.1760000000000000000",          // nano fallback
+		"app.log.1760000000000000000.3",        // nano + seq
+		"app.log.1760000000000000000.gz",       // nano + gz
+		"app.log.2026-04-01T00-00-00.000",      // timestamp
+		"app.log.2026-04-01T00-00-00.000.2.gz", // timestamp + seq + gz
+	}
+	no := []string{
+		"app.log.12345", // short digit run — NOT a rotation artifact
+		"app.log.12345.gz",
+		"app.log.notes",
+		"app.log.2020-manual",
+	}
+	for _, n := range yes {
+		if !isBackupName(base, n) {
+			t.Errorf("isBackupName(%q) = false, want true", n)
+		}
+	}
+	for _, n := range no {
+		if isBackupName(base, n) {
+			t.Errorf("isBackupName(%q) = true, want false", n)
+		}
+	}
+}

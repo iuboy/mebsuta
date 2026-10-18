@@ -36,6 +36,7 @@ type AsyncHandler struct {
 	inner          slog.Handler
 	errorTimeout   time.Duration
 	ch             chan asyncRecord
+	sendMu         sync.RWMutex // RLock during channel send; Lock during Close's close(ch)
 	wg             sync.WaitGroup
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -108,17 +109,26 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		h.dropped.Add(1)
 		return fmt.Errorf("async handler is closed, log dropped")
 	}
+	// Strip cancellation while keeping values: the record may outlive the
+	// request (buffered during Close's drain), and a cancelled request ctx
+	// would make ctx-aware inner handlers drop the final flush. Values are
+	// preserved so ctx-derived attributes still work. Contexts that can
+	// never be cancelled (Done() == nil, e.g. Background) skip the wrapper
+	// — it would be a per-record allocation with no effect.
+	if ctx.Done() != nil {
+		ctx = context.WithoutCancel(ctx)
+	}
 	ar := asyncRecord{
 		Time:    r.Time,
 		Level:   r.Level,
 		Message: r.Message,
 		PC:      r.PC,
 		inner:   h.inner,
-		// Strip cancellation while keeping values: the record may outlive the
-		// request (buffered during Close's drain), and a cancelled request ctx
-		// would make ctx-aware inner handlers drop the final flush. Values
-		// are preserved so ctx-derived attributes still work.
-		ctx: context.WithoutCancel(ctx),
+		ctx:     ctx,
+	}
+	if n := r.NumAttrs(); n > 0 {
+		// Pre-size the copy: append alone re-allocates as the slice grows.
+		ar.Attrs = make([]slog.Attr, 0, n)
 	}
 	r.Attrs(func(attr slog.Attr) bool {
 		ar.Attrs = append(ar.Attrs, attr)
@@ -154,15 +164,19 @@ func (h *AsyncHandler) shouldReportDrop() int64 {
 	return 0
 }
 
-func (h *AsyncHandler) sendRecordInner(ar asyncRecord) (retErr error) {
-	// Recover guard for the rare race where Close() completes close(ch)
-	// between sendRecord's closed.Load() check and this select statement.
-	defer func() {
-		if r := recover(); r != nil {
-			h.dropped.Add(1)
-			retErr = fmt.Errorf("async handler is closed, log dropped")
-		}
-	}()
+func (h *AsyncHandler) sendRecordInner(ar asyncRecord) error {
+	// sendMu mirrors database.Handler: sends take the read lock (concurrent),
+	// Close takes the write lock around close(ch). This makes close-vs-send
+	// race-detector-clean without relying on recover — a send-on-closed
+	// channel panic is structurally impossible because Close cannot close the
+	// channel while any sender holds the read lock.
+	h.sendMu.RLock()
+	defer h.sendMu.RUnlock()
+
+	if h.closed.Load() {
+		h.dropped.Add(1)
+		return fmt.Errorf("async handler is closed, log dropped")
+	}
 
 	// Error and Audit (LevelAudit > LevelError) records: blocking send bounded
 	// by ErrorTimeout. Other levels use non-blocking send and drop on buffer full.
@@ -229,14 +243,16 @@ func (h *AsyncHandler) WithGroup(name string) slog.Handler {
 // Drains before cancelling: close(ch) lets run() process every buffered
 // record, and wg.Wait() returns only after the final writes finished. The
 // earlier cancel()-first order made ctx-aware inner handlers see a cancelled
-// context during the drain and drop the final batch. Records queued by
-// in-flight senders during close(ch) are caught by the recover guard in
-// sendRecordInner.
+// context during the drain and drop the final batch. sendMu (write lock held
+// around close(ch)) guarantees no in-flight sender can hit a closed channel,
+// so the drain start is race-detector-clean like database.Handler.
 func (h *AsyncHandler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	close(h.ch)
+	h.sendMu.Lock()
+	close(h.ch) // safe: write lock excludes all in-flight senders
+	h.sendMu.Unlock()
 	h.wg.Wait()
 	h.cancel()
 	return nil
@@ -326,6 +342,13 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
 		return fmt.Errorf("async handler is closed, log dropped")
 	}
+	// Same cancellation-stripping as AsyncHandler.Handle: the group path
+	// previously forwarded the raw request ctx, so ctx-aware inner handlers
+	// dropped records queued during Close's drain (the exact bug the plain
+	// path fixed). Uncancellable contexts skip the wrapper allocation.
+	if ctx.Done() != nil {
+		ctx = context.WithoutCancel(ctx)
+	}
 	// Use RecordWithGroupAttrs to prefix only the record attrs with the group,
 	// while keeping preset attrs (h.attrs) at the root level. This matches the
 	// slog contract: attrs added BEFORE WithGroup are NOT inside the group.
@@ -339,6 +362,9 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		PC:      grouped.PC,
 		inner:   h.inner,
 		ctx:     ctx,
+	}
+	if n := grouped.NumAttrs(); n > 0 {
+		ar.Attrs = make([]slog.Attr, 0, n)
 	}
 	grouped.Attrs(func(attr slog.Attr) bool {
 		ar.Attrs = append(ar.Attrs, attr)

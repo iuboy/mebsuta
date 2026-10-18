@@ -154,3 +154,31 @@ func TestWriteWithRetry_StopsAfterContextCancel(t *testing.T) {
 		t.Errorf("writeWithRetry took %v after ctx cancel, should return immediately", elapsed)
 	}
 }
+
+// TestFormatStructuredMessage_ParamNameDedup: sanitization can collide keys
+// ("a/b" and "a_b" → "a_b"); RFC5424 requires unique PARAM-NAMEs and strict
+// receivers reject the whole frame on duplicates.
+func TestFormatStructuredMessage_ParamNameDedup(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.RFC5424 = true
+	entry := mebsuta.LogEntry{
+		Time:    time.Now(),
+		Level:   slog.LevelInfo,
+		Message: "m",
+		Attrs: []slog.Attr{
+			slog.String("a/b", "1"),
+			slog.String("a_b", "2"),
+			slog.String("_truncated", "reserved"),
+		},
+	}
+	frame := h.formatStructuredMessage(entry, entry.Time.In(time.UTC), 14, "testhost", 1234)
+	if strings.Count(frame, `a_b=`) != 1 {
+		t.Errorf("duplicate PARAM-NAME after sanitization: %q", frame)
+	}
+	if strings.Count(frame, "_truncated=") != 1 {
+		t.Errorf("truncation marker name must stay unique/reserved: %q", frame)
+	}
+	if !strings.Contains(frame, "params omitted") {
+		t.Errorf("deduped/reserved params not accounted in marker: %q", frame)
+	}
+}

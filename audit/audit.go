@@ -56,15 +56,22 @@ func AuditEvent(eventType EventType, msg string, args ...any) {
 // AuditEventContext logs an audit record with an explicit event type and context.
 //
 // The event_type is appended as the last key=value pair in the log attributes.
-// If the caller passes "event_type" as one of the args, this function's value
-// takes precedence (slog uses the last value for duplicate keys). Callers should
-// not include "event_type" in args to avoid confusion about which value is logged.
+// Any "event_type" key inside args is DROPPED: last-wins deduplication only
+// works for map-based (JSON) output — the Console/Text format emits BOTH
+// pairs, and a first-wins log consumer would attribute the audit event to an
+// attacker-influenced value. Dropping the caller's key keeps the authoritative
+// eventType the single source of truth in every output format.
 func AuditEventContext(ctx context.Context, eventType EventType, msg string, args ...any) {
 	// M7: copy args into a fresh slice so we never mutate the caller's backing
 	// array — a variadic append footgun that can corrupt the caller's data,
 	// especially if a slice with spare capacity is reused across goroutines.
-	allArgs := make([]any, len(args), len(args)+2)
-	copy(allArgs, args)
+	allArgs := make([]any, 0, len(args)+2)
+	for i := 0; i+1 < len(args); i += 2 {
+		if k, ok := args[i].(string); ok && k == "event_type" {
+			continue
+		}
+		allArgs = append(allArgs, args[i], args[i+1])
+	}
 	allArgs = append(allArgs, "event_type", string(eventType))
 	slog.Log(ctx, LevelAudit, msg, allArgs...)
 }

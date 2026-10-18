@@ -34,9 +34,15 @@ func SlogValueAny(v slog.Value, nan NaNBehavior) any {
 	return slogValueAny(v, nan, 0)
 }
 
+// depthLimitValue marks values dropped by the recursion cap. It must be
+// distinguishable from the null that NaNSafe produces for non-finite floats
+// — auditors reading null could not otherwise tell "value is NaN / absent"
+// from "nesting exceeded the cap".
+const depthLimitValue = "<max-depth>"
+
 func slogValueAny(v slog.Value, nan NaNBehavior, depth int) any {
 	if depth >= maxFlattenDepth {
-		return nil
+		return depthLimitValue
 	}
 	switch v.Kind() {
 	case slog.KindGroup:
