@@ -276,6 +276,12 @@ func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
 // mebsuta.ErrorHandlerSetter so WithErrorHandler propagates into this
 // handler (the package-internal setErrorHandler alone is unreachable from
 // another package).
+// Dropped returns the total number of records dropped due to a full buffer
+// (or during Close's bounded drain) — feeds mebsuta.DroppedCounter probes.
+func (h *Handler) Dropped() int64 {
+	return h.dropped.Load()
+}
+
 func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }

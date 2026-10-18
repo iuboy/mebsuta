@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -71,18 +73,15 @@ type canonicalRecord struct {
 // the verification side pass the fields column through it instead of
 // comparing raw bytes.
 //
-// Numbers are decoded with json.Number and re-emitted verbatim, so every
-// integer and decimal keeps its exact value and literal spelling. Decoding
-// into float64 (plain Unmarshal into any) would collapse distinct values such
-// as 9007199254740992 and 9007199254740993 (both round to 2^53), letting a
-// tamperer swap stored numeric fields (amounts, IDs) while the recomputed
-// hash — and therefore the signature — still verifies.
-//
-// Migration caveat: because numeric SPELLING is preserved exactly, a json →
-// jsonb column migration is NOT transparent when signing is enabled — jsonb
-// rewrites numeric literals (e.g. 1e+21 → plain decimal) and every migrated
-// row would then fail verification with ErrHashMismatch. Keep the column as
-// json (text-preserving), or re-sign rows after migration.
+// Numbers are decoded with json.Number — never float64 — so distinct values
+// such as 9007199254740992 and 9007199254740993 (which both round to 2^53)
+// stay distinct; a tamperer cannot swap stored numeric fields (amounts, IDs)
+// while the recomputed hash — and therefore the signature — still verifies.
+// Numeric LITERALS are additionally rewritten to PostgreSQL's numeric text
+// form (see normalizeJSONNumber), making a json → jsonb column migration —
+// which rewrites e.g. 1e+21 to plain decimal — transparent for signed rows:
+// spellings jsonb renders identically canonicalize identically, and spellings
+// with different values never converge.
 //
 // Documents containing duplicate object keys are rejected outright. The
 // writer never produces them (it marshals a Go map), and last-wins decoding
@@ -103,11 +102,169 @@ func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 	if dec.More() {
 		return nil, fmt.Errorf("mebsuta/database: fields contain trailing data after the JSON value")
 	}
+	normalizeNumbersIn(v)
 	data, err := json.Marshal(v)
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta/database: canonicalize fields: %w", err)
 	}
 	return data, nil
+}
+
+// normalizeNumbersIn rewrites every json.Number in a decoded value tree (in
+// place) to PostgreSQL's numeric text form. json.Number is a string type and
+// Marshal emits it verbatim, so replacing the literal text rewrites the
+// canonical bytes without touching any other value.
+func normalizeNumbersIn(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if n, ok := val.(json.Number); ok {
+				t[k] = json.Number(normalizeJSONNumber(n))
+			} else {
+				normalizeNumbersIn(val)
+			}
+		}
+	case []any:
+		for i, val := range t {
+			if n, ok := val.(json.Number); ok {
+				t[i] = json.Number(normalizeJSONNumber(n))
+			} else {
+				normalizeNumbersIn(val)
+			}
+		}
+	}
+}
+
+// maxNumberExpandLen caps the expanded decimal form. PostgreSQL rejects jsonb
+// numbers whose numeric form exceeds its digit limits ("value overflows
+// numeric format"), so literals that would expand beyond this cap can never
+// round-trip through a jsonb column anyway; they pass through verbatim and
+// remain consistent through the text-preserving json column.
+const maxNumberExpandLen = 8192
+
+// normalizeJSONNumber rewrites a JSON number literal into PostgreSQL's
+// numeric text output form, verified empirically against PostgreSQL 18:
+//
+//	"1e+21"  → "1000000000000000000000"  (exponents expanded)
+//	"1.50"   → "1.50"                    (fraction scale preserved)
+//	"1.50e2" → "150", "1.50e1" → "15.0"  (scale reduced by the exponent)
+//	"1.5e-2" → "0.015"                   (fraction zeros added)
+//	"007"    → "7"                       (integer leading zeros stripped)
+//	"-0" → "0", "-0.0" → "0.0", "0e10" → "0"  (zero: sign dropped, scale kept)
+//
+// Two spellings therefore canonicalize identically iff jsonb renders them
+// identically — the json → jsonb migration is transparent for signed rows —
+// without ever converging distinct numeric values.
+func normalizeJSONNumber(lit json.Number) string {
+	s := string(lit)
+	if isNumericTextForm(s) {
+		return s
+	}
+	neg := false
+	if s[0] == '-' {
+		neg, s = true, s[1:]
+	}
+	mant, exp := s, 0
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		mant = s[:i]
+		e, err := strconv.Atoi(s[i+1:])
+		if err != nil {
+			return s // unreachable: the decoder validated the literal
+		}
+		exp = e
+	}
+	intPart, fracPart := mant, ""
+	if i := strings.IndexByte(mant, '.'); i >= 0 {
+		intPart, fracPart = mant[:i], mant[i+1:]
+	}
+	digits := intPart + fracPart
+	point := len(intPart) + exp // decimal point position within digits
+
+	if strings.Trim(digits, "0") == "" {
+		// Zero value: sign dropped; keep only the fractional zeros implied
+		// by the final scale (PostgreSQL numeric semantics).
+		scale := len(fracPart) - exp
+		if scale <= 0 {
+			return "0"
+		}
+		if scale > maxNumberExpandLen {
+			return s
+		}
+		return "0." + strings.Repeat("0", scale)
+	}
+
+	switch {
+	case point <= 0:
+		if -point+1+len(digits) > maxNumberExpandLen {
+			return s
+		}
+		out := "0." + strings.Repeat("0", -point) + digits
+		if neg {
+			return "-" + out
+		}
+		return out
+	case point >= len(digits):
+		if point > maxNumberExpandLen {
+			return s
+		}
+		// "007e2" → "00700" — integer leading zeros are not significant.
+		out := strings.TrimLeft(digits+strings.Repeat("0", point-len(digits)), "0")
+		if out == "" {
+			out = "0"
+		}
+		if neg {
+			return "-" + out
+		}
+		return out
+	default:
+		intOut := strings.TrimLeft(digits[:point], "0")
+		if intOut == "" {
+			intOut = "0"
+		}
+		if len(intOut)+1+len(digits[point:]) > maxNumberExpandLen {
+			return s
+		}
+		out := intOut + "." + digits[point:]
+		if neg {
+			return "-" + out
+		}
+		return out
+	}
+}
+
+// isNumericTextForm reports whether lit already equals its PostgreSQL numeric
+// text form: no exponent, no integer leading zeros, and not a negative zero.
+// Go's float/int encoders emit this form for everything below 1e21, so this
+// fast path covers the overwhelming majority of literals.
+func isNumericTextForm(s string) bool {
+	i := 0
+	if s[0] == '-' {
+		i = 1
+	}
+	d := i
+	for d < len(s) && s[d] >= '0' && s[d] <= '9' {
+		d++
+	}
+	intPart := s[i:d]
+	if len(intPart) == 0 || (len(intPart) > 1 && s[i] == '0') {
+		return false // ".5" cannot occur from the decoder; leading zero
+	}
+	rest := s[d:]
+	for _, c := range rest {
+		if c == 'e' || c == 'E' {
+			return false // exponent form needs expansion
+		}
+	}
+	if i == 1 && intPart == "0" {
+		// possible negative zero ("-0", "-0.0"): the sign must be dropped
+		for _, c := range rest {
+			if c >= '1' && c <= '9' {
+				return true // negative non-zero fraction: fine as-is
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // maxDupCheckDepth bounds checkNoDuplicateKeys' recursion so an adversarially

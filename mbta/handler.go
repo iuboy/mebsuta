@@ -249,6 +249,12 @@ func (h *Handler) reportErr(op string, err error) {
 // mebsuta.ErrorHandlerSetter so WithErrorHandler propagates into this
 // handler; before it existed, SilentErrorHandler and custom hooks silently
 // never reached mbta and its errors always went to stderr.
+// Dropped returns the total number of records dropped due to a full buffer
+// (or during Close's bounded drain) — feeds mebsuta.DroppedCounter probes.
+func (h *Handler) Dropped() int64 {
+	return h.dropped.Load()
+}
+
 func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
 	h.errorHandler.Store(&fn)
 }

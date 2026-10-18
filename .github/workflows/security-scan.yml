@@ -1,0 +1,49 @@
+name: Security Scan
+
+# Weekly vulnerability sweep so stdlib/dependency CVEs surface between
+# releases instead of at the next tag push (v0.8.0 shipped with three
+# reachable stdlib CVEs discovered only at release time).
+on:
+  schedule:
+    - cron: "0 3 * * 1" # Mondays 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan
+  cancel-in-progress: false
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: govulncheck (pinned to the release-gate version)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+  go-mod-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Verify module checksums
+        run: go mod verify
+      - name: Tidy check (no drifting go.sum)
+        run: |
+          cp go.sum go.sum.bak
+          go mod tidy
+          if ! diff -u go.sum.bak go.sum; then
+            echo "::error::go.sum is not tidy — run go mod tidy and commit" >&2
+            exit 1
+          fi
