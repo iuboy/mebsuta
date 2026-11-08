@@ -1,104 +1,35 @@
 # Versioning
 
-Mebsuta 遵循 Semantic Versioning 2.0.0。
+Mebsuta 的版本号**恒为 `v0.1.<patch>-<rev>`**（2026-11-08 起，世系重置）。
 
 ## Module
 
 Go module path: `github.com/iuboy/mebsuta`
 
-## Version Tags
+## 版本格式
 
 ```text
-v0.1.0
-v0.1.1
-v1.0.0
+v0.1.<patch>-<rev>
 ```
 
-### Legacy Tags
+- **只有 patch（`0.1.x` 的 x）与 rev（`-0` 的数字）两位会递增**；major/minor
+  （`0.1`）不再演进——包括破坏性变更在内的一切变更都只走 patch/rev 节奏。
+- **默认进行破坏性变更，无兼容要求**：除非维护者在变更指令中显式要求保持
+  兼容，API 的破坏性调整不需升 minor、不需兼容别名、不需迁移期——调用方
+  随版本更新同步修正。破坏性内容仍在 CHANGELOG「破坏性变更」小节逐条列出
+  （知情记录，而非兼容承诺）。
+- 同一 patch 内的修正递增 rev（`v0.1.2-0` → `v0.1.2-1`）；新变更发布递增
+  patch 并将 rev 复位 0。
+- 目标版本号已被占用（打标/推送时发现重复）即视为冲突：rev 向后延续至下一
+  个未占用值（`v0.1.2-x` → `v0.1.2-x+1` …），已发布版本号永不重用或覆盖。
 
-Tags `v0.1.0` through `v0.3.4` 是 monorepo 拆分前的旧版本，使用 `go/` 子目录的 import path `github.com/iuboy/mebsuta/go`。
+## 发版流程
 
-当前版本使用根级 `vX.Y.Z` 标签，import path 为 `github.com/iuboy/mebsuta`。
+1. CHANGELOG 定版（新变更 patch 递增、rev 复位 0；同 patch 热修递增 rev）。
+2. 打 `v0.1.x-<rev>` 标签推送 → release.yml 出 Release。
 
-### Pre-release
+## Legacy Tags（已移除）
 
-```text
-v1.0.0-rc.1
-v1.0.0-beta.1
-```
-
-## Semantic Versioning
-
-Version format:
-
-```text
-vMAJOR.MINOR.PATCH
-```
-
-- `MAJOR`: 不兼容的 API 变更
-- `MINOR`: 向后兼容的新功能
-- `PATCH`: 向后兼容的修复
-
-## Breaking Changes
-
-以下变更需要 major version bump：
-
-1. 删除或重命名导出的 public API
-2. 修改 public 函数、方法或类型的签名
-3. 删除支持的配置字段
-4. 以向后不兼容的方式修改 `SPEC.md` 定义的行为
-5. 以消费者无法容忍的方式修改序列化输出
-
-以下不是 breaking changes：
-
-1. 添加新的导出 API
-2. 添加可选的配置字段
-3. 添加新的 handler 或装饰器
-4. 在不改变行为的前提下提升性能
-5. 修复 bug 以匹配文档行为
-6. 当旧行为是安全 bug 时收紧不安全的默认值
-
-## Sub-Module Versioning
-
-独立 Go module（`audit/`、`syslog/`、`database/`、`metrics/`）随主仓库一起发布，使用相同标签。发布时需运行 `scripts/release-mod.sh` 移除 `replace` 指令并设置版本号。
-
-## Release Checklist
-
-- [ ] 更新 `CHANGELOG.md`
-- [ ] 运行 `scripts/test.sh unit`（测试、vet、格式化）
-- [ ] 运行 `govulncheck ./...`（漏洞扫描）
-- [ ] 运行 `scripts/release-mod.sh --dry-run <version>` 预览变更
-- [ ] 运行 `scripts/release-mod.sh <version>` 准备 go.mod
-- [ ] 确认 go.mod module path 正确，`replace` 指令已移除
-- [ ] 创建 tag `vX.Y.Z`
-- [ ] 推送 tag 并确认 release validation 通过
-
-## Deprecation Policy
-
-当 API 需要废弃时：
-
-1. 在 godoc 中标记为 deprecated
-2. 说明替代方案
-3. 至少保留一个 minor release
-4. 在下一个 major release 中移除
-
-示例：
-
-```go
-// Deprecated: use NewFileHandler(rotateCfg, FileConfig{...}) instead. This will be removed in v2.0.0.
-func NewSimpleFileHandler(path string) *FileHandler {
-    // ...
-}
-```
-
-## Dependency Management
-
-依赖应定期更新安全修复。
-
-- Go 依赖管理在 `go.mod` 和 `go.sum`
-- GitHub Actions 依赖管理在仓库根目录
-
-安全扫描：
-
-- Go: `govulncheck`
-- GitHub Actions: Dependabot
+旧世系标签 `v0.1.0`–`v0.8.0` 及 `latest` 已从仓库（本地与远程）移除，
+其变更条目保留在 CHANGELOG 末尾仅作历史记录。旧世系（含 monorepo 拆分前
+`go/` 子目录 import path 时代）与现行版本无兼容关系。
