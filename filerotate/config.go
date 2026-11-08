@@ -32,6 +32,16 @@ const (
 	// (int64 * mib) overflows to a negative number, which disables size
 	// rotation silently via the maxBytes > 0 check. 1<<20 MiB = 1 PiB.
 	maxConfigurableSizeMB = 1 << 20
+
+	// minRotateInterval is the smallest accepted time-based rotation cadence.
+	// Ruling (2026-11 audit round 4): sub-second intervals make
+	// time.Since(rotatedAt) >= interval true on nearly every Write, and each
+	// rotation pays sync + close + rename + open + cleanup (plus compression
+	// on Compress paths) — a 1ns interval was measured to slow writes by
+	// ~1700x. Values below the floor are REJECTED (fail-fast at construction,
+	// never silently clamped) with the legal range in the message; 0 stays
+	// size-only rotation.
+	minRotateInterval = time.Second
 )
 
 // DefaultFileMode is the default file permission for log files and rotated backups.
@@ -40,6 +50,15 @@ const DefaultFileMode os.FileMode = 0600
 // Config holds configuration for the rotating file writer.
 type Config struct {
 	// Path is the absolute path to the log file. Required.
+	//
+	// Single-writer assumption: within a process, only ONE Writer may target
+	// a given path — two Writers rotate and clean up independently and
+	// corrupt each other's backup accounting. Across processes, concurrent
+	// writers on the same path are unsupported too: rotation ownership and
+	// backup cleanup interleave nondeterministically. Data is not lost
+	// (rotate is rename + fresh append), but MaxBackups/MaxAgeDays retention
+	// and time-based rotation become unreliable — write to distinct paths
+	// per process instead.
 	Path string
 	// MaxSizeMB is the maximum file size in MiB before rotation. ≤0 → 100.
 	MaxSizeMB int
@@ -51,7 +70,9 @@ type Config struct {
 	MaxAgeDays int
 	// Compress enables gzip compression of rotated backups. nil → true.
 	Compress *bool
-	// RotateInterval triggers time-based rotation at this interval. 0 = size-only.
+	// RotateInterval triggers time-based rotation at this interval.
+	// 0 = size-only. Sub-second intervals are rejected: see minRotateInterval
+	// for the ruling (a 1ns interval slows writes ~1700x).
 	RotateInterval time.Duration
 	// FileMode for log files. 0 → 0600.
 	FileMode os.FileMode
@@ -95,9 +116,16 @@ func (c Config) Validate() (Config, error) {
 	// RotateInterval == 0 means size-only rotation (documented). A negative
 	// value is nonsensical and would make time.Since(rotatedAt) >= interval
 	// always true, forcing a rotation on every Write — reject it explicitly
-	// rather than silently degrading.
+	// rather than silently degrading. Positive sub-second values hit the same
+	// pathology at a slightly slower rate (measured ~1700x write slowdown at
+	// 1ns, see minRotateInterval), so they are rejected too — the floor is an
+	// error, not a clamp, per the fail-fast convention (config mistakes must
+	// surface at construction, never as mysterious runtime degradation).
 	if c.RotateInterval < 0 {
 		return Config{}, fmt.Errorf("RotateInterval must be >= 0, got %v", c.RotateInterval)
+	}
+	if c.RotateInterval > 0 && c.RotateInterval < minRotateInterval {
+		return Config{}, fmt.Errorf("RotateInterval must be 0 (size-only) or at least %v, got %v", minRotateInterval, c.RotateInterval)
 	}
 	return c, nil
 }

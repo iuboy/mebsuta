@@ -27,6 +27,13 @@ type Writer struct {
 	cfg        Config
 	onError    atomic.Pointer[errorFunc]
 	compressWg sync.WaitGroup
+	// compressSem caps concurrent rotate-path compressions at
+	// maxRotateCompressors (same bound as compressResidual): a rotation
+	// burst must not fork an unbounded gzip fan-out. rotateLocked acquires a
+	// slot BEFORE spawning, so excess compressions QUEUE (never dropped); the
+	// acquire happens under w.mu, which is safe because compression
+	// goroutines release slots without ever needing w.mu.
+	compressSem chan struct{}
 	// H2: paths currently being compressed; cleanupBackupsLocked skips these.
 	// Has its own mutex so the compression goroutine can mark a path done
 	// without acquiring w.mu — Close() holds w.mu while waiting on
@@ -44,6 +51,10 @@ type Writer struct {
 type errorFunc struct {
 	fn func(error)
 }
+
+// maxRotateCompressors is the cap on concurrent gzip compressions of rotated
+// backups — mirrors compressResidual's maxConcurrent=4.
+const maxRotateCompressors = 4
 
 // New creates a rotating file writer for the given config.
 func New(cfg Config) (*Writer, error) {
@@ -71,6 +82,7 @@ func New(cfg Config) (*Writer, error) {
 		rotatedAt:   time.Now(),
 		cfg:         cfg,
 		compressing: make(map[string]struct{}),
+		compressSem: make(chan struct{}, maxRotateCompressors),
 	}
 	w.size.Store(fi.Size())
 
@@ -262,9 +274,20 @@ func (w *Writer) rotateLocked() {
 		w.compressMu.Lock()
 		w.compressing[backup] = struct{}{}
 		w.compressMu.Unlock()
+		// Cap concurrent compressions at maxRotateCompressors, mirroring
+		// compressResidual: a rotation burst (many Write calls crossing
+		// MaxSizeMB back-to-back) must not fork an unbounded gzip fan-out of
+		// goroutines and file descriptors. Acquiring the slot BEFORE spawning
+		// means excess compressions queue here (never dropped); blocking under
+		// w.mu is deadlock-free because compression goroutines release slots
+		// (and finish) without needing w.mu. M7 order: register with the
+		// WaitGroup before acquiring the slot so every in-flight slot is also
+		// Wait-tracked (Close waits under w.mu).
 		w.compressWg.Add(1)
+		w.compressSem <- struct{}{}
 		go func() {
 			defer w.compressWg.Done()
+			defer func() { <-w.compressSem }()
 			compressFile(backup, w.loadOnError())
 			w.compressMu.Lock()
 			delete(w.compressing, backup)

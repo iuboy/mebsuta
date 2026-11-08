@@ -15,7 +15,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseFile(filerotate.Config{
@@ -30,7 +30,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	for i := range 1000 {
 		slog.Info("log entry", "i", i)

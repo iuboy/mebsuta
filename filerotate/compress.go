@@ -56,14 +56,20 @@ func compressFile(path string, onError func(error)) {
 	dstClosed := false
 	defer func() {
 		if !dstClosed {
-			dst.Close()
+			// Best-effort double-close guard: an error return here only
+			// happens after an earlier failure was already reported below,
+			// so discarding it keeps the ORIGINAL error the surfaced one.
+			_ = dst.Close()
 		}
 	}()
 
 	gw := gzip.NewWriter(dst)
 	_, err = io.Copy(gw, src)
 	if err != nil {
-		gw.Close()
+		// Best-effort flush of the doomed writer: the copy failure below is
+		// the real cause and is already reported — a flush error here would
+		// only add noise on the same failure path.
+		_ = gw.Close()
 		cleanupTemp(dst, tmpPath, onError)
 		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("compress data: %w", err)})

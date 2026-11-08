@@ -14,7 +14,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	audit.AuditEvent(audit.EventLogin, "user login",
 		"actor", "user:42",

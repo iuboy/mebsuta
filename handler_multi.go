@@ -23,21 +23,25 @@ func ReportError(eh ErrorHandler, he *HandlerError) {
 
 // safeMultiHandler wraps multiple sub-handlers, adding panic recovery to each call. Prevents a single handler panic from crashing the entire log call.
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
+	p := new(atomic.Pointer[ErrorHandler])
+	p.Store(&eh)
 	return &safeMulti{
 		handlerCore:  newHandlerCore(),
 		handlers:     handlers,
-		errorHandler: &eh,
+		errorHandler: p,
 	}
 }
 
 // safeMulti fans out log records to multiple handlers with per-handler panic recovery.
-// errorHandler is a *ErrorHandler so that clones produced by WithAttrs/WithGroup
-// share the same ErrorHandler value: calling setErrorHandler on the original or
-// any clone is visible to all.
+// errorHandler is an *atomic.Pointer[ErrorHandler] so that clones produced by
+// WithAttrs/WithGroup share the same ErrorHandler slot: calling setErrorHandler
+// on the original or any clone is visible to all, and a concurrent swap cannot
+// race a Handle-path load (the previous bare *ErrorHandler write/read was a
+// data race — set during logger construction raced concurrent Handle calls).
 type safeMulti struct {
 	handlerCore
 	handlers     []slog.Handler
-	errorHandler *ErrorHandler
+	errorHandler *atomic.Pointer[ErrorHandler]
 }
 
 func (h *safeMulti) Close() error {
@@ -64,7 +68,7 @@ func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *safeMulti) handleWithRecovery(handler slog.Handler, ctx context.Context, r slog.Record) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			ReportError(*h.errorHandler, &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
+			ReportError(LoadErrorHandler(h.errorHandler), &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
 			err = nil
 		}
 	}()
@@ -148,7 +152,7 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 	}
 }
 func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
-	*h.errorHandler = fn
+	h.errorHandler.Store(&fn)
 	for _, hh := range h.handlers {
 		propagateErrorHandler(hh, fn, 0)
 	}

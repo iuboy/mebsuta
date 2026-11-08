@@ -86,7 +86,7 @@ func startTestServer(t *testing.T, sink *countingSink) (addr string, stop func()
 		t.Fatal(err)
 	}
 	addr = conn.LocalAddr().String()
-	conn.Close()
+	_ = conn.Close() // best-effort: the probe socket only reserved a free port
 
 	server, err := mbtago.NewServer(
 		mbtago.WithAuth(core.NewStaticTokenValidator(map[string]string{
@@ -114,7 +114,16 @@ func startTestServer(t *testing.T, sink *countingSink) (addr string, stop func()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = server.Start(ctx) }()
-	time.Sleep(1500 * time.Millisecond) // let the QUIC listener bind
+	// 确定性就绪等待：轮询 facade Addr()（Start 完成监听后非空），替代裸
+	// sleep——高负载下 1.5s 不保证绑定完成，曾致 CloseFlushesBuffer 在
+	// 未就绪窗口内 Dial/排空而确定性失败。
+	readyDeadline := time.Now().Add(10 * time.Second)
+	for server.Addr() == "" {
+		if time.Now().After(readyDeadline) {
+			t.Fatal("QUIC listener did not become ready within 10s")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	return addr, func() { cancel(); _ = server.Close() }
 }
 
@@ -135,7 +144,7 @@ func TestHandler_CloseFlushesBuffer(t *testing.T) {
 		InsecureSkipVerify: true,             // self-signed test certificate
 		FlushPeriod:        60 * time.Second, // nothing flushes on its own
 		BatchSize:          100,
-		CloseTimeout:       2 * time.Second,
+		CloseTimeout:       5 * time.Second,
 		MaxRetries:         2,
 		RetryDelay:         100 * time.Millisecond,
 	})

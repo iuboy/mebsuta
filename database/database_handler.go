@@ -19,6 +19,7 @@ import (
 	"gorm.io/driver/gaussdb"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 const (
@@ -78,9 +79,14 @@ type Handler struct {
 	errCount       atomic.Int64
 	dropped        atomic.Int64
 	lastDropReport atomic.Int64 // unix nanos of the last surfaced drop report
-	flushMu        sync.Mutex
-	flushErr       error // last batch-loss error, surfaced by Close
-	errorHandler   atomic.Pointer[mebsuta.ErrorHandler]
+	// signSkipped counts records persisted WITHOUT a signature because
+	// signing failed (canonical encoding error or IntegritySigner error).
+	// Every count corresponds to a row that VerifyRecord will reject with
+	// ErrUnsignedRecord, so auditors can reconcile unsigned rows against it.
+	signSkipped  atomic.Int64
+	flushMu      sync.Mutex
+	flushErr     error // last batch-loss error, surfaced by Close
+	errorHandler atomic.Pointer[mebsuta.ErrorHandler]
 }
 
 // NewHandler creates a Handler that connects to the database specified in cfg.
@@ -101,7 +107,9 @@ func NewHandler(cfg Config) (*Handler, error) {
 		dialector = postgres.Open(cfg.DSN)
 	}
 
-	gdb, err := gorm.Open(dialector, &gorm.Config{})
+	// gorm's own logging is deliberately silent — see newGORMConfig for why
+	// the default logger must never be left enabled on this handler.
+	gdb, err := gorm.Open(dialector, newGORMConfig())
 	if err != nil {
 		return nil, fmt.Errorf("mebsuta: connect %s database: %s", cfg.Driver, sanitizeDBError(err))
 	}
@@ -141,6 +149,22 @@ func NewHandler(cfg Config) (*Handler, error) {
 	go h.run(cfg.BatchSize, cfg.BatchInterval, cfg.RetryDelay)
 
 	return h, nil
+}
+
+// newGORMConfig returns the gorm session configuration shared by every
+// database session opened through NewHandler.
+//
+// gorm's built-in logger is explicitly silenced (logger.Discard). The default
+// logger logs at Warn level with a 200ms slow-query threshold and writes to
+// stdout, rendering slow or failed statements through ExplainSQL with every
+// bound value of the batch interpolated: for a flush-sized batch that doubles
+// peak memory at the worst possible moment AND writes unredacted record
+// content (potentially sensitive) straight to stdout, bypassing every
+// sanitization layer this handler applies. Real database errors are not
+// hidden by this: CreateInBatches returns them, and flush's retry/reporting
+// path surfaces them (redacted via sanitizeDBError).
+func newGORMConfig() *gorm.Config {
+	return &gorm.Config{Logger: logger.Discard}
 }
 
 // Enabled implements slog.Handler.
@@ -241,6 +265,12 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 // a batch, that error is returned from Close instead of vanishing.
 func (h *Handler) Close() error {
 	if !h.closed.CompareAndSwap(false, true) {
+		// Idempotent, but not instant: wait for the Close that won the CAS to
+		// finish its drain+flush. Every caller must get the same completion
+		// contract — "when Close returns, buffered records are persisted" —
+		// not just the one that won the race; a second Close returning early
+		// would let callers read the database before the final flush landed.
+		h.wg.Wait()
 		return nil
 	}
 	h.sendMu.Lock()
@@ -341,20 +371,43 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) error {
 			return nil
 		}
 		h.errCount.Add(1)
-		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: fmt.Errorf("batch insert failed (attempt %d/%d): %w", i+1, finalFlushRetries, dbErr)})
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: batchAttemptError(i+1, dbErr)})
 		if i < finalFlushRetries-1 {
 			// Respect context cancellation during shutdown so we don't
 			// block Close() with an unconditional sleep.
+			//
+			// Defensive: under the current lifecycle this branch is dead —
+			// h.ctx is cancelled only AFTER Close's wg.Wait() has reaped the
+			// run loop, and run() ignores the context while draining. It
+			// exists so a future lifecycle change cannot silently swallow a
+			// batch: a cancelled retry is counted as dropped, recorded in
+			// flushErr and returned so Close surfaces the loss instead of
+			// reporting success.
 			select {
 			case <-time.After(retryDelay):
 			case <-h.ctx.Done():
-				return nil
+				lost := fmt.Errorf("mebsuta: batch of %d records lost: shutdown cancelled flush retry", len(batch))
+				h.dropped.Add(int64(len(batch)))
+				h.setFlushErr(lost)
+				mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: lost, Dropped: h.dropped.Load()})
+				return lost
 			}
 		}
 	}
 	err := fmt.Errorf("mebsuta: batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)
 	mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{Component: "database", Operation: "batch", Err: err})
 	return err
+}
+
+// batchAttemptError builds the per-attempt failure report for flush. The raw
+// database error is passed through sanitizeDBError before it leaves the
+// handler: driver errors can echo DSN fragments ("user:password@host",
+// "password=..."), and the connect path in NewHandler already redacts — the
+// retry path must not become the one leak. The error is rendered to a string
+// instead of wrapped with %w because redaction necessarily replaces the
+// original error value.
+func batchAttemptError(attempt int, dbErr error) error {
+	return fmt.Errorf("batch insert failed (attempt %d/%d): %s", attempt, finalFlushRetries, sanitizeDBError(dbErr))
 }
 
 // fieldsMapPool recycles the per-record attr map: one map allocation per log
@@ -383,7 +436,11 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	}()
 
 	r.Attrs(func(attr slog.Attr) bool {
-		attrutil.FlattenAttr(fields, "", attr, attrutil.NaNString)
+		// FlattenAttrMarked: 任一 attr 触发截断/丢弃上限时给记录补
+		// `_truncated` 标记（与 syslog/JSON 路径的标记语义一致）。
+		if attrutil.FlattenAttrMarked(fields, "", attr, attrutil.NaNString) {
+			fields["_truncated"] = true
+		}
 		return true
 	})
 	if len(fields) > 0 {
@@ -395,9 +452,14 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 		entry.Fields = json.RawMessage(data)
 	}
 
+	// Enforce the per-record size bound BEFORE signing, so the signature
+	// covers the truncated content that is actually persisted.
+	h.applyRecordLimit(&entry)
+
 	// Integrity protection: when a signer is configured, sign the canonical
-	// representation of the record. Failure is non-fatal — we log the error
-	// and persist the record without a signature rather than dropping it.
+	// representation of the record. Failure is non-fatal — we count the skip,
+	// report it rate-limited, and persist the record without a signature
+	// rather than dropping it.
 	if h.cfg.IntegritySigner != nil {
 		// Cap the stored timestamp at the canonical precision so the signed
 		// form survives the database round-trip: PostgreSQL and openGauss
@@ -407,17 +469,23 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 		entry.Time = entry.Time.Truncate(canonicalPrecision)
 		canonical, err := CanonicalBytes(entry.Time, entry.Level, entry.Message, entry.Fields)
 		if err != nil {
-			mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
-				Component: "database", Operation: "sign",
-				Err: fmt.Errorf("integrity sign skipped, record persisted unsigned: %w", err),
-			})
+			h.signSkipped.Add(1)
+			if h.shouldReportDrop() {
+				mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
+					Component: "database", Operation: "sign",
+					Err: fmt.Errorf("integrity sign skipped, record persisted unsigned: %w", err),
+				})
+			}
 		} else {
 			recordHash, sig, signErr := h.cfg.IntegritySigner.Sign(canonical)
 			if signErr != nil {
-				mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
-					Component: "database", Operation: "sign",
-					Err: fmt.Errorf("integrity sign failed, record persisted unsigned: %w", signErr),
-				})
+				h.signSkipped.Add(1)
+				if h.shouldReportDrop() {
+					mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
+						Component: "database", Operation: "sign",
+						Err: fmt.Errorf("integrity sign failed, record persisted unsigned: %w", signErr),
+					})
+				}
 			} else {
 				entry.RecordHash = hex.EncodeToString(recordHash)
 				entry.Signature = sig
@@ -427,6 +495,85 @@ func (h *Handler) recordToDBEntry(r slog.Record) dbLogEntry {
 	}
 
 	return entry
+}
+
+// truncatedFieldsJSON is the placeholder stored when a record exceeds
+// Config.MaxRecordBytes. Safe JSON truncation of arbitrary field documents is
+// not possible in general — a cut inside a string or container yields invalid
+// JSON, or worse, valid JSON that silently misstates the record — so the
+// fields column is replaced wholesale with a marker object and the truncated
+// message carries the size evidence. Operators can query the marker directly
+// (fields->>'mebsuta_truncated') to find affected rows.
+var truncatedFieldsJSON = json.RawMessage(`{"mebsuta_truncated":true}`)
+
+// applyRecordLimit enforces cfg.MaxRecordBytes on the encoded size of a
+// single record (message length + fields JSON length). Over-limit records
+// keep their message — truncated UTF-8-safe to fit below the limit — but
+// lose their fields, which are replaced by the mebsuta_truncated marker; the
+// loss is counted in Dropped and surfaced through the rate-limited drop
+// report, mirroring the backlog-drop path.
+//
+// Without this bound the backlog (BatchSize*10 entries of unbounded size)
+// can reach hundreds of gigabytes of resident memory from a single
+// oversized attribute (e.g. a raw request body), tripling at flush time when
+// the batch slice plus the INSERT buffers materialize.
+//
+// A zero cfg.MaxRecordBytes skips the check: only possible for Handlers
+// built outside NewHandler (tests), since Validate clamps the field to
+// [1, MaxRecordBytesCap].
+func (h *Handler) applyRecordLimit(entry *dbLogEntry) {
+	maxBytes := h.cfg.MaxRecordBytes
+	if maxBytes <= 0 {
+		return
+	}
+	if len(entry.Message)+len(entry.Fields) <= maxBytes {
+		return
+	}
+	entry.Fields = truncatedFieldsJSON
+	entry.Message = truncateUTF8(entry.Message, maxBytes-len(entry.Fields))
+	h.errCount.Add(1)
+	h.dropped.Add(1)
+	if h.shouldReportDrop() {
+		mebsuta.ReportError(mebsuta.LoadErrorHandler(&h.errorHandler), &mebsuta.HandlerError{
+			Component: "database", Operation: "write",
+			Err:     fmt.Errorf("record exceeds MaxRecordBytes (%d bytes): fields replaced with truncation marker, message truncated (total dropped: %d)", maxBytes, h.dropped.Load()),
+			Dropped: h.dropped.Load(),
+		})
+	}
+}
+
+// truncateUTF8 cuts s to at most maxBytes bytes without splitting a UTF-8
+// rune, appending "..." to the cut (same shape as the syslog handler's
+// equivalent) so downstream readers can see the value was shortened. An
+// already-short string passes through unchanged; non-positive maxBytes
+// yields the empty string.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	if maxBytes < 4 {
+		return s[:lastRuneBoundary(s, maxBytes)]
+	}
+	limit := maxBytes - 3
+	return s[:lastRuneBoundary(s, limit)] + "..."
+}
+
+// lastRuneBoundary returns the largest index n <= len(s) such that s[:n] ends
+// on a UTF-8 rune boundary.
+func lastRuneBoundary(s string, n int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n >= len(s) {
+		return len(s)
+	}
+	for n > 0 && (s[n]&0xC0) == 0x80 {
+		n--
+	}
+	return n
 }
 
 func (h *Handler) setErrorHandler(fn mebsuta.ErrorHandler) {
@@ -444,11 +591,24 @@ func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
 // SelfBuffered marks Handler as having built-in async buffering.
 func (*Handler) SelfBuffered() {}
 
-// Dropped returns the total number of records dropped due to a full backlog
-// (or after Close) — the database-side counterpart of mebsuta.AsyncDropped,
-// previously counted but unreadable.
+// Dropped returns the total number of records lost by this handler: a full
+// backlog, writes after Close, and records that exceeded MaxRecordBytes (the
+// original fields content is replaced by the truncation marker, so the loss
+// of the untruncated form counts here). It is the database-side counterpart
+// of mebsuta.AsyncDropped, previously counted but unreadable.
 func (h *Handler) Dropped() int64 {
 	return h.dropped.Load()
+}
+
+// SignSkipped returns the number of records persisted without a signature
+// because signing failed — either CanonicalBytes rejected the record (e.g.
+// fields nesting beyond the canonical depth limit) or IntegritySigner.Sign
+// returned an error. Only meaningful when Config.IntegritySigner is set:
+// every skipped row fails VerifyRecord with ErrUnsignedRecord, so auditors
+// can reconcile unsigned rows against this counter instead of discovering
+// them row by row.
+func (h *Handler) SignSkipped() int64 {
+	return h.signSkipped.Load()
 }
 
 func closeSQLDB(gdb *gorm.DB) {
@@ -468,12 +628,11 @@ func closeSQLDB(gdb *gorm.DB) {
 // driver-side. This is a best-effort redactor for error messages, not a parser.
 var dsnCredRe = regexp.MustCompile(`:[^@/]*@|(?:password|passwd|sslpassword|pwd)=[^&;\s]+`)
 
-// sanitizeDBError removes credential-like substrings from database error messages.
-func sanitizeDBError(err error) string {
-	if err == nil {
-		return "<nil>"
-	}
-	return dsnCredRe.ReplaceAllStringFunc(err.Error(), func(m string) string {
+// redactCredentials removes credential-like substrings from s using the same
+// rules for every caller (database errors and DSNs rendered in Config's
+// String/GoString/Sanitize output).
+func redactCredentials(s string) string {
+	return dsnCredRe.ReplaceAllStringFunc(s, func(m string) string {
 		// "user:pass@" style — preserve the colon separator shape.
 		if strings.HasSuffix(m, "@") {
 			return ":***@"
@@ -485,6 +644,14 @@ func sanitizeDBError(err error) string {
 		}
 		return m[:eq+1] + "***"
 	})
+}
+
+// sanitizeDBError removes credential-like substrings from database error messages.
+func sanitizeDBError(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return redactCredentials(err.Error())
 }
 
 var (

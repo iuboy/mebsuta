@@ -12,7 +12,7 @@ import (
 
 func main() {
 	dir, _ := os.MkdirTemp("", "mebsuta-multi")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseStdout(mebsuta.StdoutConfig{
@@ -29,7 +29,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Debug("only in file")
 	slog.Info("only in file")

@@ -14,8 +14,41 @@
 
 ## [0.1.0-0] - 2026-11-08
 
-> 本节聚合世系重置前 v0.8.0 之后的全部未发布变更。第四轮对抗性安全审计
-> （四维度并行）的修复将随后续 rev 发布。
+> 本节聚合世系重置前 v0.8.0 之后的全部未发布变更，以及 2026-11-08 第四轮
+> 对抗性安全审计（四维度并行：并发生命周期/注入解析/资源 DoS/泄漏配置）的
+> 全部修复。
+
+### ⚠️ BREAKING CHANGES
+
+- **metrics**: `HandlerMetrics.IncDropped(name)` → `IncDroppedN(name string, n int64)`——丢弃观测按量级而非次数计数（此前两次观测间丢 500 条只 +1）；自定义实现随签名更新
+- **database**: `Config` 新增 `MaxRecordBytes`（默认 256KiB、上限 8MB）——超限记录截断 Fields 为 `_truncated` 占位并计 dropped；`RetryDelay` 钳制 30s 封顶（对齐 syslog/mbta）
+- **mbta**: `Config.BatchSize` 钳制 10000；新增 `OnResult` 回调（RESULT 拒绝/释放对调用方可见）
+- **async**: `AsyncConfig.BufferSize` 上限 10000（超限构造期 fail-fast，对齐 syslog/database 子包）
+- **filerotate**: `RotateInterval` 下限 1s（更小值构造期报错——实测 1ns 致每次写完整轮转 ~1700× 慢化）
+- **jwt/审计契约**：AUDIT 级记录的 record 级 `event_type/actor/success` 现提升到顶层 JSON（恢复 SPEC/README 声明的契约；非 AUDIT 维持 preset-only——防伪造裁决保留）
+
+### 修复（安全）
+
+- **[P1] database**：gorm 默认 logger 静音（`logger.Discard`）——DB 降级/慢查询时默认 logger 将整批日志字段值内插渲染到 stdout（内存 ×2 峰值 + 敏感数据绕过全部脱敏）；flush 驱动错误上报前过 `sanitizeDBError`（与 connect 路径对称）
+- **[P1] mbta**：record→signal 按 mbta-go wire schema 预过滤（attrs ≤128 / 键 ≤256B / 控制字符替换）+ 发送前 `Validate()` 门 + `OnResult` 使服务端拒绝可见——此前超限批次被服务端整批拒收而客户端无感知（审计日志静默丢失）
+- **[P2] 四个缓冲 handler**（async/database/syslog/mbta）：丢弃/错误报告移出 `sendMu` 锁外——用户 ErrorHandler 重入 Close 此前永久死锁（filerotate M4 同类，-race 实证复现）
+- **[P2] sampling**：`Enabled` 无条件放行 Error+ 绕过内层级别过滤（审计专用 sink 被污染、动态调级失效）——恢复「Enabled 诚实、Handle 豁免」分层
+- **[P2] syslog**：RFC5424 SD-PARAM 路径 Resolve LogValuer 并展开 Group（此前输出 Go 结构体内部表示——经 LogValuer 做脱敏的字段被绕过外泄，SD 与 JSON 同记录不一致）
+- **[P2] mbta**：嵌套 group 展平为点分键（此前降级为有损字符串化）；Config 脱敏输出（Token `***`）
+- **[P2] database**：记录尺寸上限 + 超限占位标记；深嵌套 sign-skip 计数可见；flush ctx-abort 分支不再静默吞批
+- **[P2] async**：process 错误 1/s 限频（此前 inner 恒错时每条记录 1:1 stderr 放大）；`KindAny` []byte 属性快照拷贝
+- **[P2] filerotate**：轮转压缩并发上限 4（此前每次轮转无界 spawn）
+
+### 修复（正确性/观测/卫生）
+
+- **关闭语义**：四个缓冲 handler + mbta 的二次 Close 改为等待首次排空完成（幂等）；asyncGroup 关闭丢弃计数；syslog/mbta closing 窗口丢弃计数；mbta 排空超时的 in-flight 丢失计入 dropped
+- **mbta Close**：排空后等待最终批 RESULT 终态再发 CLOSE——control/data 流无跨流序，此前 CLOSE 可先于在途 BATCH 被服务端处理致连接提前拆除、末批静默丢失；Connect 串行化（并发 Connect 触发 mbta-go binding 双连收敛、败者清理关闭胜者连接）
+- **mbta-go v0.6.0 → v0.1.0-0 升级随动**：`SignalRecord` 时间字段毫秒→纳秒迁移；依赖 pollux-go v0.1.2-3
+- **观测**：MetricsHandler 丢弃按 delta 量级上报；attrutil 截断标记 `_truncated` 接线 JSON/database 路径（对齐 syslog 先例）
+- **syslog**：SD 预算 escape 后计长（单参数 ~8KB 膨胀封堵）；marshal 错误回显 512B 截断；Error 级 send fast-path + ctx gate
+- **配置校验**：表名 digits-first 的 SPEC 漂移、Sampling Close 描述、Async 超时语义多处文档对齐实现
+- **CI/供应链**：security-scan 新增 gosec + gitleaks；govulncheck pin v1.1.4 → v1.9.0；全部 actions 改 SHA pin；examples/database 改 postgres（sqlite 仅测试依赖）
+- **杂项**：safeMulti errorHandler 原子化；mebsutatest 包 TEST-ONLY 警示；README 补 SIGPIPE 与异步缓冲说明；filerotate 单写者约束文档化
 
 ### 修复
 

@@ -4,10 +4,12 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -116,6 +118,65 @@ func TestHandler_ConcurrentCloseWrite(t *testing.T) {
 	if err := h.Close(); err != nil {
 		t.Fatalf("second close: %v", err)
 	}
+}
+
+// TestHandler_ConcurrentCloseWaitsForDrain verifies that a second Close
+// under concurrency does not return before the first Close's drain flush has
+// completed: every caller must get the same completion contract ("when Close
+// returns, buffered records are persisted"), not just the one that won the
+// CAS. Regression: the CAS-loser used to return nil immediately, letting
+// callers read the database before the final flush landed.
+func TestHandler_ConcurrentCloseWaitsForDrain(t *testing.T) {
+	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
+
+	// Slow the INSERT down so the drain is observably long; insertDone marks
+	// the moment the persisted write actually completed.
+	var insertDone atomic.Bool
+	require.NoError(t, gdb.Callback().Create().Before("gorm:create").
+		Register("test:drain_delay", func(tx *gorm.DB) {
+			time.Sleep(150 * time.Millisecond)
+			insertDone.Store(true)
+		}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h := &Handler{
+		leveler: slog.LevelInfo,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 1000),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	eh := mebsuta.DefaultErrorHandler
+	h.errorHandler.Store(&eh)
+	// Batch size and interval exceed what we write, so the record only
+	// reaches the database during Close's drain.
+	h.wg.Add(1)
+	go h.run(1000, time.Hour, time.Millisecond)
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "drain me", 0)
+	require.NoError(t, h.Handle(context.Background(), r))
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- h.Close() }()
+
+	// Wait until the first Close has claimed the CAS so the second one is
+	// guaranteed to exercise the already-closing path.
+	require.Eventually(t, func() bool { return h.closed.Load() }, time.Second, time.Millisecond)
+
+	secondDone := make(chan struct{})
+	go func() { _ = h.Close(); close(secondDone) }()
+
+	select {
+	case <-secondDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second Close deadlocked waiting for the drain")
+	}
+	require.True(t, insertDone.Load(),
+		"second Close returned before the first Close's drain flush completed")
+	require.NoError(t, <-firstDone)
 }
 
 // SPEC P0: Records written before Close are delivered (file-based SQLite for verification).

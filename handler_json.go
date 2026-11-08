@@ -94,44 +94,91 @@ func (h *contractJSONHandler) timezone() *time.Location {
 	return h.loc
 }
 
+// promoteStringField lifts attributes[key] (string) into dst on the first
+// call that finds a matching type; later calls for an already-claimed field
+// are no-ops, which is how the preset value stays authoritative over a
+// colliding AUDIT record attr. The value is removed from attributes once
+// promoted; a type mismatch leaves it in place (kept as evidence).
+func promoteStringField(attributes map[string]any, key string, claimed *bool, dst *string) {
+	if *claimed {
+		return
+	}
+	if v, ok := attributes[key].(string); ok {
+		*dst = v
+		*claimed = true
+		delete(attributes, key)
+	}
+}
+
+// promoteBoolField is promoteStringField for bool values, targeting *dst.
+func promoteBoolField(attributes map[string]any, key string, claimed *bool, dst **bool) {
+	if *claimed {
+		return
+	}
+	if v, ok := attributes[key].(bool); ok {
+		b := v
+		*dst = &b
+		*claimed = true
+		delete(attributes, key)
+	}
+}
+
 func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	attributes := getAttrMap()
 	defer putAttrMap(attributes)
 
 	eventType, actor, success := "", "", (*bool)(nil)
 
-	// Promote the audit contract fields from PRESET attrs only (set via
-	// WithAttrs at logger construction). Record attrs with the same keys stay
-	// inside "attributes": letting per-call attrs promote would let any log
-	// site override the trusted actor/event_type/success — audit forgery by
-	// key collision.
+	// Promote the audit contract fields from PRESET attrs (set via WithAttrs
+	// at logger construction) for every record, and additionally from record
+	// attrs for AUDIT-level records. The level is the trust anchor: a record
+	// only ever reaches AUDIT severity through an audit call site
+	// (audit.AuditEvent & friends), so its record attrs are trusted to carry
+	// event_type/actor/success. Non-AUDIT records keep record-level keys
+	// inside "attributes": letting per-call attrs promote on ordinary log
+	// sites would let any INFO line override the trusted actor/event_type/
+	// success — audit forgery by key collision. On conflict the preset value
+	// wins; the colliding record value stays inside attributes as evidence.
+	truncated := false
 	for _, attr := range h.attrs {
-		attrutil.FlattenAttr(attributes, "", attr, attrutil.NaNSafe)
+		if attrutil.FlattenAttrMarked(attributes, "", attr, attrutil.NaNSafe) {
+			truncated = true
+		}
 	}
-	if v, ok := attributes["event_type"].(string); ok {
-		eventType = v
-		delete(attributes, "event_type")
-	}
-	if v, ok := attributes["actor"].(string); ok {
-		actor = v
-		delete(attributes, "actor")
-	}
-	if v, ok := attributes["success"].(bool); ok {
-		success = &v
-		delete(attributes, "success")
-	}
+	var etClaimed, acClaimed, scClaimed bool
+	promoteStringField(attributes, "event_type", &etClaimed, &eventType)
+	promoteStringField(attributes, "actor", &acClaimed, &actor)
+	promoteBoolField(attributes, "success", &scClaimed, &success)
 
-	// Record attrs land in attributes only; keys colliding with preset values
-	// overwrite the attribute map entry but can no longer reach the promoted
-	// top-level fields.
+	// Record attrs land in attributes; AUDIT-level records may promote from
+	// there (below). On non-AUDIT records colliding keys overwrite the
+	// attribute map entry but can never reach the promoted top-level fields.
 	r.Attrs(func(attr slog.Attr) bool {
-		attrutil.FlattenAttr(attributes, h.group, attr, attrutil.NaNSafe)
+		if attrutil.FlattenAttrMarked(attributes, h.group, attr, attrutil.NaNSafe) {
+			truncated = true
+		}
 		return true
 	})
+	if r.Level == LevelAudit {
+		// Claimed fields are skipped: the preset value stays authoritative
+		// and the colliding record value remains inside attributes.
+		promoteStringField(attributes, "event_type", &etClaimed, &eventType)
+		promoteStringField(attributes, "actor", &acClaimed, &actor)
+		promoteBoolField(attributes, "success", &scClaimed, &success)
+	}
 
 	level := r.Level.String()
 	if r.Level == LevelAudit {
 		level = "AUDIT"
+	}
+
+	// Reserved omission marker (mirrors the syslog handler's _truncated
+	// PARAM-NAME): some attr was dropped by the count/depth caps or a key was
+	// clipped to the length cap, so attributes is incomplete. A user attr
+	// literally named _truncated is overwritten when truncation occurred —
+	// the marker wins so consumers can trust it as a completeness signal.
+	if truncated {
+		attributes["_truncated"] = true
 	}
 
 	var source string

@@ -23,7 +23,9 @@ type samplingState struct {
 // sampling chain (WithAttrs/WithGroup clones reuse one counter). A high-
 // volume component can therefore consume the budget and suppress other
 // components' sub-Error logs in the same window — that is inherent to the
-// sampling semantics. Error and Audit records are exempt and always pass.
+// sampling semantics. Error and Audit records are exempt from sampling in
+// Handle and always pass; Enabled stays honest about the inner chain's own
+// level filter (see Enabled).
 type SamplingHandler struct {
 	handlerCore
 	inner slog.Handler
@@ -54,11 +56,14 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 }
 
 // Enabled implements slog.Handler.
+//
+// Enabled delegates unconditionally to the inner chain: the Error/Audit
+// exemption is a SAMPLING exemption (Handle below always passes those
+// records through the sampler), not a level-filter bypass. Reporting true
+// for every Error record here would let plain Error traffic reach an
+// audit-only inner sink (Level = LevelAudit) and would defeat a dynamic
+// LevelVar tightened at runtime.
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	// Error and Audit (LevelAudit > LevelError) records are never sampled.
-	if level >= slog.LevelError {
-		return true
-	}
 	return h.inner.Enabled(ctx, level)
 }
 

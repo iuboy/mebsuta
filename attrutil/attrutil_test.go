@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -230,5 +231,74 @@ func TestFlattenAttr_MaxAttrCount(t *testing.T) {
 	}
 	if len(out) > maxAttrCount {
 		t.Errorf("output map has %d entries, want max %d", len(out), maxAttrCount)
+	}
+}
+
+// =============================================================================
+// 四轮审计批 C：截断信息外泄（FlattenAttrMarked）
+// =============================================================================
+
+// TestFlattenAttrMarked_NoTruncation: a plain attr flattens unmarked.
+func TestFlattenAttrMarked_NoTruncation(t *testing.T) {
+	out := make(map[string]any)
+	if truncated := FlattenAttrMarked(out, "", slog.String("k", "v"), NaNSafe); truncated {
+		t.Error("plain attr must not report truncation")
+	}
+	if out["k"] != "v" {
+		t.Errorf("out[k] = %v, want v", out["k"])
+	}
+}
+
+// TestFlattenAttrMarked_KeyTruncated: a key over maxKeyLen is clipped and
+// reported.
+func TestFlattenAttrMarked_KeyTruncated(t *testing.T) {
+	out := make(map[string]any)
+	long := strings.Repeat("k", 300)
+	truncated := FlattenAttrMarked(out, "", slog.String(long, "v"), NaNSafe)
+	if !truncated {
+		t.Error("clipped key must report truncation")
+	}
+	for k := range out {
+		if len(k) > maxKeyLen {
+			t.Errorf("key not clipped: %d bytes", len(k))
+		}
+	}
+}
+
+// TestFlattenAttrMarked_AttrCountCap: once the map hits the cap, further
+// attrs are dropped and reported.
+func TestFlattenAttrMarked_AttrCountCap(t *testing.T) {
+	out := make(map[string]any)
+	for i := 0; i < maxAttrCount; i++ {
+		FlattenAttrMarked(out, "", slog.String(fmt.Sprintf("k%04d", i), "v"), NaNSafe)
+	}
+	truncated := FlattenAttrMarked(out, "", slog.String("overflow", "v"), NaNSafe)
+	if !truncated {
+		t.Error("attr dropped by the count cap must report truncation")
+	}
+	if _, ok := out["overflow"]; ok {
+		t.Error("attr beyond the cap must be dropped")
+	}
+}
+
+// TestFlattenAttrMarked_DepthCap: a group nesting deeper than the cap drops
+// the subtree and reports truncation.
+func TestFlattenAttrMarked_DepthCap(t *testing.T) {
+	out := make(map[string]any)
+	deep := slog.String("leaf", "v")
+	for i := 0; i < 20; i++ { // maxFlattenDepth is 16
+		deep = slog.Group("g", deep)
+	}
+	if truncated := FlattenAttrMarked(out, "", deep, NaNSafe); !truncated {
+		t.Error("subtree dropped by the depth cap must report truncation")
+	}
+}
+
+// TestFlattenAttrMarked_EmptyKeyNotTruncation: the empty-key sanitation drop
+// is by-design input hygiene, not a truncation event.
+func TestFlattenAttrMarked_EmptyKeyNotTruncation(t *testing.T) {
+	out := make(map[string]any)
+	if truncated := FlattenAttrMarked(out, "prefix", slog.String("", "v"), NaNSafe); truncated {
+		t.Error("empty-key drop is sanitation, not truncation")
 	}
 }

@@ -21,7 +21,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	for i := range 20 {
 		slog.Info("message", "i", i)

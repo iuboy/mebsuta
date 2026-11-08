@@ -111,9 +111,9 @@ func ExampleWithMetrics() {
 // testMetrics is a minimal implementation for the example.
 type testMetrics struct{}
 
-func (m *testMetrics) ObserveHandle(duration time.Duration) {}
-func (m *testMetrics) IncError(handlerName string)          {}
-func (m *testMetrics) IncDropped(handlerName string)        {}
+func (m *testMetrics) ObserveHandle(duration time.Duration)    {}
+func (m *testMetrics) IncError(handlerName string)             {}
+func (m *testMetrics) IncDroppedN(handlerName string, n int64) {}
 
 // ExampleCloseAll demonstrates proper handler cleanup.
 func ExampleCloseAll() {

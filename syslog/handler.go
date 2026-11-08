@@ -40,6 +40,14 @@ const (
 	maxSDNameLen    = 32        // RFC5424: SD-NAME is 1*32 PRINTUSASCII
 	maxSDValueBytes = 4 * 1024  // per PARAM-VALUE
 	maxSDBudget     = 32 * 1024 // total SD-ELEMENT bytes
+	// sdMaxGroupDepth caps SD group flattening; mirrors attrutil's maxFlattenDepth
+	// so a self-referential LogValuer→group chain cannot recurse forever.
+	sdMaxGroupDepth = 16
+	// maxMarshalEchoBytes bounds how much of the original message is echoed
+	// back inside the marshal-failure error report. Unbounded echoes let a
+	// single oversized/Pathological record flood stderr through ReportError
+	// (root package's fallbackEntry applies the same idea at 1024).
+	maxMarshalEchoBytes = 512
 	// sdTruncationMark is the reserved PARAM-NAME for the omission marker;
 	// user params sanitizing to the same name are skipped (counted).
 	sdTruncationMark = "_truncated"
@@ -72,16 +80,21 @@ type Handler struct {
 	hostname         string
 	buffer           chan []byte
 	sendMu           sync.RWMutex // RLock during buffer send; Lock during Close's close(buffer)
-	flushCh          chan chan struct{}
-	wg               sync.WaitGroup
-	ctx              context.Context
-	cancel           context.CancelFunc
-	closing          atomic.Bool
-	attrDropWarned   atomic.Bool // one-time warning for RFC3164 attr discarding
-	dropped          atomic.Int64
-	lastDropReport   atomic.Int64 // unix nanos of the last surfaced drop report
-	location         *time.Location
-	errorHandler     atomic.Pointer[mebsuta.ErrorHandler]
+	// drainDone is closed by the Close that won the closing CAS once its
+	// drain and connection cleanup finished; losing Closes wait on it so a
+	// second Close also returns only after the handler is fully settled.
+	// Written once in NewHandler before publication — no concurrent access.
+	drainDone      chan struct{}
+	flushCh        chan chan struct{}
+	wg             sync.WaitGroup
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closing        atomic.Bool
+	attrDropWarned atomic.Bool // one-time warning for RFC3164 attr discarding
+	dropped        atomic.Int64
+	lastDropReport atomic.Int64 // unix nanos of the last surfaced drop report
+	location       *time.Location
+	errorHandler   atomic.Pointer[mebsuta.ErrorHandler]
 }
 
 // NewHandler creates a Handler that connects to the syslog server specified in cfg.
@@ -118,6 +131,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		hostname:         hostname,
 		buffer:           make(chan []byte, bufferSize),
 		flushCh:          make(chan chan struct{}),
+		drainDone:        make(chan struct{}),
 		ctx:              ctx,
 		cancel:           cancel,
 		location:         loc,
@@ -166,6 +180,10 @@ func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 // Handle implements slog.Handler.
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closing.Load() {
+		// Count the silently-dropped post-close record so the loss is at
+		// least visible in metrics, not just an invisible nil (same as
+		// database.Handler).
+		h.dropped.Add(1)
 		return nil
 	}
 
@@ -183,7 +201,26 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 // remaining messages are dropped and reported.
 func (h *Handler) Close() error {
 	if !h.closing.CompareAndSwap(false, true) {
+		// Another Close is running (or finished): wait — bounded by the same
+		// closeDrainTimeout the first Close itself enforces — instead of
+		// returning while the buffer may still be draining, so callers can
+		// rely on Close meaning "fully settled". Idempotent wait: drainDone
+		// is closed exactly once, by the CAS winner. A zero-value Handler
+		// (never went through NewHandler) has no drainDone and nothing
+		// meaningful to wait for, so it returns immediately.
+		drainDone := h.drainDone
+		if drainDone != nil {
+			select {
+			case <-drainDone:
+			case <-time.After(closeDrainTimeout):
+				// The first Close holds its own bound; this branch only
+				// stops a wedged drain from blocking callers forever.
+			}
+		}
 		return nil
+	}
+	if h.drainDone != nil {
+		defer close(h.drainDone)
 	}
 
 	// sendMu (write lock around close) makes close-vs-send race-detector
@@ -501,35 +538,67 @@ func (h *Handler) safeSend(data []byte, level slog.Level) error {
 	// sendMu makes Close's close(buffer) race-free against in-flight sends
 	// (same pattern as database.Handler; the recover guard is no longer
 	// needed and was a -race DATA RACE even though the panic was caught).
+	//
+	// Error reports are collected while the lock is held but DELIVERED after
+	// RUnlock: a user ErrorHandler that re-enters Close would take
+	// sendMu.Lock and deadlock against our own RLock (the same
+	// report-outside-the-lock discipline as filerotate's reportRotateErrors).
 	h.sendMu.RLock()
-	defer h.sendMu.RUnlock()
-
 	if h.closing.Load() {
+		h.sendMu.RUnlock()
 		return fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
 	}
+	report, err := h.sendLocked(data, level)
+	h.sendMu.RUnlock()
 
+	if report != nil {
+		mebsuta.ReportError(h.loadEH(), report)
+	}
+	return err
+}
+
+// sendLocked enqueues one frame onto the buffer channel. Caller must hold
+// sendMu.RLock. The FIRST return carries the HandlerError to report, if any;
+// the caller delivers it after releasing the lock (see safeSend).
+//
+// Error+ records get a bounded blocking send: a non-blocking attempt first
+// (so the common buffer-has-room case pays no timer allocation), then a
+// timer-bounded wait that respects ctx cancellation — the same shape as
+// async.Handler's Error send. Other levels never block.
+func (h *Handler) sendLocked(data []byte, level slog.Level) (*mebsuta.HandlerError, error) {
 	if level >= slog.LevelError {
 		select {
 		case h.buffer <- data:
-			return nil
-		case <-time.After(h.cfg.ErrorTimeout):
+			return nil, nil
+		default:
+		}
+
+		timer := time.NewTimer(h.cfg.ErrorTimeout)
+		defer timer.Stop()
+		select {
+		case h.buffer <- data:
+			return nil, nil
+		case <-h.ctx.Done():
+			h.dropped.Add(1)
+			return nil, fmt.Errorf("mebsuta/syslog: handler closing, %v record dropped", level)
+		case <-timer.C:
 			h.dropped.Add(1)
 			if h.shouldReportDrop() {
-				mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped (total dropped: %d)", level, h.dropped.Load()), Dropped: h.dropped.Load()})
+				return &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full timeout for %v record, dropped (total dropped: %d)", level, h.dropped.Load()), Dropped: h.dropped.Load()}, fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
 			}
-			return fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
+			return nil, fmt.Errorf("mebsuta/syslog: buffer full timeout for %v record", level)
 		}
 	}
 
 	select {
 	case h.buffer <- data:
-		return nil
+		return nil, nil
 	default:
 		h.dropped.Add(1)
 		if h.shouldReportDrop() {
-			mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: h.dropped.Load()})
+			return &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()), Dropped: h.dropped.Load()}, fmt.Errorf("mebsuta/syslog: buffer full")
 		}
-		return fmt.Errorf("mebsuta/syslog: buffer full")
+		return nil, fmt.Errorf("mebsuta/syslog: buffer full")
 	}
 }
 
@@ -564,7 +633,14 @@ func (h *Handler) formatJSONMessage(entry mebsuta.LogEntry, ts time.Time, priori
 
 	jsonBytes, err := json.Marshal(logData)
 	if err != nil {
-		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "marshal", Err: fmt.Errorf("marshal log entry (msg=%q, level=%v): %w", entry.Message, entry.Level, err)})
+		// Truncate the echoed message: the record that failed to marshal can
+		// itself be arbitrarily large, and an unbounded %q echo turns one
+		// bad record into a multi-megabyte stderr write.
+		echo := entry.Message
+		if len(echo) > maxMarshalEchoBytes {
+			echo = truncateUTF8(echo, maxMarshalEchoBytes)
+		}
+		mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "syslog", Operation: "marshal", Err: fmt.Errorf("marshal log entry (msg=%q, level=%v): %w", echo, entry.Level, err)})
 		safeData := map[string]any{
 			"time":       logData["time"],
 			"level":      logData["level"],
@@ -599,14 +675,24 @@ func (h *Handler) formatStructuredMessage(entry mebsuta.LogEntry, ts time.Time, 
 			sd.WriteByte('-')
 		} else {
 			sd.WriteString("[mebsuta")
+			// Resolve LogValuer values and flatten KindGroup attrs first,
+			// mirroring the JSON path (attrutil.FlattenAttr expands groups
+			// into dotted child keys and resolves before rendering). Without
+			// Resolve, a sensitive field wrapped in a LogValuer (e.g. for
+			// redaction) would be serialized as its internal struct
+			// representation via fmt instead of the redacted value.
+			params := make([]sdParam, 0, len(entry.Attrs))
+			for _, attr := range entry.Attrs {
+				collectSDParams(attr, "", 0, &params, &skipped)
+			}
 			// RFC5424 §6.3.2 requires PARAM-NAMEs to be unique within an
 			// SD-ELEMENT; sanitization can collide distinct keys ("a/b" and
 			// "a_b" both become "a_b"), and strict receivers reject the whole
 			// frame on duplicates. Deduplicate post-sanitization and count the
 			// losers in the truncation marker.
-			seen := make(map[string]struct{}, len(entry.Attrs))
-			for _, attr := range entry.Attrs {
-				name := sanitizeSDName(attr.Key)
+			seen := make(map[string]struct{}, len(params))
+			for _, p := range params {
+				name := sanitizeSDName(p.name)
 				if name == "" || name == sdTruncationMark {
 					// The truncation-marker name is reserved so the marker
 					// itself can never collide with a user param.
@@ -621,12 +707,19 @@ func (h *Handler) formatStructuredMessage(entry mebsuta.LogEntry, ts time.Time, 
 				// Enforce count and total-size budgets: the structured path
 				// has no attrutil caps, and an unbounded attr (e.g. a raw
 				// request body) would produce frames that fragment on UDP and
-				// amplify memory on the receiver.
-				if written >= maxSDParams || sd.Len() > maxSDBudget {
+				// amplify memory on the receiver. The size check adds this
+				// param's POST-ESCAPE length (escape-then-truncate, so a
+				// value of all quotes cannot double past the cap) instead of
+				// checking before rendering — a check-then-write on the
+				// pre-render length could still overshoot the budget by a
+				// whole param.
+				value := truncateSDValue(escapeSDValue(p.value), maxSDValueBytes)
+				paramLen := len(name) + len(value) + 3 // ' ' + two quotes
+				if written >= maxSDParams || sd.Len()+paramLen > maxSDBudget {
 					skipped++
 					continue
 				}
-				fmt.Fprintf(&sd, " %s=\"%s\"", name, escapeSDValue(truncateUTF8(attr.Value.String(), maxSDValueBytes)))
+				fmt.Fprintf(&sd, " %s=\"%s\"", name, value)
 				written++
 			}
 			if skipped > 0 {
@@ -743,6 +836,69 @@ func escapeSDValue(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// sdParam is one flattened SD-PARAM candidate: the dotted attr path as name
+// and the already-resolved value as a string.
+type sdParam struct {
+	name  string
+	value string
+}
+
+// collectSDParams resolves attr's value (LogValuer) and flattens KindGroup
+// values into dotted-path params, mirroring the JSON path's FlattenAttr
+// (groups expand into "grp.child" entries; values resolve before rendering).
+// Recursion is depth-capped (sdMaxGroupDepth, like attrutil's flatten) so a
+// self-referential LogValuer→group chain cannot loop forever, and the output
+// is count-capped (maxSDParams) so a wide group cannot balloon the slice;
+// overflow and unresolvable values are counted as skipped. A value that is
+// STILL a LogValuer after Resolve is self-referential (Resolve applies one
+// level only) and is skipped rather than formatted into an internal-representation
+// leak.
+func collectSDParams(attr slog.Attr, prefix string, depth int, out *[]sdParam, skipped *int) {
+	if depth >= sdMaxGroupDepth {
+		*skipped++
+		return
+	}
+	if len(*out) >= maxSDParams {
+		*skipped++
+		return
+	}
+	attr.Value = attr.Value.Resolve()
+	if attr.Value.Kind() == slog.KindLogValuer {
+		*skipped++
+		return
+	}
+	key := attr.Key
+	if prefix != "" {
+		key = prefix + "." + key
+	}
+	if attr.Value.Kind() == slog.KindGroup {
+		for _, child := range attr.Value.Group() {
+			collectSDParams(child, key, depth+1, out, skipped)
+		}
+		return
+	}
+	if key == "" {
+		*skipped++
+		return
+	}
+	*out = append(*out, sdParam{name: key, value: attr.Value.String()})
+}
+
+// truncateSDValue caps an ESCAPED PARAM-VALUE at maxBytes, keeping UTF-8 rune
+// boundaries. Truncation happens after escaping (escape-then-truncate, the
+// reverse of the pre-2026-11 audit order): escaping can double a value of all
+// quotes/brackets, so truncating first then escaping would render up to ~2×
+// maxBytes per param. A cut can land between the halves of a `\\`/`\"`/`\]`
+// escape; the dangling backslash would pair with the "..." suffix into an
+// illegal RFC5424 escape sequence, so it is stripped.
+func truncateSDValue(s string, maxBytes int) string {
+	t := truncateUTF8(s, maxBytes)
+	if n := len(t) - len(strings.TrimRight(t, `\`)); n%2 == 1 {
+		t = t[:len(t)-1]
+	}
+	return t
 }
 
 // sanitizeSDName maps an attr key to a legal SD-NAME (PRINTUSASCII subset,

@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/iuboy/mebsuta"
 	"github.com/stretchr/testify/require"
@@ -515,7 +517,7 @@ func TestHandler_FlushRetries(t *testing.T) {
 	batch := []dbLogEntry{
 		{Time: time.Now(), Level: "INFO", Message: "test"},
 	}
-	h.flush(batch, 1*time.Millisecond)
+	_ = h.flush(batch, 1*time.Millisecond) // outcome asserted via the retry counter above
 
 	// Should have retried exactly finalFlushRetries (3) times.
 	require.Equal(t, int64(finalFlushRetries), retryCount.Load(),
@@ -668,4 +670,172 @@ func TestSanitizeDBError_Credentials(t *testing.T) {
 // TestSanitizeDBError_Nil verifies nil input handling.
 func TestSanitizeDBError_Nil(t *testing.T) {
 	require.Equal(t, "<nil>", sanitizeDBError(nil))
+}
+
+// TestBatchAttemptError_SanitizesCredentials verifies the flush/retry path
+// redacts DSN-derived credentials before reporting — matching the connect
+// path's sanitizeDBError behavior. Regression: the retry path used to pass
+// the raw driver error through with %w, making it the one unredacted leak.
+func TestBatchAttemptError_SanitizesCredentials(t *testing.T) {
+	got := batchAttemptError(1, errors.New(`dial tcp: user:supersecret@tcp(db.example:5432)/logs`)).Error()
+	require.NotContains(t, got, "supersecret")
+	require.Contains(t, got, ":***@")
+	require.Contains(t, got, "attempt 1/3")
+
+	got = batchAttemptError(2, errors.New(`connect: password=hunter2&db=logs`)).Error()
+	require.NotContains(t, got, "hunter2")
+	require.Contains(t, got, "password=***")
+}
+
+// TestHandler_FlushRetryCancelledCountsDrop verifies the defensive ctx.Done
+// branch in flush's retry loop: a retry interrupted by handler shutdown
+// counts the batch as dropped, records flushErr for Close, and returns an
+// explicit error instead of silently reporting success (the branch used to
+// `return nil`, hiding the loss).
+func TestHandler_FlushRetryCancelledCountsDrop(t *testing.T) {
+	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, gdb.Table("logs").AutoMigrate(&dbLogEntry{}))
+	sqlDB, err := gdb.DB()
+	require.NoError(t, err)
+	_ = sqlDB.Close() // sabotage: every insert fails
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := &Handler{
+		leveler: slog.LevelDebug,
+		db:      gdb,
+		table:   "logs",
+		entries: make(chan dbLogEntry, 10),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+	h.setErrorHandler(func(*mebsuta.HandlerError) {}) // keep test output clean
+
+	batch := []dbLogEntry{
+		{Time: time.Now(), Level: "INFO", Message: "one"},
+		{Time: time.Now(), Level: "INFO", Message: "two"},
+	}
+
+	cancel()                        // the retry select must hit ctx.Done instead of sleeping
+	err = h.flush(batch, time.Hour) // hour-long delay: only cancellation can end the wait
+	require.Error(t, err, "a cancelled retry must not report success")
+	require.Contains(t, err.Error(), "2 records lost")
+	require.Contains(t, err.Error(), "shutdown cancelled")
+	require.Equal(t, int64(2), h.dropped.Load(), "cancelled retry must count the batch as dropped")
+
+	h.flushMu.Lock()
+	flushErr := h.flushErr
+	h.flushMu.Unlock()
+	require.Equal(t, err, flushErr, "flushErr must carry the loss error so Close can surface it")
+}
+
+// TestHandler_RecordLimitTruncatesOversizedRecord verifies the over-limit
+// path: fields replaced by the mebsuta_truncated marker, message truncated
+// to fit, and the loss counted (dropped + errCount).
+func TestHandler_RecordLimitTruncatesOversizedRecord(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.MaxRecordBytes = 512
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "oversized", 0)
+	r.AddAttrs(slog.String("body", strings.Repeat("x", 4096)))
+
+	entry := h.recordToDBEntry(r)
+
+	require.Equal(t, `{"mebsuta_truncated":true}`, string(entry.Fields), "oversized fields must be replaced by the marker")
+	require.LessOrEqual(t, len(entry.Message)+len(entry.Fields), 512, "truncated record must fit the limit")
+	require.Equal(t, int64(1), h.dropped.Load(), "over-limit record must count as dropped")
+	require.Equal(t, int64(1), h.errCount.Load())
+}
+
+// TestHandler_RecordLimitKeepsSmallRecord verifies in-limit records pass
+// through byte-for-byte: no marker, no truncation, no counters.
+func TestHandler_RecordLimitKeepsSmallRecord(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.MaxRecordBytes = 4096
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "small", 0)
+	r.AddAttrs(slog.String("k", "v"))
+	entry := h.recordToDBEntry(r)
+
+	require.NotContains(t, string(entry.Fields), "mebsuta_truncated")
+	require.Equal(t, "small", entry.Message)
+	require.Contains(t, string(entry.Fields), `"k":"v"`)
+	require.Equal(t, int64(0), h.dropped.Load())
+	require.Equal(t, int64(0), h.errCount.Load())
+}
+
+// TestHandler_RecordLimitTruncatesMessageOnly verifies a message-only
+// over-limit record (no attrs) still gets the marker and a truncated message.
+func TestHandler_RecordLimitTruncatesMessageOnly(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.MaxRecordBytes = 128
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, strings.Repeat("m", 500), 0)
+	entry := h.recordToDBEntry(r)
+
+	require.Equal(t, `{"mebsuta_truncated":true}`, string(entry.Fields))
+	require.LessOrEqual(t, len(entry.Message), 128)
+	require.True(t, strings.HasSuffix(entry.Message, "..."), "truncated message should carry the cut marker")
+}
+
+// TestHandler_RecordLimitTruncatesAtRuneBoundary verifies the message cut
+// never splits a multi-byte UTF-8 rune.
+func TestHandler_RecordLimitTruncatesAtRuneBoundary(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.MaxRecordBytes = 64
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, strings.Repeat("é", 64), 0) // 128 bytes
+	entry := h.recordToDBEntry(r)
+
+	require.True(t, utf8.ValidString(entry.Message), "truncated message must stay valid UTF-8")
+	require.LessOrEqual(t, len(entry.Message), 64)
+}
+
+// TestHandler_RecordLimitReportsRateLimited verifies the over-limit report
+// uses the same rate-limit rhythm as backlog drops: first hit reported,
+// subsequent hits within dropReportInterval silenced, counter always
+// incremented.
+func TestHandler_RecordLimitReportsRateLimited(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.MaxRecordBytes = 64
+
+	var reported atomic.Int64
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
+		if strings.Contains(he.Err.Error(), "MaxRecordBytes") {
+			reported.Add(1)
+		}
+	})
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, strings.Repeat("m", 500), 0)
+	_ = h.recordToDBEntry(r)
+	require.Equal(t, int64(1), reported.Load(), "first over-limit record must be reported")
+
+	_ = h.recordToDBEntry(r)
+	require.Equal(t, int64(1), reported.Load(), "second report within the window must be rate-limited")
+	require.Equal(t, int64(2), h.dropped.Load(), "every over-limit record must be counted")
+}
+
+// TestHandler_RecordLimitSignedAfterTruncation verifies the ordering between
+// the size limit and integrity signing: the signature must cover the
+// truncated content that is actually persisted, not the original fields.
+func TestHandler_RecordLimitSignedAfterTruncation(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.MaxRecordBytes = 256
+	h.cfg.IntegritySigner = mockSigner{}
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "sign me", 0)
+	r.AddAttrs(slog.String("body", strings.Repeat("x", 2048)))
+
+	entry := h.recordToDBEntry(r)
+
+	require.Equal(t, `{"mebsuta_truncated":true}`, string(entry.Fields), "record must have been truncated")
+	require.NotEmpty(t, entry.RecordHash, "truncated record must still be signed")
+
+	canonical, err := CanonicalBytes(entry.Time, entry.Level, entry.Message, entry.Fields)
+	require.NoError(t, err)
+	hash, err := mockHash(canonical)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(hash), entry.RecordHash,
+		"signature must cover the truncated content actually persisted")
 }

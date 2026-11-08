@@ -507,9 +507,11 @@ func (m *mockMetrics) IncError(name string) {
 	m.mu.Unlock()
 }
 
-func (m *mockMetrics) IncDropped(name string) {
+func (m *mockMetrics) IncDroppedN(name string, n int64) {
 	m.mu.Lock()
-	m.dropped = append(m.dropped, name)
+	for range n {
+		m.dropped = append(m.dropped, name)
+	}
 	m.mu.Unlock()
 }
 

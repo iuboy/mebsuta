@@ -12,7 +12,7 @@ import (
 
 func main() {
 	dir, _ := os.MkdirTemp("", "mebsuta-init")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.Init(
 		mebsuta.UseFile(filerotate.Config{
@@ -22,7 +22,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	// Init sets the global default, so slog and convenience functions work.
 	slog.Info("using Init", "auto", "set default")

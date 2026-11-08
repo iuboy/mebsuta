@@ -13,7 +13,7 @@ import (
 
 func main() {
 	dir, _ := os.MkdirTemp("", "mebsuta-err")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseFile(filerotate.Config{
@@ -30,7 +30,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Info("normal log", "status", "ok")
 }

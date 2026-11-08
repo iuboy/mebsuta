@@ -52,6 +52,21 @@ logger, _ := mebsuta.New(
 | `syslog.NewHandler(syslog.Config)` | `WithHandler(h)` | Syslog 输出 |
 | `database.NewHandler(database.Config)` | `WithHandler(h)` | 数据库批量写入 |
 
+### stdout 与 SIGPIPE
+
+stdout handler 直接写 fd 1。当读取端提前退出时（例如 `myapp | grep xxx` 在
+grep 命中后关闭管道），写入会收到 SIGPIPE——Go 对 fd 1/2 的默认行为是**不忽略
+该信号，进程直接终止**。这在交互式 shell 里常被误判为程序崩溃。生产环境建议
+使用 `UseFile`（文件输出），或确保管道消费端读完全部输出（如 `grep` 后接
+`|| true` 的场景改用重定向到文件）。
+
+### 异步缓冲
+
+`AsyncConfig.BufferSize` 有上限 `mebsuta.MaxAsyncBufferSize`（10000，与
+syslog/database 的积压上限对齐）：channel 在构造期一次性分配，超限值是构造期
+OOM 面。`New(UseAsync(...))` 对超限配置返回 `*ConfigError`；直接调用
+`WithAsync` 时上报错误并钳制到上限。
+
 ## 装饰器
 
 | 装饰器 | 说明 |
@@ -105,7 +120,8 @@ SamplingConfig{
 
 ```go
 AsyncConfig{
-    BufferSize: 256,  // 0 → 256
+    BufferSize:   256, // 0 → 256，上限 MaxAsyncBufferSize (10000)
+    ErrorTimeout: time.Second, // Error+ 记录满缓冲时的有界阻塞时长，0 → 1s
 }
 ```
 
@@ -146,6 +162,8 @@ audit.AuditEvent(audit.EventLogin, "user login",
 ```
 
 `LevelAudit` 高于 `LevelError`，所有配置为 Error 级别的 handler 都会接收审计记录。采样器始终放行审计记录。
+
+JSON 输出契约的顶层审计字段（`event_type`/`actor`/`success`）按级别区分信任锚：AUDIT 级记录的 record 级同名 attribute 会提升到顶层（preset 冲突时 preset 优先）；非 AUDIT 级记录仅 preset attributes 提升，record 级同键值留在 `attributes` 下——普通日志站点无法伪造审计字段。详见 [docs/SPEC.md](docs/SPEC.md)。
 
 ## 模块结构
 

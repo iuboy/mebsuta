@@ -257,3 +257,45 @@ func TestSamplingConfig_Idempotent_Disabled(t *testing.T) {
 
 	require.Equal(t, first, second)
 }
+
+// TestAsyncConfig_BufferSizeOverLimitRejected: BufferSize has a construction
+// cap (the channel is allocated eagerly — an unvalidated huge value is an
+// at-construction OOM surface). Validate must report *ConfigError.
+func TestAsyncConfig_BufferSizeOverLimitRejected(t *testing.T) {
+	cfg := AsyncConfig{BufferSize: MaxAsyncBufferSize + 1}
+	validated, err := cfg.Validate()
+	require.Error(t, err)
+	var cfgErr *ConfigError
+	require.ErrorAs(t, err, &cfgErr)
+	require.Equal(t, "BufferSize", cfgErr.Field)
+	require.Equal(t, AsyncConfig{}, validated)
+}
+
+func TestAsyncConfig_BufferSizeAtLimitAccepted(t *testing.T) {
+	cfg := AsyncConfig{BufferSize: MaxAsyncBufferSize}
+	validated, err := cfg.Validate()
+	require.NoError(t, err)
+	require.Equal(t, MaxAsyncBufferSize, validated.BufferSize)
+}
+
+// TestNew_UseAsyncOverLimitFailsFast: New(UseAsync(...)) must reject an
+// oversized buffer at construction time instead of allocating the channel.
+func TestNew_UseAsyncOverLimitFailsFast(t *testing.T) {
+	_, err := New(UseAsync(AsyncConfig{BufferSize: 1 << 20}))
+	require.Error(t, err)
+	var cfgErr *ConfigError
+	require.ErrorAs(t, err, &cfgErr)
+}
+
+// TestWithAsync_OverLimitClamped: direct WithAsync callers have no error
+// return — the misconfiguration is reported via the default error handler
+// and the buffer is clamped to the cap instead of being allocated oversized.
+func TestWithAsync_OverLimitClamped(t *testing.T) {
+	inner := &countHandler{}
+	h := WithAsync(inner, AsyncConfig{BufferSize: 1 << 30}) // would be ~100GB of slots unclamped
+	require.NotNil(t, h)
+	logger := slog.New(h)
+	logger.Info("still works after clamping")
+	require.NoError(t, h.(interface{ Close() error }).Close())
+	require.GreaterOrEqual(t, inner.Count(), 1)
+}

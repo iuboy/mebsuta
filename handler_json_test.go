@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -380,5 +382,206 @@ func TestContractJSONHandler_Concurrent(t *testing.T) {
 	}
 	if len(lines) != 100 {
 		t.Errorf("expected 100 lines, got %d", len(lines))
+	}
+}
+
+// =============================================================================
+// 四轮审计批 C：AUDIT 级 record 提升信任锚 + 截断标记
+// =============================================================================
+
+// TestContractJSONHandler_AuditRecordLevelPromotion: an AUDIT record without
+// preset attrs carries its own trust anchor — record-level event_type/actor/
+// success are promoted to top level (the only way audit.AuditEvent output
+// can satisfy the top-level contract when the logger has no presets).
+func TestContractJSONHandler_AuditRecordLevelPromotion(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), LevelAudit, "user login", 0)
+	r.AddAttrs(
+		slog.String("event_type", "login"),
+		slog.String("actor", "user:42"),
+		slog.Bool("success", true),
+		slog.String("ip", "127.0.0.1"),
+	)
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	if result["event_type"] != "login" {
+		t.Errorf("event_type = %v, want login promoted from the AUDIT record", result["event_type"])
+	}
+	if result["actor"] != "user:42" {
+		t.Errorf("actor = %v, want user:42 promoted from the AUDIT record", result["actor"])
+	}
+	if result["success"] != true {
+		t.Errorf("success = %v, want true promoted from the AUDIT record", result["success"])
+	}
+	attrs := result["attributes"].(map[string]any)
+	if _, ok := attrs["event_type"]; ok {
+		t.Error("promoted event_type must be removed from attributes")
+	}
+	if _, ok := attrs["actor"]; ok {
+		t.Error("promoted actor must be removed from attributes")
+	}
+	if _, ok := attrs["success"]; ok {
+		t.Error("promoted success must be removed from attributes")
+	}
+	if attrs["ip"] != "127.0.0.1" {
+		t.Errorf("attributes.ip = %v, want 127.0.0.1", attrs["ip"])
+	}
+}
+
+// TestContractJSONHandler_AuditPresetWinsOverRecord: with BOTH a preset and
+// an AUDIT record attr defining the same field, the preset value stays
+// authoritative and the record value remains inside attributes as evidence.
+func TestContractJSONHandler_AuditPresetWinsOverRecord(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	derived := h.WithAttrs([]slog.Attr{slog.String("event_type", "login")})
+	r := slog.NewRecord(time.Now(), LevelAudit, "forged attempt", 0)
+	r.AddAttrs(slog.String("event_type", "delete"))
+	_ = derived.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	if result["event_type"] != "login" {
+		t.Errorf("event_type = %v, want login (preset wins)", result["event_type"])
+	}
+	attrs := result["attributes"].(map[string]any)
+	if attrs["event_type"] != "delete" {
+		t.Errorf("attributes.event_type = %v, want delete (record value kept as evidence)", attrs["event_type"])
+	}
+}
+
+// TestContractJSONHandler_InfoPresetPromotesRecordStays: on non-AUDIT
+// records the preset still promotes, but a record attr with the same key
+// stays inside attributes — the trust anchor is the level, not the key.
+func TestContractJSONHandler_InfoPresetPromotesRecordStays(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	derived := h.WithAttrs([]slog.Attr{slog.String("actor", "user:42")})
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "routine", 0)
+	r.AddAttrs(slog.String("actor", "impostor"))
+	_ = derived.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	if result["actor"] != "user:42" {
+		t.Errorf("actor = %v, want user:42 (preset promotes on INFO too)", result["actor"])
+	}
+	attrs := result["attributes"].(map[string]any)
+	if attrs["actor"] != "impostor" {
+		t.Errorf("attributes.actor = %v, want impostor (record value never promoted on INFO)", attrs["actor"])
+	}
+}
+
+// TestContractJSONHandler_AuditRecordTypeMismatchNoPromotion: a type-
+// mismatched AUDIT record attr (event_type not a string) must not promote.
+func TestContractJSONHandler_AuditRecordTypeMismatchNoPromotion(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), LevelAudit, "mismatch", 0)
+	r.AddAttrs(
+		slog.Int("event_type", 123),
+		slog.Int("success", 1),
+	)
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	if _, ok := result["event_type"]; ok {
+		t.Error("int event_type must not be promoted, even on AUDIT records")
+	}
+	if _, ok := result["success"]; ok {
+		t.Error("int success must not be promoted, even on AUDIT records")
+	}
+	attrs := result["attributes"].(map[string]any)
+	if attrs["event_type"] == nil {
+		t.Error("type-mismatched event_type should remain in attributes")
+	}
+}
+
+// =============================================================================
+// 截断标记（attributes._truncated，对齐 syslog 的 _truncated PARAM-NAME）
+// =============================================================================
+
+// TestContractJSONHandler_TruncationMarkerOnAttrCount: exceeding the 1024
+// attribute cap must drop the surplus AND surface attributes._truncated.
+func TestContractJSONHandler_TruncationMarkerOnAttrCount(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "flood", 0)
+	for i := 0; i < 1100; i++ {
+		r.AddAttrs(slog.String(fmt.Sprintf("k%04d", i), "v"))
+	}
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	attrs := result["attributes"].(map[string]any)
+	if attrs["_truncated"] != true {
+		t.Error("attributes._truncated must be true when the attr count cap is hit")
+	}
+	// 1024 capped entries + the marker itself.
+	if len(attrs) != 1025 {
+		t.Errorf("attributes len = %d, want 1025 (1024 cap + marker)", len(attrs))
+	}
+}
+
+// TestContractJSONHandler_TruncationMarkerOnKeyLen: a key longer than the
+// 256-byte cap must be clipped to valid UTF-8 AND surface the marker.
+func TestContractJSONHandler_TruncationMarkerOnKeyLen(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	longKey := strings.Repeat("k", 300)
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "long key", 0)
+	r.AddAttrs(slog.String(longKey, "v"))
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	attrs := result["attributes"].(map[string]any)
+	if attrs["_truncated"] != true {
+		t.Error("attributes._truncated must be true when a key is clipped")
+	}
+	foundClipped := false
+	for k := range attrs {
+		if k != "_truncated" && strings.HasPrefix(k, strings.Repeat("k", 200)) && len(k) <= 256 {
+			foundClipped = true
+		}
+	}
+	if !foundClipped {
+		t.Errorf("expected a clipped <=256B key among attributes: %d entries", len(attrs))
+	}
+}
+
+// TestContractJSONHandler_NoTruncationMarker: intact records must not carry
+// the marker, so consumers can trust its absence as a completeness signal.
+func TestContractJSONHandler_NoTruncationMarker(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "normal", 0)
+	r.AddAttrs(slog.String("k", "v"))
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	attrs := result["attributes"].(map[string]any)
+	if _, ok := attrs["_truncated"]; ok {
+		t.Error("_truncated must be absent when nothing was dropped or clipped")
+	}
+}
+
+// TestContractJSONHandler_TruncationMarkerOnDepth: a group nesting deeper
+// than the flatten cap drops the subtree and must surface the marker.
+func TestContractJSONHandler_TruncationMarkerOnDepth(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	// 20 levels of nesting exceeds maxFlattenDepth (16).
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "deep", 0)
+	deep := slog.String("leaf", "v")
+	for i := 0; i < 20; i++ {
+		deep = slog.Group("g", deep)
+	}
+	r.AddAttrs(deep)
+	_ = h.Handle(context.Background(), r)
+
+	result := parseJSONLine(t, buf.Bytes())
+	attrs := result["attributes"].(map[string]any)
+	if attrs["_truncated"] != true {
+		t.Error("attributes._truncated must be true when the nesting cap drops a subtree")
 	}
 }

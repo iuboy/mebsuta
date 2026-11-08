@@ -55,7 +55,7 @@ func TestAsyncHandler_InnerPanicRecovered(t *testing.T) {
 	inner := regressPanicHandler{onHandle: func() { mu.Lock(); handled++; mu.Unlock() }}
 
 	h := WithAsync(inner, AsyncConfig{BufferSize: 4}).(*AsyncHandler)
-	defer h.Close()
+	defer func() { _ = h.Close() }() // best-effort drain; the assertion above already checked the count
 
 	logger := slog.New(h)
 	logger.Info("before")

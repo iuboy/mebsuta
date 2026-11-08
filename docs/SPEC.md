@@ -95,13 +95,20 @@ Optional top-level keys:
 - `actor` for audit actor identity
 - `success` for audit success state
 
-顶层键由 Mebsuta 保留。具有预留名称的用户 attributes 在类型匹配时提升为顶层字段：
+顶层键由 Mebsuta 保留。具有预留名称的 attributes 在类型匹配时提升为顶层字段：
 
 - `event_type`: string
 - `actor`: string
 - `success`: boolean
 
-其他用户 attributes 必须保留在 `attributes` 下。分组 attributes 使用点分隔键扁平化，例如 `request.id`。
+提升规则按级别区分信任锚：
+
+- **AUDIT 级记录**（`level == "AUDIT"`）：preset attributes（`WithAttrs` 在 logger 构造期设置）与 record attributes（单次调用携带）均可提升；同名冲突时 preset 值胜出，record 值保留在 `attributes` 中作为证据。
+- **非 AUDIT 级记录**：仅 preset attributes 提升。record 级同键 attributes 一律留在 `attributes` 下——普通日志站点不能伪造 `actor`/`event_type`/`success`。
+
+类型不匹配的值（如 `event_type` 非 string）不提升，保留在 `attributes` 下。其他用户 attributes 必须保留在 `attributes` 下。分组 attributes 使用点分隔键扁平化，例如 `request.id`；分组内的预留键不参与提升。
+
+当 attributes 因数量上限、键长上限或嵌套深度上限被丢弃/截断时，JSON 输出在 `attributes._truncated` 写入 `true` 作为缺省标记（与 syslog handler 的 `_truncated` PARAM-NAME 对齐）；未发生截断时该键不存在。
 
 ### JSON Schema
 
@@ -234,7 +241,7 @@ Go 支持 TLS 传输和网络发送。
 
 Database handler 必须：
 
-- 使用前验证表名（仅允许字母、数字、下划线，必须以字母或下划线开头）
+- 使用前验证表名（仅允许字母、数字、下划线，允许数字开头，支持 `schema.table` 限定名）
 - 配置时批量写入
 - 关闭时刷新队列中的记录
 - `Close` 幂等
@@ -348,11 +355,11 @@ Audit-level 记录 (`LevelAudit = Error + 4`) 在每个装饰器中受到特殊�
 | Decorator | Audit Behavior | Mechanism |
 |-----------|---------------|-----------|
 | Sampling | 始终记录，从不采样 | `r.Level >= slog.LevelError` 绕过计数器检查 |
-| Async | 阻塞发送带 5s 超时，永不丢弃 | `ar.Level >= slog.LevelError` 使用阻塞 channel send |
+| Async | 阻塞发送带有界超时（`ErrorTimeout`，默认 1s 可配），超时则丢弃并计数、限频上报 | `ar.Level >= slog.LevelError` 使用阻塞 channel send |
 | Metrics | 像其他记录一样记录 | 无级别特殊处理 |
 | safeMulti | 扇出到所有子 handler | 无级别特殊处理 |
 
-Audit 记录**不**完全绕过 Async 缓冲 — 它们进入同一个 channel 但使用阻塞发送策略。
+Audit 记录**不**完全绕过 Async 缓冲 — 它们进入同一个 channel 但使用阻塞发送策略；缓冲持续满载超过 `ErrorTimeout` 时，Audit 记录同样会被丢弃（计数 + 限频报告，不静默）。
 
 ### Close() Propagation
 
@@ -360,8 +367,8 @@ Audit 记录**不**完全绕过 Async 缓冲 — 它们进入同一个 channel �
 
 `CloseAll` 通过 `handlerUnwrapper` 接口递归解包装饰器链，对每层实现 `io.Closer` 的调用 `Close()`，从最外层到最内层：
 
-1. **Async**: 设置 closed 标志，取消 background context，关闭 channel，等待后台 goroutine 排干剩余记录，然后传播到 inner handler。
-2. **Sampling**: 停止 reset ticker，通知后台 reset goroutine 退出，等待 goroutine 完成。
+1. **Async**: 设置 closed 标志，关闭 channel（写锁排除所有在途发送者），等待后台 goroutine 排干剩余记录，最后取消 background context，然后传播到 inner handler。
+2. **Sampling**: `Close()` 为 no-op——窗口重置在 `Handle()` 中惰性完成，没有后台 goroutine 需要停止。
 3. **Metrics**: 无 `Close()` 实现。对 close 传播透明。
 4. **safeMulti**: 对每个子 handler 调用 `CloseAll()`，聚合错误。
 
@@ -371,7 +378,7 @@ Audit 记录**不**完全绕过 Async 缓冲 — 它们进入同一个 channel �
 - `CloseAll()` 前写入的记录必须送达最终目标 handler
 - `Async → Syslog` 和 `Async → Database` 组合必须产生警告或被拒绝
 - Audit-level 记录无论采样状态都不被 Sampling 丢弃
-- 通过 Async 发送的 Audit-level 记录必须被送达（阻塞发送），不静默丢弃
+- 通过 Async 发送的 Audit-level 记录走阻塞发送（`ErrorTimeout` 有界）：送达，或超时丢弃时被计数并上报（不静默丢弃）
 - 链上的 `CloseAll()` 返回遇到的第一个错误但不跳过剩余关闭
 - 每个装饰器的 `Close()` 必须幂等（第二次调用返回 nil）
 

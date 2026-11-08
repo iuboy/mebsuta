@@ -7,8 +7,11 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/iuboy/mebsuta"
 )
 
 // mockHash and the mock signer/verifier below implement the integrity
@@ -283,4 +286,50 @@ func TestVerifyRecord_FailClosed(t *testing.T) {
 	if err := VerifyRecord(stored, "zzzz-not-hex", entry.Signature, &mockVerifier{}); err == nil {
 		t.Error("non-hex record_hash: expected error, got nil")
 	}
+}
+
+// TestHandler_SignSkippedCounter verifies that records persisted unsigned
+// through the signer-failure path are counted in SignSkipped and surfaced
+// through the rate-limited report instead of vanishing. Auditors reconcile
+// ErrUnsignedRecord rows against this counter.
+func TestHandler_SignSkippedCounter(t *testing.T) {
+	h, _ := newSQLiteHandler(t)
+	h.cfg.IntegritySigner = failingSigner{}
+
+	var reported atomic.Int64
+	h.setErrorHandler(func(he *mebsuta.HandlerError) {
+		if strings.Contains(he.Err.Error(), "persisted unsigned") {
+			reported.Add(1)
+		}
+	})
+
+	if got := h.SignSkipped(); got != 0 {
+		t.Fatalf("SignSkipped starts at 0, got %d", got)
+	}
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "sign failure", 0)
+	_ = h.recordToDBEntry(r)
+	if got := h.SignSkipped(); got != 1 {
+		t.Fatalf("first skipped sign: SignSkipped = %d, want 1", got)
+	}
+	if got := reported.Load(); got != 1 {
+		t.Fatalf("first skip must be reported (rate limiter cold), got %d reports", got)
+	}
+
+	_ = h.recordToDBEntry(r)
+	if got := h.SignSkipped(); got != 2 {
+		t.Fatalf("every unsigned record must be counted: SignSkipped = %d, want 2", got)
+	}
+	if got := reported.Load(); got != 1 {
+		t.Fatalf("reports must be rate-limited to one per %v, got %d", dropReportInterval, got)
+	}
+}
+
+// failingSigner always fails, simulating an HSM session error at sign time.
+type failingSigner struct{}
+
+func (failingSigner) Algorithm() string { return "FAIL" }
+
+func (failingSigner) Sign([]byte) ([]byte, []byte, error) {
+	return nil, nil, errors.New("mock signer failure")
 }

@@ -21,6 +21,6 @@ func main() {
 		slog.Info("async message", "i", i)
 	}
 
-	mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 	fmt.Printf("dropped: %d\n", mebsuta.AsyncDropped(logger.Handler()))
 }

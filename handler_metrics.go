@@ -16,8 +16,12 @@ type HandlerMetrics interface {
 	// IncError increments the error counter.
 	IncError(handlerName string)
 
-	// IncDropped increments the dropped-record counter.
-	IncDropped(handlerName string)
+	// IncDroppedN adds n dropped records to the dropped-record counter.
+	// The magnitude form lets MetricsHandler forward a buffering handler's
+	// cumulative drop counter exactly: when an inner flush fails and drops a
+	// whole batch between two Handle calls, the jump surfaces as one
+	// IncDroppedN(name, batchSize) call instead of an under-counting +1.
+	IncDroppedN(handlerName string, n int64)
 }
 
 // DroppedCounter is implemented by handlers that track records dropped due to
@@ -55,7 +59,8 @@ func findDroppedCounter(h slog.Handler) DroppedCounter {
 // Drops: when the wrapped chain contains a buffering handler (declare
 // UseMetrics AFTER UseAsync/UseSyslog-style options so this middleware ends
 // up outermost), each Handle surfaces the buffering handler's dropped delta
-// as IncDropped.
+// as IncDroppedN, by magnitude: a jump of N in the inner Dropped counter
+// between two Handle calls reports N dropped records, not 1.
 type MetricsHandler struct {
 	inner        slog.Handler
 	metrics      HandlerMetrics
@@ -120,7 +125,8 @@ func (h *MetricsHandler) reportDropped() {
 			return
 		}
 		if h.lastDropped.CompareAndSwap(last, cur) {
-			h.metricsSafe("dropped", func() { h.metrics.IncDropped(h.handlerName) })
+			delta := cur - last
+			h.metricsSafe("dropped", func() { h.metrics.IncDroppedN(h.handlerName, delta) })
 			return
 		}
 	}

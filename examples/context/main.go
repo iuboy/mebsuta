@@ -26,7 +26,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	ctx := context.WithValue(context.Background(), requestIDKey, "req-456")
 	slog.InfoContext(ctx, "request received", "path", "/api/users")

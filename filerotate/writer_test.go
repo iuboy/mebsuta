@@ -146,12 +146,17 @@ func TestWriter_SizeRotation(t *testing.T) {
 func TestWriter_TimeRotation(t *testing.T) {
 	w, path := newTestWriter(t, func(c *Config) {
 		c.MaxSizeMB = 100
-		c.RotateInterval = 100 * time.Millisecond
+		c.RotateInterval = time.Second
 		c.MaxBackups = 3
 	})
 
 	_, _ = w.Write([]byte("before rotation\n"))
-	time.Sleep(200 * time.Millisecond)
+	// Backdate rotatedAt instead of sleeping out the (≥1s, see
+	// minRotateInterval) interval: RotateInterval below one second is now
+	// rejected at construction, so a sleep-based test would stall the suite.
+	w.mu.Lock()
+	w.rotatedAt = time.Now().Add(-2 * time.Second)
+	w.mu.Unlock()
 	_, _ = w.Write([]byte("after interval\n"))
 
 	_ = w.Close()
@@ -159,6 +164,36 @@ func TestWriter_TimeRotation(t *testing.T) {
 	backups := matchBackups(path)
 	if len(backups) == 0 {
 		t.Error("expected at least one backup from time-based rotation, got none")
+	}
+}
+
+// TestConfig_RotateIntervalFloor verifies the fail-fast floor: positive
+// sub-second intervals are rejected (a 1ns interval forces rotation on
+// nearly every Write — measured ~1700x write slowdown), while 0 (size-only)
+// and anything ≥ minRotateInterval are accepted. The error must state the
+// legal range.
+func TestConfig_RotateIntervalFloor(t *testing.T) {
+	dir := t.TempDir()
+	for _, interval := range []time.Duration{time.Nanosecond, time.Millisecond, 999 * time.Millisecond} {
+		_, err := New(Config{Path: filepath.Join(dir, "floor.log"), RotateInterval: interval})
+		if err == nil {
+			t.Errorf("RotateInterval=%v: expected error, got nil", interval)
+			continue
+		}
+		if !strings.Contains(err.Error(), "RotateInterval") {
+			t.Errorf("RotateInterval=%v: error should mention RotateInterval, got: %v", interval, err)
+		}
+		if !strings.Contains(err.Error(), minRotateInterval.String()) {
+			t.Errorf("RotateInterval=%v: error should state the legal floor %v, got: %v", interval, minRotateInterval, err)
+		}
+	}
+	for _, interval := range []time.Duration{0, time.Second, 30 * time.Second} {
+		w, err := New(Config{Path: filepath.Join(dir, "ok.log"), RotateInterval: interval})
+		if err != nil {
+			t.Errorf("RotateInterval=%v: expected acceptance, got error: %v", interval, err)
+			continue
+		}
+		_ = w.Close()
 	}
 }
 
@@ -204,6 +239,51 @@ func TestWriter_Compress(t *testing.T) {
 	}
 	if !hasGz {
 		t.Errorf("expected compressed backup (.gz) files, got: %v", backups)
+	}
+}
+
+// TestWriter_RotateCompressionBounded verifies the rotate-path compression
+// semaphore: under rotation pressure at most maxRotateCompressors compression
+// goroutines may exist at once. Without the cap, a Write burst crossing
+// MaxSizeMB repeatedly forks one gzip goroutine per rotation — unbounded
+// goroutines and file descriptors (each compression holds ≤2 fds, so the
+// goroutine bound implies the fd bound).
+func TestWriter_RotateCompressionBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("compression stress test skipped in -short mode")
+	}
+	w, _ := newTestWriter(t, withMaxSizeMB(1), withCompress(true), func(c *Config) {
+		c.MaxBackups = UnlimitedBackups // no cleanup interference during the burst
+	})
+	defer func() { _ = w.Close() }()
+
+	// One Write over MaxSizeMB triggers the post-write rotation; 12 in a row
+	// is enough pressure to overlap several compressions.
+	data := make([]byte, mib+1024)
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	base := runtime.NumGoroutine()
+	for i := range 12 {
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		// Sample mid-burst: the semaphore admits at most maxRotateCompressors
+		// compression goroutines at any moment (plus this test goroutine and
+		// framework scheduling slack).
+		if live := runtime.NumGoroutine(); live > base+maxRotateCompressors+2 {
+			t.Errorf("goroutines = %d after rotation %d, want ≤ %d (base %d + cap %d + slack 2)", live, i, base+maxRotateCompressors+2, base, maxRotateCompressors)
+		}
+	}
+
+	// Close waits on compressWg, so when it returns no compression goroutine
+	// may linger.
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if live := runtime.NumGoroutine(); live > base+2 {
+		t.Errorf("goroutines after Close = %d, want ≈ base %d — compression goroutines outlived Close", live, base)
 	}
 }
 

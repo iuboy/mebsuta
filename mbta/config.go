@@ -17,7 +17,21 @@ const (
 	MaxRetryDelay = 30 * time.Second
 	// MaxMaxRetries caps Config.MaxRetries.
 	MaxMaxRetries = 10
+	// maxBatchSize caps Config.BatchSize. processQueue pre-allocates the batch
+	// slice with this capacity, so a misconfigured huge BatchSize is a giant
+	// up-front allocation (an OOM face). Mirrors database.maxBatchSize.
+	maxBatchSize = 10000
 )
+
+// maskedToken is what String/GoString/Sanitize render for Config.Token.
+const maskedToken = "***"
+
+// ResultHandler receives the server's terminal RESULT notifications for a
+// batch (accepted / durable / rejected / released), mirroring
+// mbtago.ResultHandler. seq matches the value SendBatch assigned; level is the
+// corepb.ResultLevel enum name (e.g. "RESULT_LEVEL_REJECTED") or the client's
+// synthetic "timeout" when no terminal arrived in time.
+type ResultHandler func(seq uint64, level string, code uint32, correlation string)
 
 // Config holds configuration for the MBTA log shipping handler.
 type Config struct {
@@ -48,6 +62,22 @@ type Config struct {
 	// failing) batches are dropped after MaxRetries attempts.
 	Reconnect *bool // Auto-reconnect on disconnect. nil -> true.
 
+	// OnResult optionally receives the server's terminal RESULT notification
+	// for each batch (see ResultHandler).
+	//
+	// It MUST be provided here and not via the mbta-go client's
+	// SetResultHandler: that callback is a single slot, and the handler
+	// registers its own internal wrapper on it at construction (it counts
+	// rejected/released batches into Dropped and surfaces a rate-limited
+	// report). The underlying client is deliberately not exported, so the only
+	// way to observe RESULTs is this field; any future direct access to the
+	// client would silently overwrite the internal accounting.
+	//
+	// SendBatch returns as soon as the batch is written to the wire — a nil
+	// error does NOT mean the server accepted the batch. OnResult (plus the
+	// handler's built-in drop counting) is the only rejection visibility.
+	OnResult ResultHandler
+
 	// Metadata
 	Tag    string // Tag for SignalBatch. Defaults to "mebsuta".
 	Source string // Source identifier. Defaults to hostname.
@@ -72,6 +102,11 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.BatchSize <= 0 {
 		c.BatchSize = defaultBatchSize
+	} else if c.BatchSize > maxBatchSize {
+		// Clamp instead of erroring: processQueue pre-allocates its batch slice
+		// with capacity BatchSize, and a misconfigured huge value is an up-front
+		// allocation bomb rather than something an error at dial time helps with.
+		c.BatchSize = maxBatchSize
 	}
 	if c.MaxRetries <= 0 {
 		c.MaxRetries = defaultMaxRetries
@@ -109,6 +144,28 @@ func (c Config) Validate() (Config, error) {
 		c.Reconnect = mebsuta.BoolPtr(true)
 	}
 	return c, nil
+}
+
+// rawConfig is Config without its methods, so fmt can render the struct
+// without re-entering String/GoString (which would recurse forever).
+type rawConfig Config
+
+// Sanitize returns a copy of Config with the Token replaced by "***". Use it
+// before passing a Config to untrusted sinks (logs, error reports, dumps).
+func (c Config) Sanitize() Config {
+	c.Token = maskedToken
+	return c
+}
+
+// String renders the config with the Token masked, so accidental logging of a
+// Config value ("%v" / "%+v") cannot leak the credential.
+func (c Config) String() string {
+	return fmt.Sprintf("%+v", rawConfig(c.Sanitize()))
+}
+
+// GoString is the "%#v" counterpart of String and masks the Token as well.
+func (c Config) GoString() string {
+	return fmt.Sprintf("%#v", rawConfig(c.Sanitize()))
 }
 
 func resolveHostname(static string) (string, error) {

@@ -246,6 +246,57 @@ func TestWithSampling_Enabled(t *testing.T) {
 	}
 }
 
+// levelFilterHandler is an inner handler with its own level filter, used to
+// prove that SamplingHandler.Enabled honestly delegates instead of waving
+// every Error record through.
+type levelFilterHandler struct {
+	lv slog.Leveler
+}
+
+func (h *levelFilterHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= SafeLevel(h.lv)
+}
+func (h *levelFilterHandler) Handle(context.Context, slog.Record) error { return nil }
+func (h *levelFilterHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h *levelFilterHandler) WithGroup(string) slog.Handler             { return h }
+
+// TestWithSampling_EnabledDelegatesToInner: the Error/Audit sampling
+// exemption lives in Handle only. Enabled must respect the inner chain's
+// level filter — an audit-only inner (Level = LevelAudit) must not be fed
+// plain Error records through the Enabled shortcut, and a dynamic LevelVar
+// tightened at runtime must keep gating Error traffic.
+func TestWithSampling_EnabledDelegatesToInner(t *testing.T) {
+	auditOnly := WithSampling(
+		&levelFilterHandler{lv: LevelAudit},
+		SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second},
+	)
+	defer closeSampling(t, auditOnly)
+	if auditOnly.Enabled(context.Background(), slog.LevelError) {
+		t.Error("Error must not be enabled when the inner chain only accepts Audit")
+	}
+	if !auditOnly.Enabled(context.Background(), LevelAudit) {
+		t.Error("Audit must be enabled when the inner chain accepts Audit")
+	}
+
+	lv := new(slog.LevelVar)
+	lv.Set(slog.LevelWarn)
+	dynamic := WithSampling(
+		&levelFilterHandler{lv: lv},
+		SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second},
+	)
+	defer closeSampling(t, dynamic)
+	if !dynamic.Enabled(context.Background(), slog.LevelWarn) {
+		t.Error("Warn should be enabled while the inner filter is at Warn")
+	}
+	lv.Set(slog.LevelError)
+	if dynamic.Enabled(context.Background(), slog.LevelWarn) {
+		t.Error("Warn must be disabled after the inner filter tightened")
+	}
+	if !dynamic.Enabled(context.Background(), slog.LevelError) {
+		t.Error("Error should be enabled (inner filter at Error)")
+	}
+}
+
 func TestWithSampling_Close(t *testing.T) {
 	inner := &countHandler{}
 	h := WithSampling(inner, SamplingConfig{Enabled: true, Initial: 10, Thereafter: 5, Window: 100 * time.Millisecond})

@@ -87,7 +87,7 @@ func TestRecordToSignal(t *testing.T) {
 	r := newRecord(slog.LevelInfo, "hello world")
 	r.AddAttrs(slog.String("key", "value"), slog.Int("count", 42))
 
-	rec := recordToSignal(r)
+	rec, _ := recordToSignal(r)
 
 	if rec.SignalType != "log" {
 		t.Errorf("SignalType = %q, want %q", rec.SignalType, "log")
@@ -101,8 +101,8 @@ func TestRecordToSignal(t *testing.T) {
 	if rec.EventID == "" {
 		t.Error("EventID should not be empty")
 	}
-	if rec.TimeUnixMs == 0 {
-		t.Error("TimeUnixMs should not be zero")
+	if rec.TimeUnixNs == 0 {
+		t.Error("TimeUnixNs should not be zero")
 	}
 
 	attrs := rec.Attributes
@@ -116,7 +116,7 @@ func TestRecordToSignal(t *testing.T) {
 
 func TestRecordToSignal_AuditLevel(t *testing.T) {
 	r := newRecord(mebsuta.LevelAudit, "audit event")
-	rec := recordToSignal(r)
+	rec, _ := recordToSignal(r)
 
 	if rec.SeverityText != "AUDIT" {
 		t.Errorf("SeverityText = %q, want %q", rec.SeverityText, "AUDIT")
@@ -127,15 +127,20 @@ func TestRecordToSignal_GroupAttrs(t *testing.T) {
 	r := newRecord(slog.LevelInfo, "grouped")
 	r.AddAttrs(slog.Group("request", slog.String("method", "GET"), slog.Int("status", 200)))
 
-	rec := recordToSignal(r)
+	rec, _ := recordToSignal(r)
 	attrs := rec.Attributes
 
-	req, ok := attrs["request"].(map[string]any)
-	if !ok {
-		t.Fatalf("Attributes[\"request\"] type = %T, want map[string]any", attrs["request"])
+	// Groups are flattened to dot-joined keys: mbta-go's proto codec has no
+	// map representation for attribute values and falls back to fmt.Sprintf,
+	// so a nested map would serialize as an unstable internal rendering.
+	if _, ok := attrs["request"]; ok {
+		t.Fatalf("Attributes[\"request\"] = %v, want flattened keys (no nested group)", attrs["request"])
 	}
-	if req["method"] != "GET" {
-		t.Errorf("request.method = %v, want GET", req["method"])
+	if attrs["request.method"] != "GET" {
+		t.Errorf("Attributes[\"request.method\"] = %v, want GET", attrs["request.method"])
+	}
+	if attrs["request.status"] != int64(200) {
+		t.Errorf("Attributes[\"request.status\"] = %v, want 200", attrs["request.status"])
 	}
 }
 

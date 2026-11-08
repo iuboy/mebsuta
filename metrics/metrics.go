@@ -228,10 +228,11 @@ func (m *Metrics) IncError(output string) {
 	m.logErrors.WithLabelValues("handle", output).Inc()
 }
 
-// IncDropped increments the dropped counter for the given output target (handler name),
-// implementing the mebsuta.HandlerMetrics interface.
-func (m *Metrics) IncDropped(output string) {
-	m.logDropped.WithLabelValues("overflow", output).Inc()
+// IncDroppedN adds n dropped records to the dropped counter for the given
+// output target (handler name), implementing the mebsuta.HandlerMetrics
+// interface.
+func (m *Metrics) IncDroppedN(output string, n int64) {
+	m.logDropped.WithLabelValues("overflow", output).Add(float64(n))
 }
 
 // collectors returns every registered metric collector in a single slice so that

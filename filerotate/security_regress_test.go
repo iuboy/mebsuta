@@ -26,7 +26,7 @@ func TestOpenAppend_RefusesSymlink(t *testing.T) {
 	}
 
 	if f, _, err := openAppend(link, 0600); err == nil {
-		f.Close()
+		_ = f.Close() // about to fail the test anyway; the fd is on its way out
 		t.Fatal("openAppend accepted a symlink — writes would land on the victim file")
 	}
 	// The victim must be untouched.
@@ -92,7 +92,10 @@ func TestClose_OnErrorReentrancy(t *testing.T) {
 		t.Fatal("OnError was never invoked from Close")
 	}
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close returned error: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close deadlocked: OnError re-entry blocked on w.mu")
 	}

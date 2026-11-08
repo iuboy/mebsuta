@@ -27,7 +27,7 @@ func main() {
 		panic(syslogH.Close())
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Info("application started")
 	slog.Error("simulated error", "code", 500)

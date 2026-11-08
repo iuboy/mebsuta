@@ -16,7 +16,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseStdout(mebsuta.StdoutConfig{}),
@@ -34,7 +34,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Info("application started", "pid", os.Getpid())
 	slog.Error("simulated error", "code", 500)

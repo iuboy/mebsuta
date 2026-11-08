@@ -142,9 +142,18 @@ func SafeLevel(l slog.Leveler) slog.Level {
 
 // --- AsyncConfig ---
 
+// MaxAsyncBufferSize is the upper bound for AsyncConfig.BufferSize. The
+// channel is allocated eagerly at construction, so an unvalidated huge value
+// (e.g. 1<<30 from a misread config file) is an at-construction OOM: every
+// slot reserves space for a full asyncRecord. 10000 matches the backlog caps
+// of the syslog and database handlers.
+const MaxAsyncBufferSize = 10000
+
 // AsyncConfig holds configuration for async log processing.
 type AsyncConfig struct {
-	BufferSize int // Channel buffer size. 0 → 256.
+	// BufferSize is the channel buffer size. 0 → 256; values above
+	// MaxAsyncBufferSize are rejected as *ConfigError.
+	BufferSize int
 	// ErrorTimeout bounds how long an Error-or-above record may block the
 	// calling goroutine when the buffer is full, before the record is
 	// dropped. 0 → 1s.
@@ -155,6 +164,11 @@ type AsyncConfig struct {
 func (c AsyncConfig) Validate() (AsyncConfig, error) {
 	if c.BufferSize <= 0 {
 		c.BufferSize = DefaultAsyncBufferSize
+	} else if c.BufferSize > MaxAsyncBufferSize {
+		return AsyncConfig{}, &ConfigError{
+			Field: "BufferSize",
+			Msg:   fmt.Sprintf("buffer size %d exceeds maximum %d", c.BufferSize, MaxAsyncBufferSize),
+		}
 	}
 	if c.ErrorTimeout <= 0 {
 		c.ErrorTimeout = DefaultErrorTimeout

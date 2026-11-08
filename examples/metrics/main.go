@@ -26,9 +26,9 @@ func (m *consoleMetrics) IncError(name string) {
 	fmt.Printf("error from %s\n", name)
 }
 
-func (m *consoleMetrics) IncDropped(name string) {
-	m.dropped.Add(1)
-	fmt.Printf("dropped from %s\n", name)
+func (m *consoleMetrics) IncDroppedN(name string, n int64) {
+	m.dropped.Add(n)
+	fmt.Printf("dropped %d records from %s\n", n, name)
 }
 
 func main() {
@@ -40,7 +40,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	slog.Info("hello", "msg", "world")
 	slog.Warn("warning")

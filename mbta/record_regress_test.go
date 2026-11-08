@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iuboy/mbta-go/core"
+
 	"github.com/iuboy/mebsuta"
 )
 
@@ -17,7 +19,7 @@ func TestRecordToSignal_ResolvesLogValuer(t *testing.T) {
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "m", 0)
 	r.AddAttrs(slog.Any("cred", secret))
 
-	sig := recordToSignal(r)
+	sig, _ := recordToSignal(r)
 	got, ok := sig.Attributes["cred"].(string)
 	if !ok {
 		t.Fatalf("cred attr = %#v, want resolved string", sig.Attributes["cred"])
@@ -45,8 +47,8 @@ func TestRecordToSignal_SeverityNumber(t *testing.T) {
 	}
 	for level, want := range cases {
 		r := slog.NewRecord(time.Now(), level, "m", 0)
-		if got := recordToSignal(r).SeverityNumber; got != want {
-			t.Errorf("SeverityNumber(%v) = %d, want %d", level, got, want)
+		if got, _ := recordToSignal(r); got.SeverityNumber != want {
+			t.Errorf("SeverityNumber(%v) = %d, want %d", level, got.SeverityNumber, want)
 		}
 	}
 }
@@ -56,15 +58,15 @@ func TestRecordToSignal_SeverityNumber(t *testing.T) {
 func TestRecordToSignal_AttrBudgets(t *testing.T) {
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "m", 0)
 	r.AddAttrs(slog.String("", "empty key"))
-	for i := 0; i < maxAttrCount+50; i++ {
+	for i := 0; i < core.MaxSignalAttrs+50; i++ {
 		r.AddAttrs(slog.Int("k", i))
 	}
-	sig := recordToSignal(r)
+	sig, _ := recordToSignal(r)
 	if _, ok := sig.Attributes[""]; ok {
 		t.Error("empty-key attr was not skipped")
 	}
-	if len(sig.Attributes) > maxAttrCount {
-		t.Errorf("attr count = %d, want <= %d", len(sig.Attributes), maxAttrCount)
+	if len(sig.Attributes) > core.MaxSignalAttrs {
+		t.Errorf("attr count = %d, want <= %d", len(sig.Attributes), core.MaxSignalAttrs)
 	}
 }
 

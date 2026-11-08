@@ -673,8 +673,8 @@ type integrationMetrics struct {
 	onDropped func()
 }
 
-func (m *integrationMetrics) ObserveHandle(duration time.Duration) { m.onHandle() }
-func (m *integrationMetrics) IncError(handlerName string)          { m.onError() }
-func (m *integrationMetrics) IncDropped(handlerName string)        { m.onDropped() }
+func (m *integrationMetrics) ObserveHandle(duration time.Duration)    { m.onHandle() }
+func (m *integrationMetrics) IncError(handlerName string)             { m.onError() }
+func (m *integrationMetrics) IncDroppedN(handlerName string, n int64) { m.onDropped() }
 
 var _ HandlerMetrics = (*integrationMetrics)(nil)

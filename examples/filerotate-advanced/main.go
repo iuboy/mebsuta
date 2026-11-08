@@ -15,7 +15,7 @@ import (
 
 func main() {
 	dir, _ := os.MkdirTemp("", "mebsuta-rotate")
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	logger, err := mebsuta.New(
 		mebsuta.UseFile(filerotate.Config{
@@ -38,7 +38,7 @@ func main() {
 		panic(err)
 	}
 	slog.SetDefault(logger)
-	defer mebsuta.CloseAll(logger.Handler())
+	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
 	data := strings.Repeat("x", 1024)
 	for i := range 1200 {

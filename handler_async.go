@@ -43,7 +43,11 @@ type AsyncHandler struct {
 	closed         atomic.Bool
 	dropped        atomic.Int64
 	lastDropReport atomic.Int64 // unix nanos of the last surfaced drop report
-	errorHandler   atomic.Pointer[ErrorHandler]
+	// processErrors counts inner-handler Handle failures; lastErrorReport
+	// gates their reports to one per second (see shouldReportProcessError).
+	processErrors   atomic.Int64
+	lastErrorReport atomic.Int64 // unix nanos of the last surfaced process-error report
+	errorHandler    atomic.Pointer[ErrorHandler]
 }
 
 // findSelfBuffered recursively checks whether the handler chain contains a
@@ -75,11 +79,19 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 		ReportError(DefaultErrorHandler, &HandlerError{Component: "async", Operation: "init", Err: fmt.Errorf("WithAsync: wrapping %T creates double-buffering; returning inner handler directly", inner)})
 		return inner
 	}
+	cfg, err := cfg.Validate() // applies ErrorTimeout default, bounds BufferSize
+	if err != nil {
+		// Direct WithAsync callers have no error return: report the
+		// misconfiguration and clamp instead of allocating the oversized
+		// buffer. The New(UseAsync(...)) path fails fast in UseAsync with
+		// the same *ConfigError.
+		ReportError(DefaultErrorHandler, &HandlerError{Component: "async", Operation: "init", Err: err})
+		cfg.BufferSize = MaxAsyncBufferSize
+	}
 	bufferSize := cfg.BufferSize
 	if bufferSize <= 0 {
 		bufferSize = DefaultAsyncBufferSize
 	}
-	cfg, _ = cfg.Validate() // applies ErrorTimeout default
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -131,10 +143,33 @@ func (h *AsyncHandler) Handle(ctx context.Context, r slog.Record) error {
 		ar.Attrs = make([]slog.Attr, 0, n)
 	}
 	r.Attrs(func(attr slog.Attr) bool {
-		ar.Attrs = append(ar.Attrs, attr)
+		ar.Attrs = append(ar.Attrs, snapshotAsyncAttr(attr))
 		return true
 	})
 	return h.sendRecord(ar)
+}
+
+// snapshotAsyncAttr returns attr with caller-owned mutable memory copied.
+// A slog.Any value holding []byte aliases the caller's buffer; the record
+// may outlive the log call (buffered until Close's drain), and a caller
+// that reuses its byte slice (e.g. a pooled read buffer) would corrupt the
+// queued record after the fact. Copying closes that hole. Other KindAny
+// payloads (maps, structs, nested slices) are still aliased — a full deep
+// copy is out of scope for the hot path; callers holding such values should
+// snapshot them via a LogValuer or explicit cloning before logging.
+func snapshotAsyncAttr(attr slog.Attr) slog.Attr {
+	attr.Value = attr.Value.Resolve()
+	if attr.Value.Kind() != slog.KindAny {
+		return attr
+	}
+	b, ok := attr.Value.Any().([]byte)
+	if !ok {
+		return attr
+	}
+	cp := make([]byte, len(b))
+	copy(cp, b)
+	attr.Value = slog.AnyValue(cp)
+	return attr
 }
 
 func (h *AsyncHandler) sendRecord(ar asyncRecord) error {
@@ -171,11 +206,26 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) error {
 	// channel panic is structurally impossible because Close cannot close the
 	// channel while any sender holds the read lock.
 	h.sendMu.RLock()
-	defer h.sendMu.RUnlock()
+	report, err := h.enqueueLocked(ar)
+	h.sendMu.RUnlock()
 
+	// Report OUTSIDE the lock — the same discipline as filerotate.Writer's
+	// rotation errors (M4): an ErrorHandler that re-enters this handler (e.g.
+	// Close, or logging the reported error through the same chain) would
+	// deadlock against the read lock still held during the callback.
+	if report != nil {
+		ReportError(LoadErrorHandler(&h.errorHandler), report)
+	}
+	return err
+}
+
+// enqueueLocked performs the channel send while sendMu is held for reading.
+// Error reports are never issued inline: they are returned to the caller,
+// which dispatches them after releasing the lock.
+func (h *AsyncHandler) enqueueLocked(ar asyncRecord) (*HandlerError, error) {
 	if h.closed.Load() {
 		h.dropped.Add(1)
-		return fmt.Errorf("async handler is closed, log dropped")
+		return nil, fmt.Errorf("async handler is closed, log dropped")
 	}
 
 	// Error and Audit (LevelAudit > LevelError) records: blocking send bounded
@@ -184,9 +234,9 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) error {
 		// Try non-blocking send first to avoid timer allocation in the common case.
 		select {
 		case h.ch <- ar:
-			return nil
+			return nil, nil
 		case <-h.ctx.Done():
-			return fmt.Errorf("async handler is closed, log dropped")
+			return nil, fmt.Errorf("async handler is closed, log dropped")
 		default:
 		}
 
@@ -194,30 +244,30 @@ func (h *AsyncHandler) sendRecordInner(ar asyncRecord) error {
 		defer timer.Stop()
 		select {
 		case h.ch <- ar:
-			return nil
+			return nil, nil
 		case <-h.ctx.Done():
-			return fmt.Errorf("async handler is closed, log dropped")
+			return nil, fmt.Errorf("async handler is closed, log dropped")
 		case <-timer.C:
 			h.dropped.Add(1)
 			err := fmt.Errorf("mebsuta: buffer full timeout for %v record after %v, dropped (total: %d)", ar.Level, h.errorTimeout, h.dropped.Load())
 			if total := h.shouldReportDrop(); total > 0 {
-				ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err, Dropped: total})
+				return &HandlerError{Component: "async", Operation: "process", Err: err, Dropped: total}, err
 			}
-			return err
+			return nil, err
 		}
 	}
 
 	select {
 	case h.ch <- ar:
-		return nil
+		return nil, nil
 	case <-h.ctx.Done():
-		return fmt.Errorf("async handler is closed, log dropped")
+		return nil, fmt.Errorf("async handler is closed, log dropped")
 	default:
 		h.dropped.Add(1)
 		if total := h.shouldReportDrop(); total > 0 {
-			ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", total), Dropped: total})
+			return &HandlerError{Component: "async", Operation: "send", Err: fmt.Errorf("buffer full, log dropped (total dropped: %d)", total), Dropped: total}, nil
 		}
-		return nil
+		return nil, nil
 	}
 }
 
@@ -246,13 +296,18 @@ func (h *AsyncHandler) WithGroup(name string) slog.Handler {
 // context during the drain and drop the final batch. sendMu (write lock held
 // around close(ch)) guarantees no in-flight sender can hit a closed channel,
 // so the drain start is race-detector-clean like database.Handler.
+//
+// A Close that loses the CAS race (concurrent second Close) still waits on
+// wg: the contract is that Close returns only after every record accepted
+// before it was flushed, so the loser must not return while the winner's
+// drain is still running. wg.Wait is idempotent once the worker exited, and
+// cancel tolerates repeated calls, so both paths converge on the same tail.
 func (h *AsyncHandler) Close() error {
-	if !h.closed.CompareAndSwap(false, true) {
-		return nil
+	if h.closed.CompareAndSwap(false, true) {
+		h.sendMu.Lock()
+		close(h.ch) // safe: write lock excludes all in-flight senders
+		h.sendMu.Unlock()
 	}
-	h.sendMu.Lock()
-	close(h.ch) // safe: write lock excludes all in-flight senders
-	h.sendMu.Unlock()
 	h.wg.Wait()
 	h.cancel()
 	return nil
@@ -284,11 +339,42 @@ func (h *AsyncHandler) run() {
 // handleWithRecovery only guards the synchronous path; when a user wraps a
 // third-party handler directly in WithAsync, an inner panic must not kill
 // the background goroutine (and with it the whole process).
+//
+// Inner failures are rate-limited like buffer drops (one report per second,
+// same cadence as shouldReportDrop, on a dedicated gate): a broken inner
+// (disk full, connection down) fails EVERY buffered record, and a 1:1
+// report per record amplifies a burst into a locked stderr write storm.
+// This goroutine holds no lock, so the report is inherently outside sendMu.
 func (h *AsyncHandler) processRecord(ar asyncRecord, r slog.Record) {
 	err := h.handleInner(ar, r)
-	if err != nil {
-		ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{Component: "async", Operation: "process", Err: err})
+	if err == nil {
+		return
 	}
+	if total := h.shouldReportProcessError(); total > 0 {
+		ReportError(LoadErrorHandler(&h.errorHandler), &HandlerError{
+			Component: "async",
+			Operation: "process",
+			Err:       fmt.Errorf("%v (total process errors: %d)", err, total),
+		})
+	}
+}
+
+// shouldReportProcessError gates inner-write failure reports to at most one
+// per second, carrying the cumulative process-error count. Mirrors
+// shouldReportDrop but on its own counter: mixing it with the drop gate
+// would let buffer-full floods suppress the report of the inner failure
+// (or vice versa) that the user actually needs to see.
+func (h *AsyncHandler) shouldReportProcessError() int64 {
+	total := h.processErrors.Add(1)
+	now := time.Now().UnixNano()
+	last := h.lastErrorReport.Load()
+	if now-last < int64(time.Second) {
+		return 0
+	}
+	if h.lastErrorReport.CompareAndSwap(last, now) {
+		return total
+	}
+	return 0
 }
 
 func (h *AsyncHandler) handleInner(ar asyncRecord, r slog.Record) (err error) {
@@ -340,6 +426,7 @@ type asyncGroupHandler struct {
 
 func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closed.Load() {
+		h.dropped.Add(1) // aligned with AsyncHandler.Handle: closure drops are counted
 		return fmt.Errorf("async handler is closed, log dropped")
 	}
 	// Same cancellation-stripping as AsyncHandler.Handle: the group path
@@ -367,7 +454,7 @@ func (h *asyncGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		ar.Attrs = make([]slog.Attr, 0, n)
 	}
 	grouped.Attrs(func(attr slog.Attr) bool {
-		ar.Attrs = append(ar.Attrs, attr)
+		ar.Attrs = append(ar.Attrs, snapshotAsyncAttr(attr))
 		return true
 	})
 	return h.sendRecord(ar)
@@ -381,7 +468,18 @@ func (h *asyncGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
-	combined := h.group + "." + name
+	// slog: WithGroup("") is a no-op — returning h unchanged avoids a
+	// trailing-dot group ("a." from "a" + "" + "."). Matches the
+	// AttrsSub/GroupSub and contractJSONHandler precedents.
+	if name == "" {
+		return h
+	}
+	// Joining onto an empty group must not produce a leading-dot group
+	// ("" + "." + name = ".name").
+	combined := name
+	if h.group != "" {
+		combined = h.group + "." + name
+	}
 	return &asyncGroupHandler{
 		AsyncHandler: h.AsyncHandler,
 		group:        combined,

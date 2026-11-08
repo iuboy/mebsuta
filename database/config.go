@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,27 @@ const (
 	// maxBatchSize caps the batch size to prevent unbounded channel/batch
 	// allocation when a caller misconfigures a very large BatchSize.
 	maxBatchSize = 10000
+
+	// DefaultMaxRecordBytes is the per-record size bound applied when
+	// Config.MaxRecordBytes is unset. 256KiB accommodates rich structured
+	// records (deep JSON documents) while keeping the worst-case backlog
+	// footprint bounded: the backlog holds BatchSize*10 entries, so at the
+	// default batch size the ceiling is 1000 × 256KiB = 256MiB — the same
+	// defensive tier as the syslog handler's maxMsgSize frame bound, sized
+	// up for records that legitimately carry structured documents.
+	DefaultMaxRecordBytes = 256 * 1024
+
+	// MaxRecordBytesCap caps Config.MaxRecordBytes. Generous enough for
+	// jsonb-typed records, but a hard wall against "just one huge field"
+	// configurations that would otherwise resurrect the unbounded-backlog
+	// footprint the field exists to prevent.
+	MaxRecordBytesCap = 8 * 1024 * 1024
+
+	// MaxRetryDelay caps Config.RetryDelay, mirroring the syslog handler:
+	// every failed flush attempt sleeps for RetryDelay, so a misconfigured
+	// multi-minute delay multiplies into the worst-case flush time and
+	// stalls Close's drain for that long per retry.
+	MaxRetryDelay = 30 * time.Second
 )
 
 // Config holds configuration for database log output.
@@ -37,7 +59,19 @@ type Config struct {
 	MaxConnLifetime time.Duration // Max connection lifetime. 0 = no limit.
 	MaxOpenConns    int           // Max open connections. 0 → 10.
 	MaxIdleConns    int           // Max idle connections. 0 → 5.
-	RetryDelay      time.Duration // Delay between retries. 0 → 500ms.
+	RetryDelay      time.Duration // Delay between retries. 0 → 500ms, capped at MaxRetryDelay.
+	// MaxRecordBytes bounds the encoded size of a single record admitted to
+	// the backlog (message length + fields JSON length). Records exceeding
+	// the limit keep their message — truncated UTF-8-safe to fit — but lose
+	// their fields: the fields column is replaced with the
+	// {"mebsuta_truncated":true} marker, and the loss is counted in
+	// Handler.Dropped and surfaced through the rate-limited drop report.
+	//
+	// Without this bound the backlog (BatchSize*10 entries of unbounded
+	// size) can reach hundreds of gigabytes of resident memory from a single
+	// oversized attribute. 0 → DefaultMaxRecordBytes; Validate clamps values
+	// above MaxRecordBytesCap.
+	MaxRecordBytes int
 	// ErrorTimeout bounds how long an Error-or-above record may block the
 	// calling goroutine when the backlog channel is full, before the record
 	// is dropped. 0 → 1s. Keep this small: request handlers call slog
@@ -103,6 +137,14 @@ func (c Config) Validate() (Config, error) {
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = 500 * time.Millisecond
 	}
+	if c.RetryDelay > MaxRetryDelay {
+		c.RetryDelay = MaxRetryDelay
+	}
+	if c.MaxRecordBytes <= 0 {
+		c.MaxRecordBytes = DefaultMaxRecordBytes
+	} else if c.MaxRecordBytes > MaxRecordBytesCap {
+		c.MaxRecordBytes = MaxRecordBytesCap
+	}
 	if c.ErrorTimeout <= 0 {
 		c.ErrorTimeout = time.Second
 	}
@@ -128,4 +170,64 @@ func dsnHasTLS(dsn string) bool {
 		return false
 	}
 	return !strings.Contains(dsnLower, "sslmode=disable")
+}
+
+// Sanitize returns a copy of the configuration whose DSN has its
+// credential-like segments redacted with the same rules as database error
+// messages (see dsnCredRe). The copy is safe to embed in logs, error text,
+// and structured output; it is NOT connectable — pass the original Config to
+// NewHandler. Like the error redaction itself this is a best-effort textual
+// rewrite, not a DSN parser: passwords containing '@' cannot be separated
+// from the host delimiter by regex and are only partially covered.
+func (c Config) Sanitize() Config {
+	if c.DSN != "" {
+		c.DSN = redactCredentials(c.DSN)
+	}
+	return c
+}
+
+// String implements fmt.Stringer with the DSN's credentials redacted, so
+// printing a Config with %v or %+v cannot leak the database password. All
+// other fields render normally.
+func (c Config) String() string {
+	level, signer := c.renderAux()
+	return fmt.Sprintf(
+		"{Driver:%s DSN:%s Table:%s Level:%s BatchSize:%d BatchInterval:%s MaxConnLifetime:%s MaxOpenConns:%d MaxIdleConns:%d RetryDelay:%s ErrorTimeout:%s MaxRecordBytes:%d IntegritySigner:%s}",
+		c.Driver, strconv.Quote(c.Sanitize().DSN), c.Table, level,
+		c.BatchSize, c.BatchInterval, c.MaxConnLifetime,
+		c.MaxOpenConns, c.MaxIdleConns, c.RetryDelay, c.ErrorTimeout,
+		c.MaxRecordBytes, signer,
+	)
+}
+
+// GoString implements fmt.GoStringer with the same redaction as String, so
+// %#v output (debuggers, error templates) cannot leak the DSN's credentials
+// either. Durations are rendered in human-readable form rather than raw
+// nanoseconds.
+func (c Config) GoString() string {
+	level, signer := c.renderAux()
+	return fmt.Sprintf(
+		"database.Config{Driver:%q, DSN:%s, Table:%q, Level:%q, BatchSize:%d, BatchInterval:%s, MaxConnLifetime:%s, MaxOpenConns:%d, MaxIdleConns:%d, RetryDelay:%s, ErrorTimeout:%s, MaxRecordBytes:%d, IntegritySigner:%s}",
+		c.Driver, strconv.Quote(c.Sanitize().DSN), c.Table, level,
+		c.BatchSize, c.BatchInterval, c.MaxConnLifetime,
+		c.MaxOpenConns, c.MaxIdleConns, c.RetryDelay, c.ErrorTimeout,
+		c.MaxRecordBytes, signer,
+	)
+}
+
+// renderAux returns the rendered Level and IntegritySigner fields shared by
+// String and GoString. A nil Leveler prints as "<nil>"; a set signer prints
+// as its algorithm identifier (the signer itself is never rendered).
+func (c Config) renderAux() (level, signer string) {
+	level = "<nil>"
+	if c.Level != nil {
+		// slog.Level renders as "INFO"/"WARN"/...; custom Levelers fall
+		// back to their own fmt formatting.
+		level = fmt.Sprintf("%v", c.Level)
+	}
+	signer = "<nil>"
+	if c.IntegritySigner != nil {
+		signer = c.IntegritySigner.Algorithm()
+	}
+	return level, signer
 }

@@ -109,17 +109,46 @@ func FlattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehav
 }
 
 func flattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior, depth int) {
+	flattenAttrTracked(out, prefix, attr, nan, depth, nil)
+}
+
+// FlattenAttrMarked flattens a slog.Attr into out with optional key prefix,
+// reporting whether any limit was hit: an oversized key was truncated to
+// maxKeyLen, the attribute count cap dropped the attr, or the nesting cap
+// skipped a subtree. Callers accumulate the flag across attrs to surface a
+// truncation marker (the JSON contract path emits attributes["_truncated"],
+// mirroring the syslog handler's _truncated PARAM-NAME).
+//
+// IMPORTANT: This function writes to the caller-provided map without any
+// synchronization. If multiple goroutines share the same map, the caller
+// must serialize access (e.g. with a mutex).
+func FlattenAttrMarked(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior) bool {
+	truncated := false
+	flattenAttrTracked(out, prefix, attr, nan, 0, &truncated)
+	return truncated
+}
+
+func markTruncated(truncated *bool) {
+	if truncated != nil {
+		*truncated = true
+	}
+}
+
+func flattenAttrTracked(out map[string]any, prefix string, attr slog.Attr, nan NaNBehavior, depth int, truncated *bool) {
 	if depth >= maxFlattenDepth {
+		markTruncated(truncated)
 		return
 	}
 	if len(out) >= maxAttrCount {
+		markTruncated(truncated)
 		return
 	}
 	attr.Value = attr.Value.Resolve()
 	key := attr.Key
 	// Reject empty key early — before prefix concatenation — so that a
 	// non-empty prefix combined with an empty key does not produce a
-	// trailing-dot key like "prefix.".
+	// trailing-dot key like "prefix.". This is input sanitation, not a
+	// truncation event: it is not reported through the truncated flag.
 	if key == "" {
 		return
 	}
@@ -131,10 +160,11 @@ func flattenAttr(out map[string]any, prefix string, attr slog.Attr, nan NaNBehav
 		// multi-byte characters, which would produce invalid UTF-8 and
 		// potentially corrupt downstream rendering.
 		key = truncateToValidUTF8(key, maxKeyLen)
+		markTruncated(truncated)
 	}
 	if attr.Value.Kind() == slog.KindGroup {
 		for _, child := range attr.Value.Group() {
-			flattenAttr(out, key, child, nan, depth+1)
+			flattenAttrTracked(out, key, child, nan, depth+1, truncated)
 		}
 		return
 	}

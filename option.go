@@ -55,6 +55,12 @@ func UseFile(rotateCfg filerotate.Config, cfg FileConfig) HandlerOption {
 // UseAsync wraps the handler chain with async buffering.
 func UseAsync(cfg AsyncConfig) HandlerOption {
 	return func(o *handlerOptions) error {
+		// Fail fast: an oversized BufferSize is an at-construction OOM
+		// surface (the channel is allocated eagerly), so New rejects it as
+		// *ConfigError before any handler is built.
+		if _, err := cfg.Validate(); err != nil {
+			return err
+		}
 		o.middlewares = append(o.middlewares, func(inner slog.Handler) slog.Handler {
 			return WithAsync(inner, cfg)
 		})

@@ -1,5 +1,13 @@
 // Package mebsutatest provides test utilities for mebsuta log handlers.
 //
+// # TEST-ONLY
+//
+// This package is for test assertions, not production use. CaptureHandler
+// retains every record it receives in memory without bound — a long-running
+// process logging through it grows until the process runs out of memory.
+// Never install it in a production handler chain; use a real sink handler
+// (stdout, file, syslog, database) instead.
+//
 // Typical usage:
 //
 //	h := mebsutatest.NewCaptureHandler()

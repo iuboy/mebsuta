@@ -197,7 +197,7 @@ type nopMetrics struct{}
 
 func (nopMetrics) ObserveHandle(_ time.Duration) {}
 func (nopMetrics) IncError(_ string)             {}
-func (nopMetrics) IncDropped(_ string)           {}
+func (nopMetrics) IncDroppedN(_ string, _ int64) {}
 
 func BenchmarkStdoutHandler_JSON_Parallel(b *testing.B) {
 	var buf bytes.Buffer
