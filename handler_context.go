@@ -4,47 +4,44 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync/atomic"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
-// ContextExtractor extracts slog.Attr values from a context.Context.
+// ContextExtractor 从 context.Context 提取 slog.Attr 值。
 //
-// Extractors run on the log call path. A panicking extractor (e.g. an
-// unchecked ctx.Value type assertion) is recovered and reported via the
-// ErrorHandler; the record is still logged, without the extracted attrs.
+// 提取器运行在日志调用路径上。panic 的提取器（如未检查的 ctx.Value
+// 类型断言）会被恢复并经 ErrorHandler 上报；记录仍会写出，只是不带
+// 提取的属性。
 type ContextExtractor func(ctx context.Context) []slog.Attr
 
-// contextExtractorHandler is a slog.Handler decorator that injects context-derived
-// attrs into each record. It uses a fully-delegating model: WithGroup/WithAttrs are
-// forwarded to inner, and extracted attrs are injected as ordinary record attrs.
-// The inner handler owns all group prefixing, so record attrs, WithAttrs attrs,
-// and extracted attrs all receive the group prefix exactly once.
+// contextExtractorHandler 是一个 slog.Handler 装饰器，向每条记录注入
+// 从 context 提取的属性。它采用全委托模型：WithGroup/WithAttrs 转发给
+// inner，提取的属性作为普通记录属性注入。group 前缀完全由内层 handler
+// 负责，因此记录属性、WithAttrs 属性与提取属性都恰好获得一次 group
+// 前缀。
 type contextExtractorHandler struct {
-	errorHandler *atomic.Pointer[ErrorHandler] // shared across clones
+	errorHandler *handlerkit.ErrorSlot // 克隆间共享
 	inner        slog.Handler
 	extract      ContextExtractor
 }
 
-// WithContextExtractor wraps inner and injects attributes extracted from context into each log record.
+// WithContextExtractor 包裹 inner，把从 context 提取的属性注入每条日志记录。
 //
-// A nil extractor is a no-op: inner is returned unchanged rather than being
-// replaced by a discard handler — silently discarding the whole output chain
-// (audit records included) over a nil callback was far worse than skipping
-// the injection. If inner is nil, a no-op discard handler is returned.
+// nil 提取器是 no-op：原样返回 inner 而非换成丢弃 handler——因为一个
+// nil 回调就静默丢弃整条输出链（包括审计记录）远比跳过注入糟糕。
+// 若 inner 为 nil，返回 no-op 丢弃 handler。
 func WithContextExtractor(inner slog.Handler, extract ContextExtractor) slog.Handler {
 	if inner == nil {
-		// Return a safe discard handler instead of nil to prevent panics
-		// when callers invoke Handler methods on the result.
+		// 返回安全的丢弃 handler 而非 nil，防止调用方对结果调用
+		// Handler 方法时 panic。
 		return discardHandler{}
 	}
 	if extract == nil {
 		return inner
 	}
-	eh := DefaultErrorHandler
-	ep := new(atomic.Pointer[ErrorHandler])
-	ep.Store(&eh)
 	return &contextExtractorHandler{
-		errorHandler: ep,
+		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler),
 		inner:        inner,
 		extract:      extract,
 	}
@@ -54,17 +51,16 @@ func (h *contextExtractorHandler) Enabled(ctx context.Context, level slog.Level)
 	return h.inner.Enabled(ctx, level)
 }
 
-// extractSafe runs the user extractor with panic recovery. Whether the
-// extractor runs on the caller's goroutine (this middleware outermost) or on
-// the async worker (extractor inside WithAsync) must not decide whether a
-// panic kills the process — safeMulti and the async worker both contain
-// handler panics, so the only user callback on the synchronous path gets the
-// same containment.
+// extractSafe 带 panic 恢复地运行用户提取器。提取器运行在调用方
+// goroutine（本中间件在最外层时）还是异步 worker（提取器在 WithAsync
+// 内层时）上，不应决定 panic 是否杀死进程——safeMulti 与异步 worker
+// 都能遏制 handler panic，因此同步路径上唯一的用户回调获得同样的
+// 遏制。
 func (h *contextExtractorHandler) extractSafe(ctx context.Context) (attrs []slog.Attr) {
 	defer func() {
 		if p := recover(); p != nil {
 			attrs = nil
-			ReportError(LoadErrorHandler(h.errorHandler), &HandlerError{
+			h.errorHandler.Report(&HandlerError{
 				Component: "context", Operation: "extract",
 				Err: fmt.Errorf("context extractor panic recovered, record logged without context attrs: %v", p),
 			})
@@ -78,9 +74,9 @@ func (h *contextExtractorHandler) Handle(ctx context.Context, r slog.Record) err
 	if len(attrs) == 0 {
 		return h.inner.Handle(ctx, r)
 	}
-	// Clone before AddAttrs to avoid mutating the caller's record (slog contract).
-	// The inner handler applies group prefixing uniformly to all attrs — record,
-	// extracted, and WithAttrs — so we don't need any local group tracking.
+	// AddAttrs 前先克隆，避免修改调用方的记录（slog 契约）。
+	// 内层 handler 对所有属性——记录属性、提取属性、WithAttrs 属性——
+	// 统一应用 group 前缀，因此本地无需任何 group 跟踪。
 	newR := r.Clone()
 	newR.AddAttrs(attrs...)
 	return h.inner.Handle(ctx, newR)
@@ -107,12 +103,12 @@ func (h *contextExtractorHandler) unwrapHandler() slog.Handler {
 }
 
 func (h *contextExtractorHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler.Store(&fn)
-	// propagateErrorHandler also recurses via unwrapHandler to reach inner.
+	h.errorHandler.Store(fn)
+	// propagateErrorHandler 也会经 unwrapHandler 递归触达 inner。
 }
 
-// discardHandler is a slog.Handler that silently discards all records.
-// It is used as a safe default when a nil handler is passed to a constructor.
+// discardHandler 是静默丢弃所有记录的 slog.Handler。
+// 当 nil handler 被传给构造函数时，它作为安全默认值使用。
 type discardHandler struct{}
 
 func (discardHandler) Enabled(context.Context, slog.Level) bool  { return false }

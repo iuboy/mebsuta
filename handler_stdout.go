@@ -7,19 +7,21 @@ import (
 	"log/slog"
 	"os"
 	"time"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
-// StdoutHandler writes log records to stdout.
+// StdoutHandler 将日志记录写入 stdout。
 type StdoutHandler struct {
 	handlerCore
 	cfg   StdoutConfig
-	inner slog.Handler // underlying contractJSONHandler or slog.TextHandler
+	inner slog.Handler // 底层 contractJSONHandler 或 slog.TextHandler
 }
 
-// NewStdoutHandler creates a StdoutHandler that writes to stdout using cfg.
-// cfg.Validate is called internally to apply defaults.
+// NewStdoutHandler 创建用 cfg 写 stdout 的 StdoutHandler。
+// 内部会调用 cfg.Validate 应用默认值。
 func NewStdoutHandler(cfg StdoutConfig) (*StdoutHandler, error) {
-	// Delegate to newStdoutHandlerWithWriter to keep a single constructor path.
+	// 委托给 newStdoutHandlerWithWriter，保持单一构造路径。
 	return newStdoutHandlerWithWriter(os.Stdout, cfg)
 }
 
@@ -36,47 +38,54 @@ func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, 
 	return h, nil
 }
 
-// Enabled implements slog.Handler.
+// Enabled 实现 slog.Handler。
 func (h *StdoutHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.cfg.level()
 }
 
-// Handle implements slog.Handler.
+// Handle 实现 slog.Handler。
 func (h *StdoutHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.inner.Handle(ctx, r)
 }
 
-// WithAttrs implements slog.Handler.
+// WithAttrs 实现 slog.Handler。
 func (h *StdoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &StdoutHandler{
-		handlerCore: h.handlerCore, // preserve identity for CloseAll dedup
+		handlerCore: h.handlerCore, // 保留身份供 CloseAll 去重
 		cfg:         h.cfg,
 		inner:       h.inner.WithAttrs(attrs),
 	}
 }
 
-// WithGroup implements slog.Handler.
+// WithGroup 实现 slog.Handler。
 func (h *StdoutHandler) WithGroup(name string) slog.Handler {
 	return &StdoutHandler{
-		handlerCore: h.handlerCore, // preserve identity for CloseAll dedup
+		handlerCore: h.handlerCore, // 保留身份供 CloseAll 去重
 		cfg:         h.cfg,
 		inner:       h.inner.WithGroup(name),
 	}
 }
 
-// Close is a no-op because stdout does not need to be closed.
+// Close 是 no-op：stdout 无需关闭。
+
+// SetLevel 运行时热调级别（0.1.0-14）。仅当构造期 Level 传入
+// *slog.LevelVar 时生效并返回 true；固定级别返回 false（进入
+// mebsuta.SetLevel 的 skipped 诚实面）。
+func (h *StdoutHandler) SetLevel(level slog.Level) bool {
+	return handlerkit.NewLevelGate(h.cfg.Level).Set(level)
+}
 func (h *StdoutHandler) Close() error {
 	return nil
 }
 
-// unwrapHandler implements handlerUnwrapper so CloseAll can traverse through
-// StdoutHandler to reach inner handlers that may need closing.
+// unwrapHandler 实现 handlerUnwrapper，使 CloseAll 能穿过
+// StdoutHandler 到达可能需要关闭的内层 handler。
 func (h *StdoutHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
-// setErrorHandler is a no-op: propagateErrorHandler recurses via unwrapHandler
-// to reach the inner handler.
+// setErrorHandler 是 no-op：propagateErrorHandler 会经 unwrapHandler
+// 递归触达内层 handler。
 func (h *StdoutHandler) setErrorHandler(fn ErrorHandler) {}
 
 var (
@@ -101,14 +110,14 @@ func timezoneReplaceAttr(loc *time.Location) func([]string, slog.Attr) slog.Attr
 	}
 }
 
-// newInnerHandler creates the underlying slog handler for the given format.
-// JSON format uses a contract-enforcing JSON handler; Console uses slog.TextHandler.
-// Level filtering is done by the outer handler, so the inner handler accepts all levels.
-// replaceAttr is forwarded to the TextHandler (for console timezone conversion).
-// loc is forwarded to the contractJSONHandler (for JSON timezone conversion).
+// newInnerHandler 按给定格式创建底层 slog handler。
+// JSON 格式用强制契约的 JSON handler；Console 用 slog.TextHandler。
+// 级别过滤由外层 handler 完成，因此内层 handler 接受所有级别。
+// replaceAttr 转发给 TextHandler（用于 console 时区转换）。
+// loc 转发给 contractJSONHandler（用于 JSON 时区转换）。
 func newInnerHandler(w io.Writer, format EncodingType, replaceAttr func([]string, slog.Attr) slog.Attr, loc *time.Location) slog.Handler {
 	opts := &slog.HandlerOptions{
-		Level:       slog.LevelDebug, // level filtering is controlled by the outer handler
+		Level:       slog.LevelDebug, // 级别过滤由外层 handler 控制
 		ReplaceAttr: replaceAttr,
 	}
 	switch format {

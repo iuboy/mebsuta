@@ -3,6 +3,7 @@ package mebsuta
 import (
 	"bytes"
 	"context"
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -79,16 +80,12 @@ func TestWithSampling_Disabled(t *testing.T) {
 		logger.Info("test")
 	}
 
-	if inner.Count() != 100 {
-		t.Errorf("expected 100 when disabled, got %d", inner.Count())
-	}
+	require.Equal(t, 100, inner.Count(), "expected 100 when disabled")
 }
 
 func TestWithSampling_NilHandler(t *testing.T) {
 	h := WithSampling(nil, SamplingConfig{Enabled: true, Initial: 100, Thereafter: 10, Window: time.Second})
-	if h != nil {
-		t.Error("expected nil handler to return nil")
-	}
+	require.Nil(t, h, "expected nil handler to return nil")
 }
 
 func TestWithSampling_BasicSampling(t *testing.T) {
@@ -103,12 +100,8 @@ func TestWithSampling_BasicSampling(t *testing.T) {
 
 	count := inner.Count()
 	// 前 5 条 + 之后每 2 条记 1 条: 5 + ceil(15/2) = 5 + 8 = 13
-	if count < 5 {
-		t.Errorf("expected at least initial 5, got %d", count)
-	}
-	if count > 20 {
-		t.Errorf("expected at most 20, got %d", count)
-	}
+	require.GreaterOrEqual(t, count, 5, "expected at least initial 5")
+	require.LessOrEqual(t, count, 20, "expected at most 20")
 }
 
 func TestWithSampling_ErrorAlwaysRecorded(t *testing.T) {
@@ -121,9 +114,7 @@ func TestWithSampling_ErrorAlwaysRecorded(t *testing.T) {
 		logger.Error("error", "i", i)
 	}
 
-	if inner.Count() != 10 {
-		t.Errorf("all errors should be recorded, got %d", inner.Count())
-	}
+	require.Equal(t, 10, inner.Count(), "all errors should be recorded")
 }
 
 func TestWithSampling_WarnSampled(t *testing.T) {
@@ -136,9 +127,7 @@ func TestWithSampling_WarnSampled(t *testing.T) {
 		logger.Warn("warn", "i", i)
 	}
 
-	if inner.Count() != 1 {
-		t.Errorf("only initial 1 warn should be recorded, got %d", inner.Count())
-	}
+	require.Equal(t, 1, inner.Count(), "only initial 1 warn should be recorded")
 }
 
 func TestWithSampling_WindowReset(t *testing.T) {
@@ -161,9 +150,7 @@ func TestWithSampling_WindowReset(t *testing.T) {
 
 	count := inner.Count()
 	// 至少 10 条（每个窗口 5 条初始）
-	if count < 10 {
-		t.Errorf("expected at least 10 after window reset, got %d", count)
-	}
+	require.GreaterOrEqual(t, count, 10, "expected at least 10 after window reset")
 }
 
 func TestWithSampling_Concurrent(t *testing.T) {
@@ -192,12 +179,8 @@ func TestWithSampling_Concurrent(t *testing.T) {
 	// Initial=100 means the first 100 records in the window always pass.
 	// After that, 1 in Thereafter=10 is kept. So for 1000 total:
 	// roughly 100 + (1000-100)/10 = 190 records. Use generous bounds.
-	if count < 100 {
-		t.Errorf("expected at least initial 100, got %d", count)
-	}
-	if count > totalLogs {
-		t.Errorf("count %d exceeds total logs %d — possible race condition", count, totalLogs)
-	}
+	require.GreaterOrEqual(t, count, 100, "expected at least initial 100")
+	require.LessOrEqual(t, count, totalLogs, "count exceeds total logs — possible race condition")
 }
 
 func TestWithSampling_WithAttrs(t *testing.T) {
@@ -212,9 +195,7 @@ func TestWithSampling_WithAttrs(t *testing.T) {
 		logger.Info("test")
 	}
 
-	if inner.Count() < 3 {
-		t.Errorf("expected at least initial 3, got %d", inner.Count())
-	}
+	require.GreaterOrEqual(t, inner.Count(), 3, "expected at least initial 3")
 }
 
 func TestWithSampling_WithGroup(t *testing.T) {
@@ -229,21 +210,15 @@ func TestWithSampling_WithGroup(t *testing.T) {
 		logger.Info("test")
 	}
 
-	if inner.Count() < 3 {
-		t.Errorf("expected at least initial 3, got %d", inner.Count())
-	}
+	require.GreaterOrEqual(t, inner.Count(), 3, "expected at least initial 3")
 }
 
 func TestWithSampling_Enabled(t *testing.T) {
 	h := WithSampling(&countHandler{}, SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second})
 	defer closeSampling(t, h)
 
-	if !h.Enabled(context.Background(), slog.LevelError) {
-		t.Error("Error should always be enabled")
-	}
-	if !h.Enabled(context.Background(), slog.LevelInfo) {
-		t.Error("Info should be enabled (delegated to inner)")
-	}
+	require.True(t, h.Enabled(context.Background(), slog.LevelError), "Error should always be enabled")
+	require.True(t, h.Enabled(context.Background(), slog.LevelInfo), "Info should be enabled (delegated to inner)")
 }
 
 // levelFilterHandler is an inner handler with its own level filter, used to
@@ -254,7 +229,7 @@ type levelFilterHandler struct {
 }
 
 func (h *levelFilterHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= SafeLevel(h.lv)
+	return level >= handlerkit.SafeLevel(h.lv)
 }
 func (h *levelFilterHandler) Handle(context.Context, slog.Record) error { return nil }
 func (h *levelFilterHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
@@ -271,12 +246,8 @@ func TestWithSampling_EnabledDelegatesToInner(t *testing.T) {
 		SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second},
 	)
 	defer closeSampling(t, auditOnly)
-	if auditOnly.Enabled(context.Background(), slog.LevelError) {
-		t.Error("Error must not be enabled when the inner chain only accepts Audit")
-	}
-	if !auditOnly.Enabled(context.Background(), LevelAudit) {
-		t.Error("Audit must be enabled when the inner chain accepts Audit")
-	}
+	require.False(t, auditOnly.Enabled(context.Background(), slog.LevelError), "Error must not be enabled when the inner chain only accepts Audit")
+	require.True(t, auditOnly.Enabled(context.Background(), LevelAudit), "Audit must be enabled when the inner chain accepts Audit")
 
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelWarn)
@@ -285,16 +256,10 @@ func TestWithSampling_EnabledDelegatesToInner(t *testing.T) {
 		SamplingConfig{Enabled: true, Initial: 1, Thereafter: 100, Window: time.Second},
 	)
 	defer closeSampling(t, dynamic)
-	if !dynamic.Enabled(context.Background(), slog.LevelWarn) {
-		t.Error("Warn should be enabled while the inner filter is at Warn")
-	}
+	require.True(t, dynamic.Enabled(context.Background(), slog.LevelWarn), "Warn should be enabled while the inner filter is at Warn")
 	lv.Set(slog.LevelError)
-	if dynamic.Enabled(context.Background(), slog.LevelWarn) {
-		t.Error("Warn must be disabled after the inner filter tightened")
-	}
-	if !dynamic.Enabled(context.Background(), slog.LevelError) {
-		t.Error("Error should be enabled (inner filter at Error)")
-	}
+	require.False(t, dynamic.Enabled(context.Background(), slog.LevelWarn), "Warn must be disabled after the inner filter tightened")
+	require.True(t, dynamic.Enabled(context.Background(), slog.LevelError), "Error should be enabled (inner filter at Error)")
 }
 
 func TestWithSampling_Close(t *testing.T) {
@@ -303,13 +268,9 @@ func TestWithSampling_Close(t *testing.T) {
 
 	if sh, ok := h.(interface{ Close() error }); ok {
 		// 第一次关闭
-		if err := sh.Close(); err != nil {
-			t.Errorf("Close() error: %v", err)
-		}
+		require.NoError(t, sh.Close(), "Close() error")
 		// 第二次关闭应幂等
-		if err := sh.Close(); err != nil {
-			t.Errorf("double Close() error: %v", err)
-		}
+		require.NoError(t, sh.Close(), "double Close() error")
 	}
 }
 
@@ -325,29 +286,8 @@ func TestWithSampling_Defaults(t *testing.T) {
 	}
 
 	count := inner.Count()
-	if count == 0 || count > 200 {
-		t.Errorf("expected some sampling with defaults, got %d", count)
-	}
-}
-
-// =============================================================================
-// RecordToLogEntry 已在 mebsuta_test.go 中测试
-// 这里验证 Attr 提取完整性
-// =============================================================================
-
-func TestRecordToLogEntry_ManyAttrs(t *testing.T) {
-	r := slog.NewRecord(time.Now(), slog.LevelInfo, "test", 0)
-	r.AddAttrs(
-		slog.String("k1", "v1"),
-		slog.Int("k2", 42),
-		slog.Bool("k3", true),
-		slog.Duration("k4", time.Second),
-	)
-
-	entry := RecordToLogEntry(r)
-	if len(entry.Attrs) != 4 {
-		t.Errorf("expected 4 attrs, got %d", len(entry.Attrs))
-	}
+	require.NotZero(t, count, "expected some sampling with defaults")
+	require.LessOrEqual(t, count, 200, "count exceeds total logs")
 }
 
 // =============================================================================
@@ -370,9 +310,7 @@ func TestAtomicSamplingCounter(t *testing.T) {
 	}
 	wg.Wait()
 
-	if count.Load() != int64(goroutines*1000) {
-		t.Errorf("expected %d, got %d", goroutines*1000, count.Load())
-	}
+	require.Equal(t, int64(goroutines*1000), count.Load())
 }
 
 // =============================================================================
@@ -393,12 +331,8 @@ func TestStdoutHandler_WithSampling(t *testing.T) {
 	}
 
 	lines := bytes.Count(buf.Bytes(), []byte("\n"))
-	if lines < 5 {
-		t.Errorf("expected at least 5 lines, got %d", lines)
-	}
-	if lines > 20 {
-		t.Errorf("expected at most 20 lines, got %d", lines)
-	}
+	require.GreaterOrEqual(t, lines, 5, "expected at least 5 lines")
+	require.LessOrEqual(t, lines, 20, "expected at most 20 lines")
 }
 
 // SPEC: "Audit records must not be dropped regardless of sampling state."
@@ -412,7 +346,5 @@ func TestWithSampling_AuditAlwaysRecorded(t *testing.T) {
 		logger.Log(context.Background(), slog.LevelError+4, "audit", "i", 0)
 	}
 
-	if inner.Count() != 10 {
-		t.Errorf("all audit records should bypass sampling, got %d/10", inner.Count())
-	}
+	require.Equal(t, 10, inner.Count(), "all audit records should bypass sampling")
 }

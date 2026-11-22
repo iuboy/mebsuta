@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/iuboy/mebsuta/audit"
 	"github.com/iuboy/mebsuta/filerotate"
 	"github.com/stretchr/testify/require"
 )
@@ -89,4 +90,14 @@ func TestLevelVar_ConcurrentReadWrite(t *testing.T) {
 
 	wg.Wait()
 	// No assert needed — this test is for the race detector.
+}
+
+func TestLevelAudit_MatchesAuditPackage(t *testing.T) {
+	require.Equal(t, LevelAudit, audit.LevelAudit,
+		"mebsuta.LevelAudit must match audit.LevelAudit")
+}
+
+func TestLevelAudit_AboveError(t *testing.T) {
+	require.True(t, LevelAudit >= slog.LevelError,
+		"LevelAudit must be >= LevelError so handlers at Error level accept Audit records")
 }

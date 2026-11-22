@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// validConfig returns a Config that passes Validate, for mutation in tests.
-// The DSN embeds a fake password so redaction assertions have something to
-// look for.
+// validConfig 返回能通过 Validate 的 Config，供测试中修改。
+// DSN 内嵌一个假密码，让脱敏断言有东西可
+// 检查。
 func validConfig() Config {
 	return Config{
 		Driver: "postgres",
@@ -20,17 +20,17 @@ func validConfig() Config {
 	}
 }
 
-// cfgWith returns a copy of validConfig with mutations applied.
+// cfgWith 返回应用了变更的 validConfig 副本。
 func cfgWith(mutate func(*Config)) Config {
 	c := validConfig()
 	mutate(&c)
 	return c
 }
 
-// TestConfig_RetryDelayDefaultAndCap verifies the RetryDelay normalization:
-// unset → 500ms, values above MaxRetryDelay (30s, matching the syslog
-// handler) are clamped — a misconfigured multi-minute delay would otherwise
-// multiply into the worst-case flush time and stall Close's drain per retry.
+// TestConfig_RetryDelayDefaultAndCap 验证 RetryDelay 规范化：
+// 未设置 → 500ms，超过 MaxRetryDelay（30s，与 syslog
+// handler 一致）的值被钳制——否则误配成数分钟的延迟会
+// 成倍放大最坏 flush 时间，并让 Close 的排空每次重试都拖延。
 func TestConfig_RetryDelayDefaultAndCap(t *testing.T) {
 	cfg, err := validConfig().Validate()
 	require.NoError(t, err)
@@ -46,9 +46,9 @@ func TestConfig_RetryDelayDefaultAndCap(t *testing.T) {
 	require.Equal(t, 2*time.Second, cfg.RetryDelay, "in-range RetryDelay must be preserved")
 }
 
-// TestConfig_MaxRecordBytes verifies the record-size bound normalization:
-// unset/negative → DefaultMaxRecordBytes, values above MaxRecordBytesCap are
-// clamped, in-range values preserved.
+// TestConfig_MaxRecordBytes 验证记录大小上界的规范化：
+// 未设置/为负 → DefaultMaxRecordBytes，超过 MaxRecordBytesCap 的值被
+// 钳制，范围内取值保留。
 func TestConfig_MaxRecordBytes(t *testing.T) {
 	cfg, err := validConfig().Validate()
 	require.NoError(t, err)
@@ -67,9 +67,9 @@ func TestConfig_MaxRecordBytes(t *testing.T) {
 	require.Equal(t, 4096, cfg.MaxRecordBytes, "in-range MaxRecordBytes must be preserved")
 }
 
-// TestConfig_StringRedactsCredentials pins the sanitized-config requirement:
-// rendering a Config with %v / %+v / %#v must never carry the DSN's
-// credentials, in either key=value or user:password@ DSN shapes.
+// TestConfig_StringRedactsCredentials 钉住脱敏配置要求：
+// 用 %v / %+v / %#v 渲染 Config 绝不能携带 DSN 的
+// 凭据，无论 key=value 还是 user:password@ 形式的 DSN。
 func TestConfig_StringRedactsCredentials(t *testing.T) {
 	kv := cfgWith(func(c *Config) {
 		c.DSN = "host=db.internal user=loguser password=hunter2 dbname=logs sslmode=verify-full"
@@ -98,17 +98,17 @@ func TestConfig_StringRedactsCredentials(t *testing.T) {
 		}
 	}
 
-	// Sanity: the redacted renders still carry the useful fields.
+	// 健全性检查：脱敏渲染仍保留有用字段。
 	out := kv.String()
 	require.Contains(t, out, "Table:logs")
 	require.Contains(t, out, "BatchSize:42")
 	require.Contains(t, out, "Level:WARN")
 }
 
-// TestConfig_Sanitize verifies Sanitize: the DSN is redacted, every other
-// field is preserved, and the original Config is left untouched (value
-// receiver — callers must be able to keep logging the sanitized copy while
-// passing the original to NewHandler).
+// TestConfig_Sanitize 验证 Sanitize：DSN 被脱敏，其余
+// 每个字段保留，且原始 Config 不被改动（值
+// 接收者——调用方必须能一边继续记录脱敏副本，一边
+// 把原始 Config 传给 NewHandler）。
 func TestConfig_Sanitize(t *testing.T) {
 	cfg := cfgWith(func(c *Config) { c.BatchSize = 42; c.Table = "audit" })
 	s := cfg.Sanitize()
@@ -124,9 +124,8 @@ func TestConfig_Sanitize(t *testing.T) {
 	require.Empty(t, Config{}.Sanitize().DSN, "empty DSN stays empty")
 }
 
-// TestConfig_StringSignerField verifies the IntegritySigner field renders as
-// its algorithm identifier (never the signer value itself) and as <nil> when
-// unset.
+// TestConfig_StringSignerField 验证 IntegritySigner 字段渲染为
+// 其算法标识（绝非 signer 值本身），未设置时为 <nil>。
 func TestConfig_StringSignerField(t *testing.T) {
 	cfg := cfgWith(func(*Config) {})
 	require.Contains(t, cfg.String(), "IntegritySigner:<nil>")

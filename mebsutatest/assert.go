@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// AssertRecordCount asserts that the CaptureHandler captured exactly n records.
+// AssertRecordCount 断言 CaptureHandler 恰好捕获了 n 条记录。
 func AssertRecordCount(t testing.TB, h *CaptureHandler, n int) {
 	t.Helper()
 	if got := h.Len(); got != n {
@@ -14,18 +14,18 @@ func AssertRecordCount(t testing.TB, h *CaptureHandler, n int) {
 	}
 }
 
-// AssertHasAttr asserts that record[index] has an attribute with the given key and value.
-// The value comparison uses slog.Value.Equal, which works for all attribute types
-// (string, int64, bool, float64, duration, time, etc.), not just strings.
-// If multiple attributes share the same key, the LAST one is checked (matching
-// slog's "last value wins" semantics for duplicate keys).
+// AssertHasAttr 断言 record[index] 带有给定键与值的属性。
+// 值比较使用 slog.Value.Equal，适用于所有属性类型
+// （string、int64、bool、float64、duration、time 等），不限于字符串。
+// 若多个属性同名，检查的是最后一个（与 slog 对重复键的
+// "last value wins" 语义一致）。
 func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value any) {
 	t.Helper()
 	records := h.Records()
 	if index < 0 || index >= len(records) {
 		t.Fatalf("record index %d out of range (have %d records)", index, len(records))
 	}
-	// Convert the expected value to a slog.Value for type-safe comparison.
+	// 把期望值转换为 slog.Value，做类型安全的比较。
 	var expected slog.Value
 	switch v := value.(type) {
 	case string:
@@ -45,7 +45,7 @@ func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value
 	default:
 		expected = slog.AnyValue(v)
 	}
-	// Search from the end to match slog's "last value wins" semantics.
+	// 从末尾向前搜索，以匹配 slog 的 "last value wins" 语义。
 	for i := len(records[index].Attrs) - 1; i >= 0; i-- {
 		a := records[index].Attrs[i]
 		if a.Key == key {
@@ -58,7 +58,7 @@ func AssertHasAttr(t testing.TB, h *CaptureHandler, index int, key string, value
 	t.Fatalf("record[%d] has no attr with key %q", index, key)
 }
 
-// AssertLevel asserts that record[index] has the given level.
+// AssertLevel 断言 record[index] 的级别为给定值。
 func AssertLevel(t testing.TB, h *CaptureHandler, index int, level slog.Level) {
 	t.Helper()
 	records := h.Records()
@@ -70,7 +70,7 @@ func AssertLevel(t testing.TB, h *CaptureHandler, index int, level slog.Level) {
 	}
 }
 
-// AssertMessage asserts that record[index] has the given message.
+// AssertMessage 断言 record[index] 的消息为给定值。
 func AssertMessage(t testing.TB, h *CaptureHandler, index int, msg string) {
 	t.Helper()
 	records := h.Records()

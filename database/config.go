@@ -9,89 +9,101 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"go.opentelemetry.io/otel/log"
 )
 
-// tableNameRe validates SQL table names. Allows alphanumeric characters plus
-// underscore, including digits as the first character (supported by
-// PostgreSQL and openGauss via quoting). Schema-qualified names
-// (schema.table) are also accepted. Digits-first is explicitly allowed
-// because it's a legal table name in both supported databases.
+// tableNameRe 校验 SQL 表名。允许字母数字与
+// 下划线，首位可以是数字（PostgreSQL 与 openGauss 经引号
+// 转义后均支持）。带 schema 的限定名
+// （schema.table）也被接受。显式允许数字开头是因为
+// 它在两个受支持的数据库中都是合法表名。
 var tableNameRe = regexp.MustCompile(`^[a-zA-Z0-9_]+(\.[a-zA-Z0-9_]+)?$`)
 
 const (
-	// maxBatchSize caps the batch size to prevent unbounded channel/batch
-	// allocation when a caller misconfigures a very large BatchSize.
+	// maxBatchSize 限制批次大小，防止调用方误配超大
+	// BatchSize 时产生无界的 channel/批次分配。
 	maxBatchSize = 10000
 
-	// DefaultMaxRecordBytes is the per-record size bound applied when
-	// Config.MaxRecordBytes is unset. 256KiB accommodates rich structured
-	// records (deep JSON documents) while keeping the worst-case backlog
-	// footprint bounded: the backlog holds BatchSize*10 entries, so at the
-	// default batch size the ceiling is 1000 × 256KiB = 256MiB — the same
-	// defensive tier as the syslog handler's maxMsgSize frame bound, sized
-	// up for records that legitimately carry structured documents.
+	// DefaultMaxRecordBytes 是 Config.MaxRecordBytes 未设置时
+	// 应用的单记录大小上界。256KiB 容纳丰富的结构化
+	// 记录（深层 JSON 文档），同时保证最坏情况下的积压
+	// 占用有界：积压保存 BatchSize*10 条，因此默认
+	// 批次大小下的上限是 1000 × 256KiB = 256MiB——与 syslog
+	// handler 的 maxMsgSize 帧上界同一防御层级，针对
+	// 合法携带结构化文档的记录放大了尺寸。
 	DefaultMaxRecordBytes = 256 * 1024
 
-	// MaxRecordBytesCap caps Config.MaxRecordBytes. Generous enough for
-	// jsonb-typed records, but a hard wall against "just one huge field"
-	// configurations that would otherwise resurrect the unbounded-backlog
-	// footprint the field exists to prevent.
+	// MaxRecordBytesCap 限制 Config.MaxRecordBytes 上限。对
+	// jsonb 类型记录足够宽裕，但对“就一个大字段”式配置是硬墙——
+	// 否则该字段要防止的无界积压占用会死灰复燃。
 	MaxRecordBytesCap = 8 * 1024 * 1024
 
-	// MaxRetryDelay caps Config.RetryDelay, mirroring the syslog handler:
-	// every failed flush attempt sleeps for RetryDelay, so a misconfigured
-	// multi-minute delay multiplies into the worst-case flush time and
-	// stalls Close's drain for that long per retry.
+	// MaxRetryDelay 限制 Config.RetryDelay，与 syslog handler 一致：
+	// 每次失败的刷盘尝试都等待 RetryDelay，误配成数分钟的
+	// 延迟会成倍放大最坏刷盘时间，并让 Close 的排空
+	// 每次重试都拖那么久。
 	MaxRetryDelay = 30 * time.Second
 )
 
-// Config holds configuration for database log output.
+// Config 保存 database 日志输出的配置。
 type Config struct {
-	Driver        string        // Required: "postgres" or "opengauss".
-	DSN           string        // Required: database connection string.
-	Table         string        // Required: log table name.
-	Level         slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	BatchSize     int           // Records per batch. 0 → 100.
-	BatchInterval time.Duration // Flush interval. 0 → 5s.
-	// MaxConnLifetime is the maximum connection lifetime. 0 = no limit (unlike
-	// other fields where 0 means "use default", this follows database/sql
-	// convention where 0 means unlimited).
-	MaxConnLifetime time.Duration // Max connection lifetime. 0 = no limit.
-	MaxOpenConns    int           // Max open connections. 0 → 10.
-	MaxIdleConns    int           // Max idle connections. 0 → 5.
-	RetryDelay      time.Duration // Delay between retries. 0 → 500ms, capped at MaxRetryDelay.
-	// MaxRecordBytes bounds the encoded size of a single record admitted to
-	// the backlog (message length + fields JSON length). Records exceeding
-	// the limit keep their message — truncated UTF-8-safe to fit — but lose
-	// their fields: the fields column is replaced with the
-	// {"mebsuta_truncated":true} marker, and the loss is counted in
-	// Handler.Dropped and surfaced through the rate-limited drop report.
+	Driver        string        // 必填："postgres" 或 "opengauss"。
+	DSN           string        // 必填：数据库连接串。
+	Table         string        // 必填：日志表名。
+	Level         slog.Leveler  // 日志级别过滤。默认 slog.LevelInfo。
+	BatchSize     int           // 每批记录数。0 → 100。
+	BatchInterval time.Duration // 刷盘间隔。0 → 5s。
+	// MaxConnLifetime 是连接的最大生命周期。0 = 不限（与其他
+	// 字段 0 表示“用默认值”不同，这里遵循 database/sql 的约定：
+	// 0 表示不限）。
+	MaxConnLifetime time.Duration // 连接最大生命周期。0 = 不限。
+	MaxOpenConns    int           // 最大打开连接数。0 → 10。
+	MaxIdleConns    int           // 最大空闲连接数。0 → 5。
+	RetryDelay      time.Duration // 重试间隔。0 → 500ms，以 MaxRetryDelay 封顶。
+	// MaxRecordBytes 限制允许进入积压的单条记录编码后大小
+	//（消息长度 + fields JSON 长度）。超过限制的记录保留
+	// 消息——UTF-8 安全截断到放得下——但丢失
+	// fields：fields 列被替换为
+	// {"mebsuta_truncated":true} 标记，丢失计入
+	// Handler.Dropped 并经限频丢弃报告上报。
 	//
-	// Without this bound the backlog (BatchSize*10 entries of unbounded
-	// size) can reach hundreds of gigabytes of resident memory from a single
-	// oversized attribute. 0 → DefaultMaxRecordBytes; Validate clamps values
-	// above MaxRecordBytesCap.
+	// 没有该上界，积压（BatchSize*10 条无界大小）可因单条
+	// 超大属性膨胀到数百 GB 常驻内存。0 → DefaultMaxRecordBytes；
+	// Validate 会把超过 MaxRecordBytesCap 的值钳制。
 	MaxRecordBytes int
-	// ErrorTimeout bounds how long an Error-or-above record may block the
-	// calling goroutine when the backlog channel is full, before the record
-	// is dropped. 0 → 1s. Keep this small: request handlers call slog
-	// synchronously, and a long block here lets a slow database turn Error
-	// spikes into whole-service stalls.
+	// ErrorTimeout 限制 Error 及以上级别的记录在积压 channel
+	// 满时阻塞调用方 goroutine 的时长，超过即丢弃
+	// 该记录。0 → 1s。保持较小值：请求处理器同步调用
+	// slog，这里阻塞太久会让慢数据库把 Error
+	// 尖峰放大成整个服务的停顿。
 	ErrorTimeout time.Duration
-	// IntegritySigner optionally provides per-record hash+signature for
-	// tamper-evidence. nil disables signing (default, backward compatible).
-	// When set, each record gets record_hash / signature / sign_algo columns
-	// populated before batch insert. The handler is algorithm-agnostic.
+	// IntegritySigner 可选地提供逐记录 hash+签名，用于
+	// 防篡改。nil 表示禁用签名（默认，向后兼容）。
+	// 设置后，每条记录在批量插入前填充 record_hash /
+	// signature / sign_algo 列。handler 与算法无关。
 	//
-	// The signer must be safe for concurrent use (records are signed from
-	// multiple goroutines). Signing also caps stored timestamps at microsecond
-	// precision so signatures remain verifiable after the database round-trip
-	// (see CanonicalBytes).
+	// signer 必须并发安全（记录会从多个
+	// goroutine 签名）。签名还会把存储时间戳截到微秒
+	// 精度，保证数据库往返后签名仍可校验
+	//（见 CanonicalBytes）。
 	IntegritySigner IntegritySigner
-	warnNoTLS       bool // internal: set by Validate when DSN lacks TLS params.
+	// ServiceName 为持久化行（service_name 列）标记资源
+	// 身份，供 OTel 语义消费者使用。可选；为空
+	// 存储 ''。
+	ServiceName string
+	// RelayTo 是事务双写（Consistency.Enabled）用来把已提交
+	// 行继续投递出去的 OTel logs 管线——通常是
+	// telemetry 引导出的 LoggerProvider。Consistency.Enabled
+	// 时必填；否则被忽略。
+	RelayTo log.LoggerProvider
+	// Consistency 配置事务双写（DB 为事实来源，
+	// outbox 标记的 relay）。默认关闭——确切的保证与
+	// 显式的非 2PC 边界见 ConsistencyConfig。
+	Consistency ConsistencyConfig
+	warnNoTLS   bool // 内部：DSN 缺少 TLS 参数时由 Validate 设置。
 }
 
-// Validate checks required fields and returns a normalized copy with defaults applied.
+// Validate 检查必填字段，并返回应用默认值后的规范化副本。
 func (c Config) Validate() (Config, error) {
 	if c.Driver == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "Driver", Msg: "driver is required"}
@@ -108,7 +120,7 @@ func (c Config) Validate() (Config, error) {
 	if !tableNameRe.MatchString(c.Table) {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: "table name must match [a-zA-Z0-9_](.[a-zA-Z0-9_])?"}
 	}
-	// M9: PostgreSQL's and openGauss's NAMEDATALEN-1 = 63.
+	// M9：PostgreSQL 与 openGauss 的 NAMEDATALEN-1 = 63。
 	const maxTableLen = 63
 	if len(c.Table) > maxTableLen {
 		return Config{}, &mebsuta.ConfigError{Field: "Table", Msg: fmt.Sprintf("table name too long (max %d, got %d)", maxTableLen, len(c.Table))}
@@ -130,7 +142,7 @@ func (c Config) Validate() (Config, error) {
 	if c.MaxIdleConns <= 0 {
 		c.MaxIdleConns = 5
 	}
-	// Ensure idle pool does not exceed the open connection limit.
+	// 确保空闲池不超过打开连接上限。
 	if c.MaxIdleConns > c.MaxOpenConns {
 		c.MaxIdleConns = c.MaxOpenConns
 	}
@@ -148,23 +160,27 @@ func (c Config) Validate() (Config, error) {
 	if c.ErrorTimeout <= 0 {
 		c.ErrorTimeout = time.Second
 	}
+	c.Consistency = c.Consistency.validate()
+	if c.Consistency.Enabled && c.RelayTo == nil {
+		return Config{}, &mebsuta.ConfigError{Field: "RelayTo", Msg: "Consistency.Enabled requires RelayTo (the OTel logs pipeline to relay through)"}
+	}
 
 	c.warnNoTLS = !dsnHasTLS(c.DSN)
 
 	return c, nil
 }
 
-// dsnHasTLS checks whether the DSN contains TLS/SSL connection parameters.
+// dsnHasTLS 检查 DSN 是否包含 TLS/SSL 连接参数。
 //
-// This is a best-effort heuristic used only to decide whether to emit a
-// no-TLS warning; it does not gate any security control. It can be wrong in
-// both directions: an embedded "sslmode=" substring inside e.g. a password
-// suppresses the warning on a connection that is actually plaintext (false
-// negative), and sslmode=prefer can fall back to plaintext silently after
-// the warning was skipped. Treat the warning as advisory, not proof.
+// 这只是尽力而为的启发式，仅用于决定是否发出
+// 无 TLS 告警，并不构成任何安全门控。两个方向都可能
+// 误判：密码中内嵌的 "sslmode=" 子串会在实际是明文的
+// 连接上压制告警（漏报），而 sslmode=prefer 在告警被
+// 跳过后仍可能静默回退到明文。把告警当作提示，
+// 而非证明。
 func dsnHasTLS(dsn string) bool {
-	// PostgreSQL key=value DSN: any sslmode except "disable" enables TLS
-	// (require, verify-ca, verify-full, prefer, allow).
+	// PostgreSQL key=value DSN：除 "disable" 外的任何 sslmode 都启用
+	// TLS（require、verify-ca、verify-full、prefer、allow）。
 	dsnLower := strings.ToLower(dsn)
 	if !strings.Contains(dsnLower, "sslmode=") {
 		return false
@@ -172,13 +188,12 @@ func dsnHasTLS(dsn string) bool {
 	return !strings.Contains(dsnLower, "sslmode=disable")
 }
 
-// Sanitize returns a copy of the configuration whose DSN has its
-// credential-like segments redacted with the same rules as database error
-// messages (see dsnCredRe). The copy is safe to embed in logs, error text,
-// and structured output; it is NOT connectable — pass the original Config to
-// NewHandler. Like the error redaction itself this is a best-effort textual
-// rewrite, not a DSN parser: passwords containing '@' cannot be separated
-// from the host delimiter by regex and are only partially covered.
+// Sanitize 返回 DSN 中类凭据片段已脱敏的配置副本，规则与
+// database 错误消息一致（见 dsnCredRe）。该副本可以安全嵌入
+// 日志、错误文本与结构化输出；它不能用于连接——请把原始
+// Config 传给 NewHandler。与错误脱敏本身一样，这是尽力而为的
+// 文本改写而非 DSN 解析器：包含 '@' 的密码无法用正则从
+// 主机分隔符中剥离，只能部分覆盖。
 func (c Config) Sanitize() Config {
 	if c.DSN != "" {
 		c.DSN = redactCredentials(c.DSN)
@@ -186,9 +201,9 @@ func (c Config) Sanitize() Config {
 	return c
 }
 
-// String implements fmt.Stringer with the DSN's credentials redacted, so
-// printing a Config with %v or %+v cannot leak the database password. All
-// other fields render normally.
+// String 实现 fmt.Stringer，DSN 凭据已脱敏，因此
+// 用 %v 或 %+v 打印 Config 不会泄漏数据库密码。其他
+// 字段正常渲染。
 func (c Config) String() string {
 	level, signer := c.renderAux()
 	return fmt.Sprintf(
@@ -200,10 +215,10 @@ func (c Config) String() string {
 	)
 }
 
-// GoString implements fmt.GoStringer with the same redaction as String, so
-// %#v output (debuggers, error templates) cannot leak the DSN's credentials
-// either. Durations are rendered in human-readable form rather than raw
-// nanoseconds.
+// GoString 实现 fmt.GoStringer，脱敏与 String 一致，因此
+// %#v 输出（调试器、错误模板）也不会泄漏 DSN 凭据。
+// 时长以人类可读形式渲染，而非原始
+// 纳秒。
 func (c Config) GoString() string {
 	level, signer := c.renderAux()
 	return fmt.Sprintf(
@@ -215,14 +230,14 @@ func (c Config) GoString() string {
 	)
 }
 
-// renderAux returns the rendered Level and IntegritySigner fields shared by
-// String and GoString. A nil Leveler prints as "<nil>"; a set signer prints
-// as its algorithm identifier (the signer itself is never rendered).
+// renderAux 返回 String 与 GoString 共享的 Level 与 IntegritySigner
+// 字段渲染。nil Leveler 打印为 "<nil>"；已设置的 signer 打印
+// 其算法标识（signer 本身从不渲染）。
 func (c Config) renderAux() (level, signer string) {
 	level = "<nil>"
 	if c.Level != nil {
-		// slog.Level renders as "INFO"/"WARN"/...; custom Levelers fall
-		// back to their own fmt formatting.
+		// slog.Level 渲染为 "INFO"/"WARN"/…；自定义 Leveler
+		// 回退到其自身的 fmt 格式化。
 		level = fmt.Sprintf("%v", c.Level)
 	}
 	signer = "<nil>"

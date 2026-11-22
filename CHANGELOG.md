@@ -12,6 +12,261 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-20] - 2026-11-22
+
+### Changed — 项目整理第四轮：覆盖回归修复 + 文档/依赖一致性 + 零引用导出裁决
+
+- **补 internal/handlerkit 单元测试**（13 个）：MergeAttrs/RecordWithGroupAttrs（前两轮收敛时自根包删除的专属测试在此重建——覆盖回归修复）、AttrsSub 不改调用方记录/WithGroup("") no-op、GroupSub 前缀语义、SafeLevel/IsNilLeveler 类型化 nil 边界、LevelGate 门限与热调、ErrorSlot 热换与零值 Report 不 panic、RateGate 冷启放行与并发单胜者。
+- **文档一致性**：README `WithErrorHandler` 示例修正 `func(he mebsuta.HandlerError)` → `func(he *mebsuta.HandlerError)`（照抄原示例无法编译）；docs/BENCHMARKS.md 全表刷新至当前代码（环境标注 Go 1.24 → 1.27，SafeMulti 表附 0.1.0-17 顺序化注记，补 WithAttrs/AsyncHandler 行）。
+- **go.mod 一致性**：`go mod tidy` 把 prometheus/client_model 自 indirect 转正（prombridge/bridge.go 直接引用，此前分类漂移）。
+- **零引用导出扫描与裁决**（图 + 全仓文本引用计数，37 个候选）：删除 `metrics.Metrics.ObserveWriteLatency`（已被 HandlerMetrics 接口的 ObserveHandle 取代，全仓零调用）；`mbta.MaxMaxRetries` 更名 `MaxRetriesLimit`（叠词命名）。其余 35 个裁决保留：JSON 契约 tag 字段、OTel/Prometheus 接口实现（Aggregation/Describe 等）、mebsutatest 公共测试辅助、README 记录的默认值常量、鸭子类型接口 LevelVarSetter、对称门面（DebugContext 等）。
+
+### 破坏性变更
+
+- `metrics.Metrics.ObserveWriteLatency` 移除——与 `ObserveHandle`（mebsuta.HandlerMetrics 接口方法）观测同一直方图的旧形式，零调用残留。
+- `mbta.MaxMaxRetries` 更名 `mbta.MaxRetriesLimit`。
+
+## [0.1.0-19] - 2026-11-22
+
+### Changed — 结构收敛第三轮（GitNexus 图驱动）：单消费者符号下沉
+
+以代码知识图（跨包同名函数/方法查询 + 消费者分布映射）定位剩余重复：
+
+- **`LogEntry`/`RecordToLogEntry` 下沉 syslog**：消费者映射显示二者自根包导出、再移入 handlerkit 的整个历史中始终只有 syslog 一个消费者——最终归属消费者包，成为未导出的 `logEntry`/`recordToLogEntry`；`internal/handlerkit/entry.go` 删除。handlerkit 回归"多包共享管线"的纯粹定位。
+- **`truncateUTF8` 转发包装删除**（database、syslog 各一份）：调用点直调 `textutil.TruncateUTF8`，消除一层无语义的间接。
+- **图侦查后裁决不收敛**（差异是本质的，记录备查）：telemetry `spanFanout`/`metricFanout` 与 database `SpanExporter`/`MetricExporter` 同名源于实现同一 OTel 接口（fanout 是方式 A+B 双写机制）；telemetry/config、mbta/config、database/config 三家的 `String`/`GoString`/`Sanitize` 脱敏策略有意不同（整体掩码 vs 子串脱敏，第五轮审计裁决）；syslog `flattenAttr` 携带 mbta 协议特有的 attrStats 契约，与 attrutil 的截断标记语义不同；mbta/syslog/database/async 四处发送队列同构但错误文案是运维契约（测试逐字断言）、附加计数与 ctx 语义各异，泛型化需 8+ 参数反而伤可读性。
+
+### 破坏性变更
+
+- 无公开 API 变化（LogEntry 此前已在 0.1.0-17 移出公共面；本轮进一步移出 handlerkit）。
+
+## [0.1.0-18] - 2026-11-22
+
+### Changed — 结构收敛第二轮：LevelGate 级别门限 + async 快照提取 + 死代码清除
+
+- **`handlerkit.LevelGate`**：`SetLevel` 的"仅 \*slog.LevelVar 生效"判定（stdout/file/syslog/database/mbta 五份逐字拷贝）与 `Enabled` 的 SafeLevel 比较（四份）收敛为单一门限类型；四个 handler 的 `leveler slog.Leveler` 字段改为 `level handlerkit.LevelGate`，`SetLevel`/`Enabled` 各成一行委托。
+- **async 快照提取**：`AsyncHandler.Handle` 与 `asyncGroupHandler.Handle` 重复的"取消剥离 + asyncRecord 构建 + 属性快照 + 入队"序列提取为共用 `enqueueSnapshot`；冗余的 `sendRecord` 快路径 closed 检查删除（入口早退 + 锁内权威检查已覆盖），closed 检查 4 → 3 处。
+- **死代码清除**：子包未导出的 `setErrorHandler`（database）与 `setErrorhandler`（syslog）在生产代码零调用——是 `ErrorHandlerSetter` 导出接口出现前的遗留（根包从未能跨包触达它们）；删除并让测试改用 `SetErrorHandler`。根包 `isNilLeveler` 纯转发包装删除（直接用 `handlerkit.IsNilLeveler`）。
+
+### 破坏性变更
+
+- 无公开 API 变化（`LevelGate`/`enqueueSnapshot` 均为 internal/未导出；子包删除的是未导出方法）。
+
+## [0.1.0-17] - 2026-11-22
+
+### Changed — 结构收敛重构:统一 handler 图遍历 + internal/handlerkit 实现缝 + ErrorSlot/RateGate + slogtest 认证
+
+- **统一 handler 图遍历**：closeAll / setLevelHandler / setFileMaxAgeHandler / findSelfBuffered / findDroppedCounter 五份重复遍历（三种风格：递归+去重×3、递归无去重、迭代式）收敛为单一 `walkHandlers`（unwrap 链 + safeMulti fanout + 稳定 id 去重 + maxUnwrapDepth 环保护）；CloseAll / SetLevel / SetFileMaxAge 各缩为一段 visit 闭包，新增运维面只需挂 visit；visited 由 `sync.Map` 改为普通 map（单 goroutine 一次性遍历）。跨包装饰器识别经导出的 `UnwrapHandler` 方法双检（未导出接口无法跨包满足）。
+- **新增 `internal/handlerkit` 实现缝**（根包与 database/syslog/mbta 共享、非消费面）：`AttrsSub`/`GroupSub`、`LogEntry`/`RecordToLogEntry`、`SafeLevel`、`ReportError`/`LoadErrorHandler`、`MergeAttrs`/`RecordWithGroupAttrs` 自根包移入；`mebsuta.HandlerError`/`mebsuta.ErrorHandler` 改为该包类型的**别名**，公共契约与签名不变。
+- **ErrorSlot / RateGate 收敛**：9 处 `atomic.Pointer[ErrorHandler]` + Load/Store + 双份 SetErrorHandler 样板（根包 5 类型 + database/syslog/mbta/exporters）收敛为 `handlerkit.ErrorSlot`（跨克隆共享槽位，`Report` 一体）；5 处"每秒至多一次"CAS 上报限流（AsyncHandler 双闸、syslog、database、mbta）收敛为 `handlerkit.RateGate`。
+- **slogtest 一致性认证**：`testing/slogtest.Run` 全量用例认证 SamplingHandler / MetricsHandler / ContextExtractor / safeMulti 四个转发面（标准库 JSONHandler 作契约完美 Sink——装饰器若改记录/丢属性/group 处理错，Sink 输出即偏离期望）。contractJSONHandler（自有输出契约）、AttrsSub/GroupSub（group 扁平前缀语义）、AsyncHandler（异步可见性）不纳入的原因在 `slogtest_conformance_test.go` 顶部注明。
+- **safeMulti 顺序分发**：移除 ≥4 handler 的 goroutine-per-record fanout——基准 10.8–28.6µs/op（3 倍波动）/65 allocs → **3.2µs/op（稳定）/52 allocs**；2-handler 路径亦因去掉中间 `enabled` 切片小赚（~2.0µs → ~1.8µs）。慢消费者解耦的正确位置是 `UseAsync`；errors.Join 顺序随之确定。
+- 小项：`BoolPtr`/`IntPtr` → 泛型 `Ptr[T]`；defaultErrorHandler/LogErrorHandler 复用 `HandlerError.Error()`（`Fprintln`）消除格式串第二份拷贝；`promoteStringField`/`promoteBoolField` → 泛型 `promoteField[T]`；fallbackEntry 的 `msg[:1024]` 裸字节截断改用 `textutil.TruncateUTF8`（不再切开 UTF-8 rune）。
+
+### 破坏性变更
+
+- **公共 API 移除**（全部移入 `internal/handlerkit`，同模块子包随版本同步修正）：`AttrsSub`、`GroupSub`、`LogEntry`、`RecordToLogEntry`、`SafeLevel`、`ReportError`、`LoadErrorHandler`、`MergeAttrs`、`RecordWithGroupAttrs`。`HandlerError`/`ErrorHandler` 保留（别名，签名不变）。
+- `BoolPtr`/`IntPtr` 移除，由泛型 `Ptr[T any](v T) *T` 取代。
+- **findSelfBuffered 穿透 fanout**（缺陷面修正）：`WithAsync` 此前检测不到多输出（safeMulti）内部的自缓冲 handler（database/syslog/mbta），会静默构成双重缓冲；现在对这类链拒绝包裹（上报后原样返回 inner）。
+- **findDroppedCounter 穿透 fanout**：`UseMetrics` 此前发现不了 fanout 内 AsyncHandler 的丢弃计数（缓冲满洪峰对 Prometheus 不可见）；现在按 handler 图接入首个计数器。
+- **CloseAll 去重口径全局化**：同一 handler 实例出现在多个 safeMulti 分支时，此前各分支各关一次（依赖 Close 幂等）；现在整图恰好关闭一次。
+- **safeMulti ≥4 handler 不再并行分发**：改为顺序调用（基准依据见上）；错误顺序由 handler 声明序决定（此前 goroutine fanout 顺序不定）。
+
+## [0.1.0-16] - 2026-11-22
+
+### Changed — 测试文件名收紧（规则入 STYLE.md 第 15 条）
+
+- 审计轮次编号出文件名：`security_audit5_test.go` → `hardening_test.go`（database 与 telemetry 两处；轮次背景已在测试顶部注释）
+- 来源项目名出文件名：`telemetry/wasat_gaps_test.go` **拆分**为 `tls_test.go`（TLS 凭据面）与 `bridge_test.go`（错误桥 + 批处理节流）——主题归位
+- `telemetry/database_backend_test.go` → `backend_test.go`；`database/handler_lifecycle_test.go` → `lifecycle_test.go`
+- 拼写统一 `regress`：`mbta/close_regression_test.go` → `close_regress_test.go`；`syslog/handler_audit4_test.go` → `handler_audit_test.go`（编号出文件名）
+- 同主题合并：根包 `handler_regress2_test.go` 并入 `handler_regress_test.go`
+- `database/numeric_normalization_test.go` → `normalization_test.go`
+- **同题分裂合并（第二轮全量核对，59 → 54 个测试文件）**：`precision_test.go` 并入 `integrity_test.go`；根包 `level_audit_test.go` 并入 `level_test.go`、`level_walk_test.go` 并入 `facade_test.go`（三文件同题收敛为二）；`closeall_test.go` 并入 `handler_multi_test.go`；`mbta/handler_audit_test.go` 与 `syslog/handler_audit_test.go` 各自并入 `handler_test.go`
+- **漏网冗余**：`syslog/integration_syslog_test.go` → `integration_test.go`（包名前缀，上轮截断核对之漏）；`metrics_regress_test.go` → `handler_metrics_test.go`（名不对题——它就是 handler_metrics 的测试文件）
+- **第三轮：database 拆分过细收拢（12 → 7 个测试文件）**——`error_test.go`（839 行，名不副实的 handler 行为主测）+ `lifecycle_test.go` + `gorm_logger_test.go` 并入 `handler_test.go`（43 个测试，handler 行为/生命周期/错误/装配一面）；`normalization_test.go` 并入 `integrity_test.go`（Canonical 数字归一同题）；`integration_{helpers,jsonb,postgres,opengauss}_test.go` 四合一为 `integration_test.go`（同 build-tag 族）。终态 7 文件与生产面 1:1：`config / consistency / exporters / handler / hardening / integrity / integration`
+- **第四轮：其余包同种问题收拢（47 → 40 个测试文件，全包 1:1 配对达成）**——telemetry：`hardening_test.go`（审计杂集）拆解（渲染脱敏 → `config_test`，并发/覆盖告警 → `bootstrap_test`）、`bridge_test.go` 并入 `bootstrap_test`（错误桥与批处理的生产面都在 bootstrap），终态 4 文件配对 6 个生产文件的主题面；mbta：`close_regress` + `record_regress` 并入 `handler_test`（终态 1 文件）；syslog：`sd_injection` 并入 `handler_test`；filerotate：`security_regress` 并入 `writer_test`；根包：`handler_regress_test.go` 杂集**分发归位**（json×1 → `handler_json_test`、async×5 → `handler_async_test`、WithErrorHandler → `option_test`、context×2 → `handler_context_test`）
+- 粒度校准原则（STYLE.md 第 15 条精神）：**测试文件与生产文件 1:1**（每 handler/exporter 一个），跨切面小主题（装配、生命周期、错误路径）并入主测，build-tag 族合一，不再为单一测试立文件
+
+纯重命名/拆分/合并，零生产代码改动；全仓测试零失败。
+
+## [0.1.0-15] - 2026-11-22
+
+### Changed — 文件名整理（去包名前缀，14 个文件）
+
+子包文件名不再重复包名（目录已承载）——规则入 STYLE.md 第 15 条：
+
+- `database/database_handler*.go` → `handler*.go`；`database_error_test.go` → `error_test.go`；`database_consistency_test.go` → `consistency_test.go`
+- `telemetry/telemetry.go` → `bootstrap.go`（Start/Shutdown 核心 + 包 doc）
+- `internal/attrutil/attrutil.go` → `flatten.go`；`internal/textutil/textutil.go` → `truncate.go`（单文件包按主题命名）
+- `metrics/metrics.go` → `collector.go`；`audit/audit.go` → `api.go`
+
+根包 `mebsuta.go`/`mebsuta_test.go` 为模块主文件惯例保留。纯重命名，
+无任何代码改动；全仓测试零失败。
+
+## [0.1.0-14] - 2026-11-22
+
+### Added — 全局单例裁决落地 + 热重载第一批（S1-S3 + L0-L1）
+
+- **L1 `mebsuta.SetLevel(logger, level)`**——walk-based 级别热调（与 SetFileMaxAge 同款 handler 图遍历：unwrap + safeMulti + 去重）：仅构造期传 `*slog.LevelVar` 的 handler 生效，固定值进入 `skipped` 类型名清单（诚实面，不静默假装成功）；配套 `mebsuta.NewLevelVar(level)` 便捷构造与导出接口 `LevelVarSetter`（ErrorHandlerSetter 同款跨包模式）。五个 handler 落地 SetLevel：stdout（级别在 cfg.Level）、file、syslog、database、mbta。
+- **S1 `mebsutatest.ResetOTelGlobals()`**——消费方测试的 otel 全局复位舞步收编（noop provider ×3 + propagator；不依赖 telemetry 以免测试环）。
+- **S2 telemetry 覆盖告警**——`SetGlobal` 安装时若上一个本包引导的 TracerProvider 未复位，经 ErrorHandler 链上报 `global-overwrite`（成因提示 + 新 endpoint）；`telemetry.ResetGlobalTracking()`（TEST-ONLY）配套。局限：仅跟踪本包安装（GLOBALS.md 记录）。
+- **S3 `docs/GLOBALS.md`**——单例面地图：两处生态标准（slog default + otel 全局）为唯二单例、设施 var 清单、"不新增自有单例"原则与反面清单；STYLE.md 挂链。
+- **L0 文档化**——README 新增「热重载」章节：级别/保留窗/ErrorHandler 可调面 + 不可调边界（采样率、批量参数）+ telemetry 代次轮换模式。
+- 本仓测试的 resetGlobals 舞步换用公共工具（telemetry 内部测试 + facade 测试）。
+
+### 破坏性变更
+
+- 无公开 API 移除。
+
+## [0.1.0-13] - 2026-11-22
+
+### Changed — SamplingRate 扩展 NeverSample 语义（alhena 接入联动）
+
+- **`Config.SamplingRate` 合法域扩为 `{-1} ∪ [0, 1]`**：`-1` 直通 `NeverSample`（接入方三态采样器的 never 档，alhena 迁移联动需求）；`(-1, 0)` 开区间无语义拒绝；`0` 仍为默认全采样。sampler 分派三态化。
+- **修复 no-op 模式 signals 时序缺陷**（castor 迁移暴露）：`signals.Store` 移至 no-op 早退之后——禁用后端但显式设置 Signals 时 `Enabled()` 曾误报 true；附回归测试。
+
+## [0.1.0-12] - 2026-11-22
+
+### Changed — 风格统一批（十六维度全仓扫描后执行，不留中间态）
+
+- **A1 `telemetry.Config.Validate` 对齐全仓值形态（破坏性）**——签名改为 `func (c Config) Validate() (Config, error)`，返回规范化副本且不修改调用方（与其余 7 处 Config 一致）；Start 与测试调用点同步。
+- **A2 database 错误前缀统一**——子包名前缀规则落地：database 包生产代码 25 处 `"mebsuta:"` → `"database:"`（telemetry:/prombridge: 已合规）。
+- **A3 telemetry 校验错误类型化（破坏性）**——required/范围/TLS 交叉规则错误统一 `*mebsuta.ConfigError{Field, Msg}`，消费方可 `errors.As` 字段级判断；错误信息中文化。
+- **A4 并发安全声明**——`telemetry.Telemetry` 与 `prombridge.Bridge` doc 补并发安全面说明。
+- **A5 测试断言全面 testify 化（不留中间态）**——全仓测试的 `t.Errorf/t.Fatalf/t.Fatal` 统一改 `require.XXX`（快败语义），表格结构保持。
+- **A6 注释全面中文化（不留中间态）**——全仓生产与测试代码的英文注释/doc comment 统一翻译为中文（专有名词与标识符保留：no-op/fanout/ULID/OTLP/jsonb/fail-fast 等）；错误字符串与断言匹配文本不动。
+- **B 档规则成文**——新增 `docs/STYLE.md`（十六维度规则手册），`docs/CONTRIBUTING.md` 挂链置顶。
+
+### 破坏性变更清单
+
+- `telemetry.Config.Validate` 签名（指针 error → 值形态返回副本）。
+- telemetry 校验错误类型（fmt.Errorf → *mebsuta.ConfigError，文本中文化）。
+- database 包错误文本前缀（`mebsuta:` → `database:`）。
+
+## [0.1.0-11] - 2026-11-22
+
+### Added — wasat 缺口④转正实施
+
+- **telemetry 日志批处理两钮**——`Config.BatchLogQueueSize`（0 → SDK 缺省 2048）与 `Config.BatchLogInterval`（0 → SDK 缺省刷新间隔），经 `sdklog.WithMaxQueueSize`/`WithExportInterval` 透传；负值 `Validate` 拒绝（fail-fast，合法域在错误信息中）。测试：50ms 短节流下记录不经 Shutdown 即抵达 + 越界拒绝。（原 0.1.0-10 的"登记不做"条目就此转正。）
+
+## [0.1.0-10] - 2026-11-22
+
+### Added — wasat 接入缺口批（1 硬缺口 + 2 软缺口 + 1 登记）
+
+- **① telemetry TLS 凭据面（硬缺口修复）**——`Config` 增 `TLSCAFile`/`TLSCertFile`/`TLSKeyFile`/`TLSServerName` 四件套（镜像 mbta 凭据面形态），三个 OTLP/HTTP exporter 统一经 `WithTLSClientConfig` 透传。私有 CA 的 https collector（wasat 单文件自签形态）可达；裸 `host:port` + TLS 字段升级为 TLS；显式 `http://` + TLS 字段 `Validate` 拒绝；cert/key 必须成对；MinVersion TLS 1.2。测试：自签 CA 链端到端（span 过私有 CA 通道）、mTLS 双向（服务端强制客户端证书：有证书通过 / 无证书被拒）、校验规则。
+- **③ OTel SDK 导出错误接 ErrorHandler**——`Config.OTelErrorHandler`（nil → `mebsuta.DefaultErrorHandler`）；`SetGlobal`（默认开）时挂 `otel.SetErrorHandler` 桥，exporter 失败进 mebsuta 错误链而非 stderr；`SetGlobal=false` 不触碰 otel 全局（部署方自理，文档明示）。测试：不可达端点的导出失败经桥送达。
+- **② `mebsuta/prombridge` 子包**——Prometheus Registry → OTel 指标桥：counter 按轮询差分、gauge last-write-wins，histogram/summary 跳过（API 无法忠实表达预聚合 bucket 计数，文档化），`Skipped()` 诚实健康面。存量 prometheus-only 服务（mbta-go、wasat-dns 等）零改造接入。grpc-free。测试：两轮差分累计、属性透传、跳过计数。
+- **mebsutatest.OTLPReceiver.Handler()**——暴露捕获端点 handler，测试可挂自建 TLS/mTLS 服务端。
+
+### 登记（不做，按裁定）
+
+- **④ 日志批处理参数**：SDK `BatchLogRecordProcessor` 缺省（队列 2048/5s 刷新）对当前量级够用；query 通道极高峰场景再暴露 `BatchLogQueueSize`/`BatchLogInterval` 两钮。
+
+## [0.1.0-9] - 2026-11-22
+
+### Fixed — 第五轮安全专项审计修复批（1 P2 / 3 P3 / 3 P4）
+
+- **P2-1 资源 DoS：relay 扫描器字节预算**——`scanOnce` 原一次载入 `RelayBatch`（500）行含 Fields jsonb，单行上限 `MaxRecordBytesCap` 8MiB → 理论单轮 4GB。改为**小分片（50 行）水合 + 累计 32MiB 字节预算**，预算触顶即止、剩余行保持 pending 由下一轮经 ULID 游标续传（截断可恢复、不丢不跳）。回归测试以缩小预算验证"两轮续传全覆盖"。
+- **P3-1 并发：`telemetry.Telemetry.signals` 数据竞争**——`Shutdown` 写 / `Enabled` 读的普通字段改为 `atomic.Uint32`；新增并发 Hammer 测试（4 goroutine × Enabled × 100 次 + 双并发 Shutdown，`-race` ×3 全绿）。
+- **P3-2 注入纵深：`AutoMigrateTables` 补表名校验**——与 `EnsureTables`/`NewSpanExporter` 对齐 `tableNameRe` 防线（gorm 标识符引用为外墙，此为内墙），消除兄弟函数校验不一致。
+- **P3-3 泄漏：`telemetry.Config` 脱敏渲染**——补 `String`/`GoString`：Headers 保留键名、值一律 `***`（确定性排序保证日志稳定）；`Database.DSN` 整体遮蔽（部分脱敏会漏掉新型 DSN 拼写，整体遮蔽是诚实选择）。回归测试断言 token/密码不出现。
+- **P4-1（G115）：直方图 Count uint64→int64 钳制**到 MaxInt64（物理不可达，防静默回绕）；受控转换加 `#nosec` 理由标注（连同 signals 位掩码收窄共 2 处，本仓 nosec 基线 0→2，均有守卫注释）。
+- **P4-2（TEST-ONLY）：OTLPReceiver 体积上限**——原始与解压后读取均 `LimitReader` 64MiB 上限，超限 413（gzip 炸弹纵深）。
+- **P4-3（advisory）：metric 门面文档纪律**——instrument 按名缓存无淘汰，明示"名字不得派生自请求数据"。
+
+### 审计记录
+
+- 基线：`govulncheck` 零漏洞；`gosec` 修复后清零（2 处受控 nosec）。
+- 无 P1；retention.go（未提交工作）复核无发现；SQL 全参数化与 DSN 脱敏覆盖面复核通过。
+
+## [0.1.0-8] - 2026-11-22
+
+### Changed — 引入 internal/（实现缝收编）
+
+- **`mebsuta/attrutil` → `mebsuta/internal/attrutil`（破坏性）**——Attribute 展平工具的使用面实测全部在本模块内（root/database/syslog），外部仓零使用；收编为 internal 后退出公开契约面（SPEC 契约面随之收缩），编译器级阻止消费者依赖 JSON 输出内部展平语义。
+- **新增 `mebsuta/internal/textutil`**——UTF-8 截断辅助唯一归宿：`TruncateUTF8`（含 "..." 标记，database/syslog 原有两份逐字节相同的副本删除，改为薄委托）、`CutToRuneBoundary`（硬切无标记，attrutil 原内联版收编）、`RuneBoundary`（syslog JSON 截断器直用）。规范测试集中于 textutil（含全预算扫描的 UTF-8 有效性验证），syslog 内两份被取代的本地测试移除。
+
+### 评估结论（记录）
+
+- **`AttrsSub`/`GroupSub` 保留公开**（原计划收编，实施时撤销）：impact 分析揭示其为跨 3 子包（database/syslog/mbta）构造的组合件，且与根包未导出的 `handlerUnwrapper` unwrap 架构及 `RecordWithGroupAttrs`/`MergeAttrs`（async/multi 核心装饰器共用）共生——迁移需连带重构 unwrap 机制与助手归属，成本超出"隐藏实现缝"的收益。定位修订为**公开组合件（消费面）**：第三方 mebsuta 风格 handler 作者可复用其 WithAttrs/WithGroup 语义。
+
+## [0.1.0-7] - 2026-11-22
+
+### Changed
+
+- **依赖修复：iuboy 世系防倒退守卫**——`go mod tidy` 曾把 `mbta-go`/`pollux-go` 误升回旧世系（v0.7.0/v0.5.2，模块代理缓存的已删除标签，见 0.1.0-1 条目）。已显式压回正确钉版（`mbta-go v0.1.0-0`、`pollux-go v0.1.2-3`）并新增 go.mod `replace` 守卫：tidy/-u 不再回退；replace 仅本仓生效，对消费方不可见。
+- **syslog 降级为第二支持（维护模式）**——包文档、SPEC.md、README 三处一致声明：维持可用、维持测试、不再投入新特性。第一支持网络输出为 OTLP/数据库落库/MBTA；本地输出（stdout/file）层级不变。存量部署不受影响。
+
+### 评估结论（记录）
+
+- **mbta 三信号承载评估完成**：mbta-go `proto/signal.proto` 的 `SignalRecord` 已具备三信号字段面（logs：body/severity；traces：name/kind/parent/status/trace_state；metrics：metric_fields/unit/temporality/exp_histogram）。结论：协议就绪，mebsuta 侧的 mbta trace/metric exporter 为后续可选实现项（当前 traces/metrics 走 OTLP/数据库后端）。
+
+## [0.1.0-6] - 2026-11-22
+
+### Added
+
+- **database：span/metric exporter（方式 B 三信号补全）**——`database.NewSpanExporter(db, table)` 实现 `sdktrace.SpanExporter`、`database.NewMetricExporter(db, table)` 实现 `sdkmetric.Exporter`；行结构 `SpanRow`/`MetricRow` OTel 对齐（身份三元组/时序/状态/jsonb 属性与事件；指标 gauge/sum/histogram，指标 Temporality 恒 Cumulative——SQL 游标消费需要每行自含）。参考 DDL：`SpansTableDDL`/`MetricsTableDDL`；建表辅助 `EnsureTables`（PG DDL）与 `AutoMigrateTables`（驱动无关）。测试依赖新增 `sdk/trace/tracetest`。
+- **database.OpenGorm**——统一拨号路径（驱动选择/silent gorm 日志/错误脱敏/连接池），log handler 与 exporter 共用；NewHandler 改为经此拨号（行为不变）。
+- **telemetry 数据库后端（方式 B 一键引导）**——`telemetry.Config.Database *DatabaseConfig`：Driver/DSN/表名（默认 mebsuta_traces/mebsuta_metrics）/EnsureSchema（默认 true，幂等建表）/连接池。与 Endpoint 并存即 traces/metrics 双写（OTLP + DB，fanout exporter），logs 仍走 OTLP；仅 Database 时 LoggerProvider 保持 no-op（日志的 DB 通道是 slog database handler 的职责）。Shutdown 顺序保证：providers 刷完最后一批行后才关闭自有连接。
+
+### 破坏性变更
+
+- 无公开 API 移除；`telemetry.Config` 新增可选字段（零值行为不变）。
+
+## [0.1.0-5] - 2026-11-22
+
+### Added
+
+- **database 日志表 OTel 对齐 schema（破坏性）**——列集扩展为 `id`（ULID 身份/游标）、`observed_time`、`severity_number`（`mebsuta.SeverityNumber` 映射，LevelAudit→21）、`trace_id`/`span_id`（发射上下文关联，自动提取）、`service_name`（`Config.ServiceName`）、`relayed_at`（事务性双写投递标记）。参考 DDL 固化为 `database.LogsTableDDL`（含 `id` 唯一索引与 pending 部分索引），SPEC.md 立"OTel 对齐 schema 契约"为单一事实源。签名面不变（time/level/msg/fields）；新增列属路由/关联元数据，明确不在签名内。
+- **事务一致双写（ConsistencyConfig，默认关）**——DB 为事实源的事务性 outbox：`Config.RelayTo`（OTel logs 管线）+ `Consistency{Enabled, SyncRelay(默认 true), RelayScanInterval(默认 30s，0=外置对账), RelayBatch(默认 500)}`。flush 提交后同步中继 + 后台扫描器对账（`scanStop` 生命周期与 Close 无死锁，关停前一次有界清扫）；中继时从存储的 hex 重建 span 上下文保持追踪关联；**非 2PC 边界在文档与代码注释中明示**；投递 at-least-once，消费方按 ULID `id` 幂等去重。
+- `recordToDBEntry` 签名增加 ctx 参数（破坏性，仅包内与测试调用方）。
+
+### 依赖
+
+- `oklog/ulid/v2` v2.1.2 转直接依赖（记录身份生成，crypto/rand 单调熵）。
+
+### 破坏性变更
+
+- 日志表新增 8 列：既有表需 `ALTER TABLE ... ADD COLUMN`（参考 `LogsTableDDL`）；旧列名未改（time/level/msg/fields/record_hash/signature/sign_algo 原样）。
+- `Handler.recordToDBEntry(ctx, r)` 签名变更（未导出，测试调用方已同步）。
+
+## [0.1.0-4] - 2026-11-22
+
+### Added
+
+- **`mebsuta/otlp` 子包**——slog → OTel 日志管线桥接 handler：`otlp.NewHandler(lp, Config{LoggerName, MinLevel})`，经 `WithHandler` 与本地输出组合。日志-追踪关联原生（logs SDK 自发射上下文填充 TraceID/SpanID）；preset/group 语义按 slog 展平（dotted key）；uint64 超界降级十进制串、时间戳 RFC3339Nano、时长 int64 纳秒（OTel 语义约定）；nil provider 降级 no-op。**纯 API 桥，编译图 grpc-free**。
+- **根包遥测门面**——`mebsuta.StartSpan(ctx, name, attrs...)`（返回完整 `trace.Span`）、`mebsuta.Counter/Histogram/Gauge`（按名缓存 instrument；错误静默——遥测不得打断请求路径）；经 otel 全局工作，未注册自动 no-op。
+- **`mebsuta.TraceContextExtractor()`**——为本地输出（stdout/file/database/syslog）注入 `trace_id`/`span_id` 属性的现成 `ContextExtractor`；OTLP 路径无需提取器。
+
+### 破坏性变更
+
+- 无。
+
+## [0.1.0-3] - 2026-11-22
+
+### Added
+
+- **`mebsuta/telemetry` 子包**——OTel 三信号（traces/metrics/logs）OTLP/HTTP 一键引导：`telemetry.Start(ctx, Config)` 装配资源标识（service.name/version、deployment.environment.name）、头采样（`SamplingRate`，0→1 全采样）、批处理、W3C tracecontext+baggage 传播与统一 `Shutdown`（默认 5s 超时刷盘）；`Endpoint` 留空为全 no-op 模式（不触碰 otel 全局）；`SetGlobal`（默认 true）注册 otel 全局以兼容 otelgin/otelhttp 类中间件。OTel 依赖钉版 v1.47.0（logs SDK 首个稳定版；CVE-2026-24051 修复线之上）。
+- **`mebsuta.SeverityNumber(level)`**——slog 级别到 OTel SeverityNumber（1..24）的规范映射，从 `mbta` 内部 `severityNumber` 提取为唯一事实源（mbta handler 改为调用根包函数；行为不变，回归测试守护）。
+- **`mebsutatest.OTLPReceiver`**——测试专用 OTLP/HTTP 捕获接收器：绑定 spec 默认 `/v1/{traces,metrics,logs}` 路径，解码并留存 protobuf 请求（`Spans()`/`MetricFamilies()`/`LogRecords()` 扁平化访问、`WaitFor*` 轮询等待、gzip 透明解压、`AttrValue` 属性断言辅助）；解码走 slim proto 模块保持 grpc-free。
+
+### 依赖
+
+- 新增 OTel 栈：`otel`/`otel/sdk`/`otel/sdk/trace`/`otel/sdk/metric`/`otel/sdk/log` v1.47.0、`otlp{trace,metric}http` v1.47.0、`otlploghttp` v0.23.0（logs exporter 尚未随 SDK 转 v1.x 世系）、`proto/slim/otlp` v1.11.1。
+- **依赖边界（知情记录）**：官方 OTel SDK exporter 经完整版 `proto/otlp` collector 包传递链入 grpc（66+ 包，仅编译产物、运行时不激活）。 containment：根包与 `mebsutatest` 编译图保持 0 grpc（`go list -deps` 门禁）；仅显式 import `mebsuta/telemetry` 的二进制承担该体积。
+
+### 破坏性变更
+
+- 无公开 API 移除。`mbta.severityNumber`（未导出）删除，行为由 `mebsuta.SeverityNumber` 承接；mbta wire 格式与 SeverityNumber 取值不变。
+
+## [0.1.0-2] - 2026-11-19
+
+### Added
+
+- **filerotate：`Writer.SetMaxAgeDays` / `Writer.MaxAgeDays`**——按龄清理窗运行时调整与读取（仅 MaxAgeDays 一项；Path / MaxSizeMB / MaxBackups / 压缩位仍为构造期参数——重建 Writer 涉及文件句柄迁移属重启域）。
+- **`mebsuta.SetFileMaxAge(logger, days)`**——Logger 级保留窗热调：遍历 handler 图（unwrap 链 + safeMulti fanout，与 CloseAll 同一访问与去重口径）对每个 FileHandler 应用；stdout-only / nil logger 无害；负值拒绝。消费面：wasat 查询日志保留键热更（log.query_retention_days）。
+
 ## [0.1.0-1] - 2026-11-08
 
 ### 依赖

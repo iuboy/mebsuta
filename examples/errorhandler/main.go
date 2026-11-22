@@ -1,4 +1,4 @@
-// errorhandler: custom error handling for internal handler errors
+// errorhandler: 为内部 handler 错误定制错误处理
 package main
 
 import (

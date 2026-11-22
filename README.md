@@ -100,7 +100,7 @@ filerotate.Config{
     MaxSizeMB:      100,        // 0 → 100
     MaxBackups:     5,          // 0 → 5
     MaxAgeDays:     30,         // 0 → 30
-    Compress:       mebsuta.BoolPtr(true),
+    Compress:       mebsuta.Ptr(true),
     RotateInterval: 24 * time.Hour,
 }
 ```
@@ -142,7 +142,7 @@ defer mebsuta.CloseAll(logger.Handler())
 handler 内部错误（文件轮转失败、数据库写入失败等）通过 `ErrorHandler` 回调报告，不返回给调用方：
 
 ```go
-mebsuta.WithErrorHandler(func(he mebsuta.HandlerError) {
+mebsuta.WithErrorHandler(func(he *mebsuta.HandlerError) {
     log.Printf("component=%s op=%s err=%v", he.Component, he.Operation, he.Err)
 })
 ```
@@ -171,14 +171,147 @@ JSON 输出契约的顶层审计字段（`event_type`/`actor`/`success`）按级
 
 | 模块 | 说明 |
 |------|------|
-| `mebsuta` | 核心日志库 |
+| `mebsuta` | 核心日志库（含 `StartSpan`/`Counter` 等遥测门面与 `TraceContextExtractor`） |
+| `mebsuta/telemetry` | OTel 三信号（traces/metrics/logs）OTLP/HTTP 一键引导 |
+| `mebsuta/otlp` | slog → OTel 日志管线桥接 handler |
 | `mebsuta/audit` | 审计/合规功能 |
-| `mebsuta/syslog` | Syslog 输出 |
+| `mebsuta/syslog` | Syslog 输出（**维护模式**：可用、有测试、不新增特性） |
 | `mebsuta/database` | 数据库批量写入 |
 | `mebsuta/metrics` | Prometheus 指标 |
 | `mebsuta/filerotate` | 文件轮转 Writer |
-| `mebsuta/attrutil` | Attribute 工具 |
-| `mebsuta/mebsutatest` | 测试辅助 |
+| `mebsuta/prombridge` | Prometheus Registry → OTel 指标桥（存量 prometheus 服务零改造接入） |
+| `mebsuta/internal/attrutil`、`mebsuta/internal/textutil`、`mebsuta/internal/handlerkit` | 内部实现缝（Attribute 展平、UTF-8 截断、handler 共享管线：ErrorSlot/RateGate/AttrsSub/图遍历辅助），非消费面 |
+| `mebsuta/mebsutatest` | 测试辅助（含 OTLP 捕获接收器） |
+
+## 遥测引导（telemetry）
+
+`mebsuta/telemetry` 一次调用完成 OpenTelemetry 三信号（traces/metrics/logs）
+的 OTLP/HTTP 引导：资源标识、头采样、批处理、W3C 传播与优雅关停，替代各
+项目手写的 internal/telemetry 样板。Endpoint 留空即全 no-op，本地开发零负担。
+
+```go
+tel, err := telemetry.Start(ctx, telemetry.Config{
+    ServiceName: "castor",
+    Endpoint:    "http://mebsuta-forwarder:4318", // 留空 → no-op
+})
+if err != nil {
+    return err
+}
+defer tel.Shutdown(context.Background())
+```
+
+依赖边界：`telemetry` 子包经官方 OTel SDK exporter 传递链入 grpc（仅编译
+产物，运行时不激活）；根包、`mebsuta/otlp` 与 `mebsutatest` 保持
+grpc-free（otlp handler 是纯 API 桥，mebsutatest 用 slim proto 解码）。
+只使用日志能力的消费方（如 mebsuta-forwarder 的 loginit）不受影响。
+
+## TLS / mTLS（telemetry）
+
+OTLP/HTTP 端点的凭据面（镜像 mbta 四件套形态）：
+
+```go
+tel, _ := telemetry.Start(ctx, telemetry.Config{
+    ServiceName: "wasat",
+    Endpoint:    "https://collector.internal:4318", // 自签/私有 CA 部署形态
+    TLSCAFile:   "/etc/wasat/ca.pem",               // 私有 CA；缺省走系统信任池
+    TLSServerName: "collector.internal",            // 端点与证书 SAN 不一致时覆写
+    // mTLS（接收侧启用客户端证书验证时）：
+    // TLSCertFile: "client.pem", TLSKeyFile: "client.key",
+})
+```
+
+规则：裸 `host:port` + 任一 TLS 字段 → 升级为 TLS（覆盖 LAN 明文默认）；
+显式 `http://` + TLS 字段 → `Validate` 拒绝；`TLSCertFile`/`TLSKeyFile`
+必须成对。SDK 导出错误经 `Config.OTelErrorHandler` 进入 mebsuta
+ErrorHandler 链（`SetGlobal=false` 时不触碰 otel 全局，自行
+`otel.SetErrorHandler`）。
+
+## Prometheus 指标桥（prombridge）
+
+存量 prometheus 指标服务零改造接入 OTLP 路径：
+
+```go
+bridge, _ := prombridge.Start(ctx, tel.MeterProvider(), promReg,
+    prombridge.WithInterval(30*time.Second))
+defer bridge.Close()
+```
+
+忠实映射 counter（按轮询差分）与 gauge（last-write-wins）；histogram/summary
+**跳过**（OTel API 无法忠实表达预聚合 bucket 计数），`Bridge.Skipped()`
+提供诚实健康面。
+
+## 日志直发 OTLP（otlp handler）
+
+`mebsuta/otlp` 把 slog 记录桥接进 OTel 日志管线，与本地输出
+（stdout/file/database）通过 `WithHandler` 自由组合。日志-追踪关联是原生
+的：logs SDK 从发射上下文自动填充 TraceID/SpanID，在 span 内打日志即关联。
+
+```go
+tel, _ := telemetry.Start(ctx, telemetry.Config{
+    ServiceName: "castor",
+    Endpoint:    "http://mebsuta-forwarder:4318",
+})
+defer tel.Shutdown(ctx)
+
+logger, _ := mebsuta.New(
+    mebsuta.WithHandler(otlp.NewHandler(tel.LoggerProvider(), otlp.Config{})),
+    mebsuta.UseStdout(mebsuta.StdoutConfig{}),
+)
+slog.SetDefault(logger)
+```
+
+## 遥测门面（span/指标）
+
+根包提供 zap/slog 风格的全局函数，经 otel 全局（`telemetry.Start` 默认
+注册）工作；未注册时自动落回 no-op，测试与本地开发零负担：
+
+```go
+ctx, span := mebsuta.StartSpan(ctx, "handle_request")   // 返回完整 trace.Span
+defer span.End()
+
+mebsuta.Counter(ctx, "requests_total", 1, attribute.String("route", "/api"))
+mebsuta.Histogram(ctx, "latency_ms", 12.3)
+mebsuta.Gauge(ctx, "queue_depth", 7)
+
+// 本地输出的 trace 关联（OTLP 路径无需提取器）：
+//   mebsuta.UseContextExtractor(mebsuta.TraceContextExtractor())
+```
+
+## 遥测支持的依赖矩阵
+
+| 信号 \ 后端 | OTLP/HTTP（第一支持） | database 落库 | MBTA | syslog 等旧协议 |
+|------------|----------------------|---------------|------|----------------|
+| 日志 | `otlp` handler（经 `telemetry.Start`） | `database.NewHandler`（含事务一致双写） | 现有 `mbta` | 现有 `syslog`（维护模式） |
+| 追踪 | `telemetry` | `telemetry.Config.Database`（SpanExporter，方式 B） | 协议已具备（mbta-go `SignalRecord` 含 trace 字段），mebsuta 侧 exporter 待实现 | — |
+| 遥测 | `telemetry` | `telemetry.Config.Database`（MetricExporter，限低基数） | 协议已具备（`metric_fields`/`temporality`/`exp_histogram`），mebsuta 侧 exporter 待实现 | — |
+
+方式 A（OTel 直传）/方式 B（mebsuta 落库）在 `telemetry.Config` 一键切换；
+两者并存即 traces/metrics 双写：
+
+```go
+tel, _ := telemetry.Start(ctx, telemetry.Config{
+    ServiceName: "castor",
+    Database: &telemetry.DatabaseConfig{Driver: "postgres", DSN: dsn}, // 方式 B
+    Endpoint:    "http://mebsuta-forwarder:4318",                       // 方式 A（并存=双写）
+})
+defer tel.Shutdown(ctx)
+```
+
+## 热重载
+
+运行时可调面（应用侧挂 SIGHUP/管理 API/配置中心推送即可，mebsuta 不做
+信号处理）：
+
+| 能力 | 方式 |
+|------|------|
+| **日志级别** | 构造期 `Config.Level` 传 `mebsuta.NewLevelVar(...)`（全部 handler 的 Level 均为 `slog.Leveler`，std 库原子热调）；运行时 `applied, skipped, err := mebsuta.SetLevel(logger, level)`——walk 遍历 handler 图（与 `SetFileMaxAge` 同款），固定级别 handler 进 `skipped` 诚实面 |
+| 保留窗 | `mebsuta.SetFileMaxAge(logger, days)` |
+| ErrorHandler | `atomic.Pointer` 带锁热换 |
+
+不可热调（边界）：采样率（SDK sampler 构造期固定）、异步/批量参数
+（in-flight 缓冲迁移风险大于收益）。telemetry 的 endpoint/采样迁移用
+**代次轮换**模式：新 `telemetry.Start` → `SetGlobal` 覆盖（触发覆盖
+告警）→ 旧 `Shutdown`。全局单例面地图见 [docs/GLOBALS.md](docs/GLOBALS.md)。
 
 ## 文档
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -32,9 +31,7 @@ func TestAsyncHandler_Basic(t *testing.T) {
 		_ = closer.Close()
 	}
 
-	if !bytes.Contains(buf.Bytes(), []byte("hello")) {
-		t.Errorf("expected 'hello' in output, got: %s", buf.String())
-	}
+	require.Contains(t, buf.String(), "hello")
 }
 
 func TestAsyncHandler_DropOnFull(t *testing.T) {
@@ -51,9 +48,7 @@ func TestAsyncHandler_DropOnFull(t *testing.T) {
 	}
 
 	dropped := AsyncDropped(h.(*AsyncHandler))
-	if dropped == 0 {
-		t.Error("expected some logs to be dropped with tiny buffer")
-	}
+	require.NotZero(t, dropped, "expected some logs to be dropped with tiny buffer")
 }
 
 func TestAsyncHandler_Close(t *testing.T) {
@@ -66,25 +61,17 @@ func TestAsyncHandler_Close(t *testing.T) {
 	logger.Info("before close")
 
 	if closer, ok := h.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil {
-			t.Errorf("Close() error: %v", err)
-		}
+		require.NoError(t, closer.Close(), "Close() error")
 		// 双重关闭
-		if err := closer.Close(); err != nil {
-			t.Errorf("double Close() error: %v", err)
-		}
+		require.NoError(t, closer.Close(), "double Close() error")
 	}
 
-	if !bytes.Contains(buf.Bytes(), []byte("before close")) {
-		t.Error("log before close should be written")
-	}
+	require.Contains(t, buf.String(), "before close", "log before close should be written")
 }
 
 func TestAsyncHandler_NilHandler(t *testing.T) {
 	h := WithAsync(nil, AsyncConfig{})
-	if h != nil {
-		t.Error("expected nil for nil handler")
-	}
+	require.Nil(t, h, "expected nil for nil handler")
 }
 
 func TestAsyncHandler_WithAttrs(t *testing.T) {
@@ -101,9 +88,7 @@ func TestAsyncHandler_WithAttrs(t *testing.T) {
 		_ = closer.Close()
 	}
 
-	if !bytes.Contains(buf.Bytes(), []byte("preset")) {
-		t.Errorf("expected 'preset' in output, got: %s", buf.String())
-	}
+	require.Contains(t, buf.String(), "preset")
 }
 
 func TestAsyncHandler_WithGroup(t *testing.T) {
@@ -121,9 +106,7 @@ func TestAsyncHandler_WithGroup(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, `"request.id"`) {
-		t.Errorf("expected 'request.id' in output, got: %s", output)
-	}
+	require.Contains(t, output, `"request.id"`)
 }
 
 func TestAsyncHandler_Concurrent(t *testing.T) {
@@ -148,9 +131,7 @@ func TestAsyncHandler_Concurrent(t *testing.T) {
 		_ = closer.Close()
 	}
 
-	if count.Load() == 0 {
-		t.Error("expected some logs to be written")
-	}
+	require.NotZero(t, count.Load(), "expected some logs to be written")
 }
 
 type concurrentHandler struct {
@@ -168,9 +149,7 @@ func (h *concurrentHandler) WithGroup(string) slog.Handler      { return h }
 func TestAsyncDropped_NonAsync(t *testing.T) {
 	// 非 AsyncHandler 应返回 0
 	dropped := AsyncDropped(&StdoutHandler{})
-	if dropped != 0 {
-		t.Errorf("expected 0 for non-async handler, got %d", dropped)
-	}
+	require.Zero(t, dropped, "expected 0 for non-async handler")
 }
 
 func TestAsyncHandler_AuditNotDropped(t *testing.T) {
@@ -179,47 +158,35 @@ func TestAsyncHandler_AuditNotDropped(t *testing.T) {
 	h := WithAsync(inner, AsyncConfig{BufferSize: 1}) // tiny buffer
 
 	// Fill the buffer with normal records
-	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)); err != nil {
-		t.Fatalf("Handle fill: %v", err)
-	}
+	require.NoError(t, h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)), "Handle fill")
 
 	// Error/Audit should still be delivered (blocking path retries)
 	r := slog.NewRecord(time.Now(), slog.LevelError, "error record", 0)
-	if err := h.Handle(context.Background(), r); err != nil {
-		t.Fatalf("Handle error: %v", err)
-	}
+	require.NoError(t, h.Handle(context.Background(), r), "Handle error")
 
 	if closer, ok := h.(interface{ Close() error }); ok {
 		_ = closer.Close()
 	}
 
 	errorCount := inner.ErrorLevelCount()
-	if errorCount < 1 {
-		t.Errorf("expected at least 1 error-level record, got %d", errorCount)
-	}
+	require.GreaterOrEqual(t, errorCount, int64(1), "expected at least 1 error-level record")
 }
 
 func TestAsyncHandler_AuditLevelNotDropped(t *testing.T) {
 	inner := &countHandler{}
 	h := WithAsync(inner, AsyncConfig{BufferSize: 1})
 
-	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)); err != nil {
-		t.Fatalf("Handle fill: %v", err)
-	}
+	require.NoError(t, h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)), "Handle fill")
 
 	r := slog.NewRecord(time.Now(), slog.LevelError+4, "audit record", 0)
-	if err := h.Handle(context.Background(), r); err != nil {
-		t.Fatalf("Handle audit: %v", err)
-	}
+	require.NoError(t, h.Handle(context.Background(), r), "Handle audit")
 
 	if closer, ok := h.(interface{ Close() error }); ok {
 		_ = closer.Close()
 	}
 
 	errorCount := inner.ErrorLevelCount()
-	if errorCount < 1 {
-		t.Errorf("expected at least 1 audit-level record, got %d", errorCount)
-	}
+	require.GreaterOrEqual(t, errorCount, int64(1), "expected at least 1 audit-level record")
 }
 
 // =============================================================================
@@ -246,27 +213,21 @@ func TestWithMetrics_Basic(t *testing.T) {
 
 	logger.Info("test")
 
-	if m.handleCount.Load() != 1 {
-		t.Errorf("expected 1 handle, got %d", m.handleCount.Load())
-	}
+	require.Equal(t, int64(1), m.handleCount.Load(), "expected 1 handle")
 }
 
 func TestWithMetrics_NilInputs(t *testing.T) {
 	m := &testMetrics{}
 	// nil handler
 	h := WithMetrics(nil, m, "test")
-	if h != nil {
-		t.Error("expected nil for nil handler")
-	}
+	require.Nil(t, h, "expected nil for nil handler")
 
 	var buf bytes.Buffer
 	inner, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{Level: slog.LevelInfo})
 	require.NoError(t, err)
 	// nil metrics
 	h = WithMetrics(inner, nil, "test")
-	if h != inner {
-		t.Error("expected original handler for nil metrics")
-	}
+	require.Equal(t, inner, h, "expected original handler for nil metrics")
 }
 
 func TestWithMetrics_WithAttrs(t *testing.T) {
@@ -280,9 +241,7 @@ func TestWithMetrics_WithAttrs(t *testing.T) {
 
 	logger.Info("test")
 
-	if m.handleCount.Load() != 1 {
-		t.Errorf("expected 1 handle, got %d", m.handleCount.Load())
-	}
+	require.Equal(t, int64(1), m.handleCount.Load(), "expected 1 handle")
 }
 
 // =============================================================================
@@ -307,9 +266,7 @@ func TestWithContextExtractor_Basic(t *testing.T) {
 	ctx := context.WithValue(context.Background(), ctxKey("request_id"), "abc-123")
 	logger.InfoContext(ctx, "test")
 
-	if !bytes.Contains(buf.Bytes(), []byte("abc-123")) {
-		t.Errorf("expected 'abc-123' in output, got: %s", buf.String())
-	}
+	require.Contains(t, buf.String(), "abc-123")
 }
 
 func TestWithContextExtractor_NilInputs(t *testing.T) {
@@ -319,24 +276,16 @@ func TestWithContextExtractor_NilInputs(t *testing.T) {
 
 	// nil handler → returns a safe no-op discard handler instead of nil
 	h := WithContextExtractor(nil, func(ctx context.Context) []slog.Attr { return nil })
-	if h == nil {
-		t.Error("expected non-nil discard handler for nil handler")
-	}
+	require.NotNil(t, h, "expected non-nil discard handler for nil handler")
 	// Verify the discard handler is actually safe to use
-	if h.Enabled(context.Background(), slog.LevelInfo) {
-		t.Error("discard handler should not be enabled for any level")
-	}
+	require.False(t, h.Enabled(context.Background(), slog.LevelInfo), "discard handler should not be enabled for any level")
 
 	// nil extractor → pass-through: the inner chain must survive (a discard
 	// handler silently ate every log, audit records included)
 	h = WithContextExtractor(inner, nil)
-	if h != slog.Handler(inner) {
-		t.Errorf("nil extractor should return inner unchanged, got %T", h)
-	}
+	require.Equal(t, slog.Handler(inner), h, "nil extractor should return inner unchanged, got %T", h)
 	require.NoError(t, h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "test", 0)))
-	if buf.Len() == 0 {
-		t.Error("pass-through handler must still write to inner")
-	}
+	require.NotEmpty(t, buf, "pass-through handler must still write to inner")
 }
 
 func TestWithContextExtractor_NoContextValue(t *testing.T) {
@@ -351,9 +300,7 @@ func TestWithContextExtractor_NoContextValue(t *testing.T) {
 	logger := slog.New(h)
 	logger.Info("test")
 
-	if !bytes.Contains(buf.Bytes(), []byte("test")) {
-		t.Errorf("expected 'test' in output, got: %s", buf.String())
-	}
+	require.Contains(t, buf.String(), "test")
 }
 
 func TestWithContextExtractor_WithAttrs(t *testing.T) {
@@ -370,12 +317,8 @@ func TestWithContextExtractor_WithAttrs(t *testing.T) {
 	logger.Info("test")
 
 	output := buf.String()
-	if !bytes.Contains(buf.Bytes(), []byte("ctx_field")) {
-		t.Errorf("expected 'ctx_field' in output, got: %s", output)
-	}
-	if !bytes.Contains(buf.Bytes(), []byte("preset")) {
-		t.Errorf("expected 'preset' in output, got: %s", output)
-	}
+	require.Contains(t, output, "ctx_field")
+	require.Contains(t, output, "preset")
 }
 
 // =============================================================================
@@ -392,9 +335,7 @@ func TestSafeMultiHandler_PanicRecovery(t *testing.T) {
 	// 应该不 panic，bad handler 的 panic 被 recover
 	logger.Info("test")
 
-	if good.Count() != 1 {
-		t.Errorf("expected 1 log in good handler, got %d", good.Count())
-	}
+	require.Equal(t, 1, good.Count(), "expected 1 log in good handler")
 }
 
 type panicHandler struct {
@@ -417,12 +358,8 @@ func TestSafeMultiHandler_AllEnabled(t *testing.T) {
 
 	logger.Info("test")
 
-	if h1.Count() != 1 {
-		t.Errorf("h1 count = %d, want 1", h1.Count())
-	}
-	if h2.Count() != 1 {
-		t.Errorf("h2 count = %d, want 1", h2.Count())
-	}
+	require.Equal(t, 1, h1.Count(), "h1 count")
+	require.Equal(t, 1, h2.Count(), "h2 count")
 }
 
 func TestSafeMultiHandler_LevelFilter(t *testing.T) {
@@ -442,12 +379,8 @@ func TestSafeMultiHandler_LevelFilter(t *testing.T) {
 	// info handler 只记录 Info+; warn handler 记录 Warn+
 	lines1 := bytes.Count(buf1.Bytes(), []byte("\n"))
 	lines2 := bytes.Count(buf2.Bytes(), []byte("\n"))
-	if lines1 != 2 {
-		t.Errorf("info handler should get 2 logs, got %d", lines1)
-	}
-	if lines2 != 1 {
-		t.Errorf("warn handler should get 1 log, got %d", lines2)
-	}
+	require.Equal(t, 2, lines1, "info handler should get 2 logs")
+	require.Equal(t, 1, lines2, "warn handler should get 1 log")
 }
 
 // =============================================================================
@@ -472,9 +405,7 @@ func TestDecoratorChain_Stdout_Sampling_Metrics(t *testing.T) {
 	}
 
 	lines := bytes.Count(buf.Bytes(), []byte("\n"))
-	if lines < 5 {
-		t.Errorf("expected at least 5 lines, got %d", lines)
-	}
+	require.GreaterOrEqual(t, lines, 5, "expected at least 5 lines")
 	if m.handleCount.Load() != 20 {
 		// Metrics 记录所有调用（包括被采样的）
 		t.Logf("handle count = %d (metrics sees all calls)", m.handleCount.Load())
@@ -494,9 +425,7 @@ func TestDecoratorChain_Async_Stdout(t *testing.T) {
 		_ = closer.Close()
 	}
 
-	if !bytes.Contains(buf.Bytes(), []byte("async test")) {
-		t.Errorf("expected 'async test' in output, got: %s", buf.String())
-	}
+	require.Contains(t, buf.String(), "async test")
 }
 
 // Test closing async handler while concurrent writes are in flight.
@@ -537,9 +466,7 @@ func TestAsyncHandler_CloseDuringConcurrent(t *testing.T) {
 	}
 
 	// Should not panic, and some records should have been written
-	if inner.Count() == 0 {
-		t.Error("expected some records to be written")
-	}
+	require.NotZero(t, inner.Count(), "expected some records to be written")
 }
 
 // =============================================================================
@@ -615,18 +542,12 @@ func TestAsyncHandler_ProcessErrorReportRateLimited(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := inner.count(); got != 200 {
-		t.Fatalf("inner handled = %d, want 200", got)
-	}
+	require.Equal(t, 200, inner.count(), "inner handled")
 
 	mu.Lock()
 	defer mu.Unlock()
-	if reports > 5 {
-		t.Errorf("process-error reports = %d for 200 failures, rate limiter ineffective (want <= 5)", reports)
-	}
-	if reports == 0 {
-		t.Error("at least one process-error report expected")
-	}
+	require.LessOrEqual(t, reports, 5, "process-error reports for 200 failures, rate limiter ineffective")
+	require.NotZero(t, reports, "at least one process-error report expected")
 }
 
 // TestAsyncHandler_ErrorHandlerReentrantClose: the drop report must be
@@ -666,30 +587,24 @@ func TestAsyncHandler_ErrorHandlerReentrantClose(t *testing.T) {
 	select {
 	case <-handleDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Handle blocked: drop report issued while sendMu was held (re-entrant Close deadlock)")
+		require.FailNow(t, "Handle blocked: drop report issued while sendMu was held (re-entrant Close deadlock)")
 	}
 
 	// Unblock the worker so the re-entrant Close's drain can finish.
 	close(inner.release)
-	if closeReturned == nil {
-		t.Fatal("error handler was never invoked — test setup broken")
-	}
+	require.NotNil(t, closeReturned, "error handler was never invoked — test setup broken")
 	select {
 	case <-closeReturned:
 	case <-time.After(2 * time.Second):
-		t.Fatal("re-entrant Close from the error handler never returned (deadlock)")
+		require.FailNow(t, "re-entrant Close from the error handler never returned (deadlock)")
 	}
-	if h.Dropped() == 0 {
-		t.Error("expected the overflowed Error record to be counted as dropped")
-	}
+	require.NotZero(t, h.Dropped(), "expected the overflowed Error record to be counted as dropped")
 	_ = h.Close()
 }
 
 func mustAsyncHandle(t *testing.T, h slog.Handler, level slog.Level, msg string) {
 	t.Helper()
-	if err := h.Handle(context.Background(), slog.NewRecord(time.Now(), level, msg, 0)); err != nil {
-		t.Fatalf("Handle(%q): %v", msg, err)
-	}
+	require.NoError(t, h.Handle(context.Background(), slog.NewRecord(time.Now(), level, msg, 0)), "Handle(%q)", msg)
 }
 
 // TestAsyncHandler_SecondCloseWaitsForDrain: a Close losing the closed-CAS
@@ -714,7 +629,7 @@ func TestAsyncHandler_SecondCloseWaitsForDrain(t *testing.T) {
 	for time.Now().Before(deadline) {
 		select {
 		case <-close2:
-			t.Fatal("second Close returned before the drain finished")
+			require.FailNow(t, "second Close returned before the drain finished")
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
@@ -723,16 +638,14 @@ func TestAsyncHandler_SecondCloseWaitsForDrain(t *testing.T) {
 	select {
 	case <-close1:
 	case <-time.After(2 * time.Second):
-		t.Fatal("first Close did not return after the drain unblocked")
+		require.FailNow(t, "first Close did not return after the drain unblocked")
 	}
 	select {
 	case <-close2:
 	case <-time.After(2 * time.Second):
-		t.Fatal("second Close did not return even after the drain finished")
+		require.FailNow(t, "second Close did not return even after the drain finished")
 	}
-	if got := inner.handles.Load(); got != 1 {
-		t.Errorf("records handled = %d, want 1 (drained record must be written)", got)
-	}
+	require.Equal(t, int64(1), inner.handles.Load(), "records handled (drained record must be written)")
 }
 
 // TestAsyncGroupHandler_CloseDropCounted: closure drops on the WithGroup
@@ -741,20 +654,12 @@ func TestAsyncGroupHandler_CloseDropCounted(t *testing.T) {
 	inner := &countHandler{}
 	h := WithAsync(inner, AsyncConfig{BufferSize: 8}).(*AsyncHandler)
 	gh := h.WithGroup("g").(*asyncGroupHandler)
-	if err := h.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, h.Close(), "Close")
 
 	err := gh.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "after close", 0))
-	if err == nil {
-		t.Fatal("expected a drop error after Close")
-	}
-	if got := AsyncDropped(gh); got != 1 {
-		t.Errorf("AsyncDropped(group) = %d, want 1", got)
-	}
-	if got := h.Dropped(); got != 1 {
-		t.Errorf("AsyncHandler.Dropped() = %d, want 1 (shared counter)", got)
-	}
+	require.Error(t, err, "expected a drop error after Close")
+	require.Equal(t, int64(1), AsyncDropped(gh), "AsyncDropped(group)")
+	require.Equal(t, int64(1), h.Dropped(), "AsyncHandler.Dropped() (shared counter)")
 }
 
 // TestAsyncGroupHandler_WithGroupEmptyNameNoop: WithGroup("") is a no-op per
@@ -765,23 +670,15 @@ func TestAsyncGroupHandler_WithGroupEmptyNameNoop(t *testing.T) {
 	h := WithAsync(inner, AsyncConfig{BufferSize: 8}).(*AsyncHandler)
 
 	gh := h.WithGroup("a").(*asyncGroupHandler)
-	if same := gh.WithGroup(""); same != slog.Handler(gh) {
-		t.Error(`WithGroup("") must be a no-op returning the same handler`)
-	}
+	require.Equal(t, slog.Handler(gh), gh.WithGroup(""), `WithGroup("") must be a no-op returning the same handler`)
 	nested := gh.WithGroup("b").(*asyncGroupHandler)
-	if nested.group != "a.b" {
-		t.Errorf("nested group = %q, want %q", nested.group, "a.b")
-	}
+	require.Equal(t, "a.b", nested.group, "nested group")
 
 	// Root-level empty group: joining "b" must yield "b", not ".b".
 	root := h.WithGroup("").(*asyncGroupHandler)
-	if root.group != "" {
-		t.Errorf("root group = %q, want empty", root.group)
-	}
+	require.Equal(t, "", root.group, "root group")
 	joined := root.WithGroup("b").(*asyncGroupHandler)
-	if joined.group != "b" {
-		t.Errorf("joined group = %q, want %q (no leading dot)", joined.group, "b")
-	}
+	require.Equal(t, "b", joined.group, "joined group (no leading dot)")
 	_ = h.Close()
 }
 
@@ -802,20 +699,13 @@ func TestAsyncGroupHandler_WithGroupEmptyNameOutput(t *testing.T) {
 	// again must still carry the group prefix (no-op, not a group reset).
 	logger.Info("y", "k2", "v2")
 
-	if err := h.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, h.Close(), "Close")
 
 	out := buf.String()
-	if strings.Contains(out, `".b`) || strings.Contains(out, ".b.") {
-		t.Errorf("leading-dot group leaked into output: %s", out)
-	}
-	if !strings.Contains(out, `"b.k"`) {
-		t.Errorf(`expected "b.k" in output, got: %s`, out)
-	}
-	if !strings.Contains(out, `"b.k2"`) {
-		t.Errorf(`expected "b.k2" after no-op WithGroup, got: %s`, out)
-	}
+	require.NotContains(t, out, `".b`, "leading-dot group leaked into output")
+	require.NotContains(t, out, ".b.", "leading-dot group leaked into output")
+	require.Contains(t, out, `"b.k"`)
+	require.Contains(t, out, `"b.k2"`, `expected "b.k2" after no-op WithGroup`)
 }
 
 // bytesLogValuer resolves to a []byte through the LogValuer interface, so
@@ -874,22 +764,200 @@ func TestAsyncHandler_ByteSliceAttrSnapshotted(t *testing.T) {
 		slog.Any("data", payload),
 		slog.Any("lv", bytesLogValuer{payload}),
 	)
-	if err := h.Handle(context.Background(), r); err != nil {
-		t.Fatalf("Handle: %v", err)
-	}
+	require.NoError(t, h.Handle(context.Background(), r), "Handle")
 	<-inner.entered // record is inside inner.Handle: the snapshot was taken
 
 	// Caller reuses the buffer after the log call returned.
 	copy(payload, []byte("HACKED"))
 
 	close(inner.release)
-	if err := h.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
+	require.NoError(t, h.Close(), "Close")
 
 	for _, key := range []string{"data", "lv"} {
-		if got := inner.captured(key); string(got) != "SECRET" {
-			t.Errorf("captured %s = %q, want %q (caller mutation leaked into the queued record)", key, got, "SECRET")
+		require.Equal(t, "SECRET", string(inner.captured(key)), "captured %s (caller mutation leaked into the queued record)", key)
+	}
+}
+
+// TestAsyncHandler_InnerPanicRecovered: a panicking third-party inner handler
+// must not kill the background goroutine (and the process).
+func TestAsyncHandler_InnerPanicRecovered(t *testing.T) {
+	var mu sync.Mutex
+	handled := 0
+	inner := regressPanicHandler{onHandle: func() { mu.Lock(); handled++; mu.Unlock() }}
+
+	h := WithAsync(inner, AsyncConfig{BufferSize: 4}).(*AsyncHandler)
+	defer func() { _ = h.Close() }() // best-effort drain; the assertion above already checked the count
+
+	logger := slog.New(h)
+	logger.Info("before")
+	logger.Info("boom") // panics in inner
+	logger.Info("after")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := handled
+		mu.Unlock()
+		if n == 3 {
+			break
 		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 3, handled, "records handled (panic must not stop the worker)")
+}
+
+type regressPanicHandler struct{ onHandle func() }
+
+func (p regressPanicHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (p regressPanicHandler) Handle(_ context.Context, r slog.Record) error {
+	p.onHandle()
+	if r.Message == "boom" {
+		panic("inner handler exploded")
+	}
+	return nil
+}
+
+func (p regressPanicHandler) WithAttrs([]slog.Attr) slog.Handler { return p }
+func (p regressPanicHandler) WithGroup(string) slog.Handler      { return p }
+
+// TestAsyncHandler_CloseDrainsWithLiveContext is the regression test for the
+// Close ordering bug: Close previously cancelled the context before draining,
+// so ctx-aware inner handlers dropped the final batch. The drained records
+// must now observe a live (non-cancelled) context.
+func TestAsyncHandler_CloseDrainsWithLiveContext(t *testing.T) {
+	var mu sync.Mutex
+	var gotErrs []error
+	inner := ctxProbeHandler{onHandle: func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotErrs = append(gotErrs, err)
+	}}
+
+	h := WithAsync(inner, AsyncConfig{BufferSize: 8}).(*AsyncHandler)
+	logger := slog.New(h)
+	for i := range 5 {
+		logger.Info(fmt.Sprintf("record %d", i))
+	}
+
+	require.NoError(t, h.Close(), "Close")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, gotErrs, 5, "drained records")
+	for i, err := range gotErrs {
+		require.NoError(t, err, "record %d saw cancelled context during Close drain", i)
+	}
+}
+
+type ctxProbeHandler struct{ onHandle func(error) }
+
+func (c ctxProbeHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (c ctxProbeHandler) Handle(ctx context.Context, _ slog.Record) error {
+	c.onHandle(ctx.Err())
+	return nil
+}
+func (c ctxProbeHandler) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c ctxProbeHandler) WithGroup(string) slog.Handler      { return c }
+
+// TestAsyncHandler_DropReportRateLimited: a flood that overflows the buffer
+// must not produce one error-handler invocation per dropped record.
+func TestAsyncHandler_DropReportRateLimited(t *testing.T) {
+	block := make(chan struct{})
+	inner := blockingHandler{block: block}
+
+	h := WithAsync(inner, AsyncConfig{BufferSize: 2}).(*AsyncHandler)
+	// Unblock the worker BEFORE Close (defers run LIFO: h.Close would wait
+	// forever on a worker parked on block).
+	defer func() { close(block); _ = h.Close() }()
+
+	var mu sync.Mutex
+	reports := 0
+	h.setErrorHandler(func(*HandlerError) {
+		mu.Lock()
+		defer mu.Unlock()
+		reports++
+	})
+
+	logger := slog.New(h)
+	// Fill the buffer (worker blocked), then overflow heavily.
+	for i := 0; i < 200; i++ {
+		logger.Info("flood")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.LessOrEqual(t, reports, 2, "drop reports for ~198 drops, rate limiter not effective")
+	require.GreaterOrEqual(t, h.Dropped(), int64(190), "dropped counter, want the flood losses counted")
+}
+
+type blockingHandler struct{ block chan struct{} }
+
+func (b blockingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (b blockingHandler) Handle(context.Context, slog.Record) error {
+	<-b.block
+	return nil
+}
+func (b blockingHandler) WithAttrs([]slog.Attr) slog.Handler { return b }
+func (b blockingHandler) WithGroup(string) slog.Handler      { return b }
+
+// TestAsyncGroupHandler_CloseDrainsWithLiveContext is the regression test for
+// the fix gap: the WithoutCancel change initially covered only the plain
+// path — the WithGroup path still forwarded the raw request ctx, so ctx-aware
+// inner handlers dropped records queued during Close's drain.
+func TestAsyncGroupHandler_CloseDrainsWithLiveContext(t *testing.T) {
+	var mu sync.Mutex
+	var gotErrs []error
+	inner := ctxProbeHandler2{onHandle: func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		gotErrs = append(gotErrs, err)
+	}}
+
+	h := WithAsync(inner, AsyncConfig{BufferSize: 8}).(*AsyncHandler)
+	grouped := h.WithGroup("audit")
+	for i := 0; i < 5; i++ {
+		// Cancelled request contexts must not leak cancellation into the
+		// drained records.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := slog.NewRecord(time.Now(), slog.LevelInfo, "g", 0)
+		require.NoError(t, grouped.Handle(ctx, r), "Handle")
+	}
+
+	require.NoError(t, h.Close(), "Close")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, gotErrs, 5, "drained records")
+	for i, err := range gotErrs {
+		require.NoError(t, err, "record %d saw cancelled context during Close drain", i)
+	}
+}
+
+type traceKey struct{}
+
+// TestAsyncHandler_ConcurrentCloseSendRace exercises the sendMu design: close
+// racing with in-flight sends must be race-detector-clean (the previous
+// close+recover design reported DATA RACE under -race).
+func TestAsyncHandler_ConcurrentCloseSendRace(t *testing.T) {
+	for range 20 {
+		inner := ctxProbeHandler2{onHandle: func(error) {}}
+		h := WithAsync(inner, AsyncConfig{BufferSize: 4}).(*AsyncHandler)
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 50; j++ {
+					r := slog.NewRecord(time.Now(), slog.LevelInfo, "m", 0)
+					_ = h.Handle(context.Background(), r)
+				}
+			}()
+		}
+		_ = h.Close()
+		wg.Wait()
 	}
 }

@@ -1,9 +1,9 @@
-// Package database provides a slog-compatible handler that persists log
-// records to a SQL database in batches.
+// Package database 提供与 slog 兼容的 handler，将日志
+// 记录批量持久化到 SQL 数据库。
 //
-// IntegritySigner is an optional, algorithm-agnostic hook for tamper-evidence.
-// The database handler does NOT depend on any specific cryptographic library;
-// callers inject a concrete signer (SM2+SM3, ECDSA+SHA256, etc.).
+// IntegritySigner 是可选的、与算法无关的防篡改钩子。
+// database handler 不依赖任何特定密码学库；
+// 调用方注入具体的 signer（SM2+SM3、ECDSA+SHA256 等）。
 
 package database
 
@@ -19,48 +19,47 @@ import (
 	"time"
 )
 
-// Errors returned by VerifyRecord. VerifyRecord fails closed: a record
-// without a hash or signature is reported as ErrUnsignedRecord instead of
-// silently passing, so auditors decide explicitly how to treat unsigned rows.
+// VerifyRecord 返回的错误。VerifyRecord 失败即收紧：没有
+// hash 或签名的记录会被报告为 ErrUnsignedRecord，而不是
+// 静默通过，由审计人员显式决定如何处置未签名行。
 var (
-	// ErrUnsignedRecord indicates the stored record has no record_hash or no
-	// signature. A tamperer who clears either column produces this error too.
+	// ErrUnsignedRecord 表示存储的记录没有 record_hash 或没有
+	// signature。篡改者清空任一列也会产生此错误。
 	ErrUnsignedRecord = errors.New("mebsuta/database: record is unsigned (missing record_hash or signature)")
 
-	// ErrNilVerifier indicates a signature is present but no verifier was
-	// supplied (including a typed-nil implementation).
+	// ErrNilVerifier 表示存在签名但未提供校验器
+	//（包括类型化 nil 实现）。
 	ErrNilVerifier = errors.New("mebsuta/database: verifier is nil")
 
-	// ErrHashMismatch indicates the hash recomputed from the stored record
-	// content differs from the stored record_hash — the content was likely
-	// tampered with after signing.
+	// ErrHashMismatch 表示从存储记录内容重新计算的 hash
+	// 与存储的 record_hash 不一致——内容很可能在签名后
+	// 被篡改。
 	ErrHashMismatch = errors.New("mebsuta/database: record content does not match stored hash (possible tampering)")
 
-	// ErrAlgoMismatch indicates the stored sign_algo column names a different
-	// algorithm than the supplied verifier implements. The verifier would
-	// otherwise either fail opaquely or, worse, "verify" a signature under an
-	// algorithm the tamperer chose.
+	// ErrAlgoMismatch 表示存储的 sign_algo 列指定的算法与
+	// 所提供校验器实现的算法不同。否则校验器要么
+	// 不透明地失败，更糟的是在篡改者选定的算法下
+	// “验证”签名。
 	ErrAlgoMismatch = errors.New("mebsuta/database: stored sign_algo does not match verifier algorithm")
 )
 
 const (
-	// canonicalTimeLayout renders timestamps in UTC with a fixed microsecond
-	// fraction (no trailing-zero trimming), so identical instants always
-	// produce identical canonical bytes.
+	// canonicalTimeLayout 以 UTC、固定微秒小数位渲染时间戳
+	//（不去除尾零），因此相同的时刻总是
+	// 产出相同的规范字节。
 	canonicalTimeLayout = "2006-01-02T15:04:05.000000Z07:00"
 
-	// canonicalPrecision matches the resolution of the timestamptz columns
-	// that store the timestamp (both PostgreSQL and openGauss keep
-	// microseconds). Sub-microsecond digits are dropped from the canonical
-	// form and from the stored value when signing is enabled, so
-	// re-computing the hash from the stored row reproduces the signed hash
-	// exactly.
+	// canonicalPrecision 与存储时间戳的 timestamptz 列分辨率一致
+	//（PostgreSQL 与 openGauss 都保留
+	// 微秒）。启用签名时，亚微秒位会从规范形与
+	// 存储值中同时丢弃，因此从存储行重新
+	// 计算 hash 能精确复现签名的 hash。
 	canonicalPrecision = time.Microsecond
 )
 
-// canonicalRecord is the deterministic shape encoded by CanonicalBytes.
-// JSON encoding makes the representation unambiguous (no delimiter
-// collisions with message content) and stable across Go versions.
+// canonicalRecord 是 CanonicalBytes 编码的确定性形态。
+// JSON 编码让表示无歧义（不会与消息内容发生
+// 分隔符冲突）且跨 Go 版本稳定。
 type canonicalRecord struct {
 	Time   string          `json:"t"`
 	Level  string          `json:"l"`
@@ -68,24 +67,24 @@ type canonicalRecord struct {
 	Fields json.RawMessage `json:"f"`
 }
 
-// canonicalFields normalizes raw JSON into a deterministic form: keys sorted,
-// no insignificant whitespace, Go-native escaping. Both the signing side and
-// the verification side pass the fields column through it instead of
-// comparing raw bytes.
+// canonicalFields 将原始 JSON 规范化为确定性形态：键排序、
+// 无多余空白、Go 原生转义。签名侧与
+// 校验侧都让 fields 列经过它，而不是
+// 直接比较原始字节。
 //
-// Numbers are decoded with json.Number — never float64 — so distinct values
-// such as 9007199254740992 and 9007199254740993 (which both round to 2^53)
-// stay distinct; a tamperer cannot swap stored numeric fields (amounts, IDs)
-// while the recomputed hash — and therefore the signature — still verifies.
-// Numeric LITERALS are additionally rewritten to PostgreSQL's numeric text
-// form (see normalizeJSONNumber), making a json → jsonb column migration —
-// which rewrites e.g. 1e+21 to plain decimal — transparent for signed rows:
-// spellings jsonb renders identically canonicalize identically, and spellings
-// with different values never converge.
+// 数字用 json.Number 解码——绝不用 float64——因此像
+// 9007199254740992 与 9007199254740993（都会舍入到 2^53）这样的
+// 不同值保持可区分；篡改者无法偷换存储的数字字段（金额、ID），
+// 而重新计算的 hash——进而签名——仍然
+// 通过校验。数字字面量还会被改写为 PostgreSQL 的 numeric 文本
+// 形式（见 normalizeJSONNumber），使 json → jsonb 列迁移
+// ——它会把 1e+21 等改写为纯小数——对已签名行
+// 透明：jsonb 渲染相同的写法规范化结果相同，数值
+// 不同的写法永不趋同。
 //
-// Documents containing duplicate object keys are rejected outright. The
-// writer never produces them (it marshals a Go map), and last-wins decoding
-// would silently mask a {"k":original,"k":forged} rewrite.
+// 含重复对象键的文档被直接拒绝。
+// 写入方从不产生它们（它序列化的是 Go map），而 last-wins 解码
+// 会静默掩盖 {"k":original,"k":forged} 式的改写。
 func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 	if len(fields) == 0 {
 		return nil, nil
@@ -110,10 +109,10 @@ func canonicalFields(fields json.RawMessage) (json.RawMessage, error) {
 	return data, nil
 }
 
-// normalizeNumbersIn rewrites every json.Number in a decoded value tree (in
-// place) to PostgreSQL's numeric text form. json.Number is a string type and
-// Marshal emits it verbatim, so replacing the literal text rewrites the
-// canonical bytes without touching any other value.
+// normalizeNumbersIn 将解码值树中的每个 json.Number（原地）
+// 改写为 PostgreSQL 的 numeric 文本形式。json.Number 是字符串类型，
+// Marshal 原样输出它，因此替换字面量文本即可改写
+// 规范字节而不触碰任何其他值。
 func normalizeNumbersIn(v any) {
 	switch t := v.(type) {
 	case map[string]any:
@@ -135,26 +134,26 @@ func normalizeNumbersIn(v any) {
 	}
 }
 
-// maxNumberExpandLen caps the expanded decimal form. PostgreSQL rejects jsonb
-// numbers whose numeric form exceeds its digit limits ("value overflows
-// numeric format"), so literals that would expand beyond this cap can never
-// round-trip through a jsonb column anyway; they pass through verbatim and
-// remain consistent through the text-preserving json column.
+// maxNumberExpandLen 限制展开后的十进制形式。PostgreSQL 拒绝
+// numeric 形式超出位数上限的 jsonb 数字（“value overflows
+// numeric format”），因此展开后超过该上限的字面量
+// 本来就无法经 jsonb 列往返；它们原样通过，
+// 并经保留文本的 json 列保持一致。
 const maxNumberExpandLen = 8192
 
-// normalizeJSONNumber rewrites a JSON number literal into PostgreSQL's
-// numeric text output form, verified empirically against PostgreSQL 18:
+// normalizeJSONNumber 将 JSON 数字字面量改写为 PostgreSQL 的
+// numeric 文本输出形式，已对照 PostgreSQL 18 实证验证：
 //
-//	"1e+21"  → "1000000000000000000000"  (exponents expanded)
-//	"1.50"   → "1.50"                    (fraction scale preserved)
-//	"1.50e2" → "150", "1.50e1" → "15.0"  (scale reduced by the exponent)
-//	"1.5e-2" → "0.015"                   (fraction zeros added)
-//	"007"    → "7"                       (integer leading zeros stripped)
-//	"-0" → "0", "-0.0" → "0.0", "0e10" → "0"  (zero: sign dropped, scale kept)
+//	"1e+21"  → "1000000000000000000000"（指数展开）
+//	"1.50"   → "1.50"（小数位数保留）
+//	"1.50e2" → "150"、"1.50e1" → "15.0"（位数被指数缩减）
+//	"1.5e-2" → "0.015"（补小数零）
+//	"007"    → "7"（整数前导零剥离）
+//	"-0" → "0"、"-0.0" → "0.0"、"0e10" → "0"（零：符号丢弃、位数保留）
 //
-// Two spellings therefore canonicalize identically iff jsonb renders them
-// identically — the json → jsonb migration is transparent for signed rows —
-// without ever converging distinct numeric values.
+// 因此两种写法规范化的结果相同，当且仅当 jsonb 渲染
+// 相同——json → jsonb 迁移对已签名行
+// 透明——且绝不使不同的数值趋同。
 func normalizeJSONNumber(lit json.Number) string {
 	s := string(lit)
 	if isNumericTextForm(s) {
@@ -169,7 +168,7 @@ func normalizeJSONNumber(lit json.Number) string {
 		mant = s[:i]
 		e, err := strconv.Atoi(s[i+1:])
 		if err != nil {
-			return s // unreachable: the decoder validated the literal
+			return s // 不可达：解码器已校验过该字面量
 		}
 		exp = e
 	}
@@ -181,8 +180,8 @@ func normalizeJSONNumber(lit json.Number) string {
 	point := len(intPart) + exp // decimal point position within digits
 
 	if strings.Trim(digits, "0") == "" {
-		// Zero value: sign dropped; keep only the fractional zeros implied
-		// by the final scale (PostgreSQL numeric semantics).
+		// 零值：符号丢弃；只保留最终位数
+		// 隐含的小数零（PostgreSQL numeric 语义）。
 		scale := len(fracPart) - exp
 		if scale <= 0 {
 			return "0"
@@ -207,7 +206,7 @@ func normalizeJSONNumber(lit json.Number) string {
 		if point > maxNumberExpandLen {
 			return s
 		}
-		// "007e2" → "00700" — integer leading zeros are not significant.
+		// "007e2" → "00700”——整数前导零无意义。
 		out := strings.TrimLeft(digits+strings.Repeat("0", point-len(digits)), "0")
 		if out == "" {
 			out = "0"
@@ -232,10 +231,10 @@ func normalizeJSONNumber(lit json.Number) string {
 	}
 }
 
-// isNumericTextForm reports whether lit already equals its PostgreSQL numeric
-// text form: no exponent, no integer leading zeros, and not a negative zero.
-// Go's float/int encoders emit this form for everything below 1e21, so this
-// fast path covers the overwhelming majority of literals.
+// isNumericTextForm 判断 lit 是否已等于其 PostgreSQL numeric
+// 文本形式：无指数、无整数前导零、且不是负零。
+// Go 的 float/int 编码器对 1e21 以下的一切都输出该形式，因此
+// 该快速路径覆盖绝大多数字面量。
 func isNumericTextForm(s string) bool {
 	i := 0
 	if s[0] == '-' {
@@ -247,19 +246,19 @@ func isNumericTextForm(s string) bool {
 	}
 	intPart := s[i:d]
 	if len(intPart) == 0 || (len(intPart) > 1 && s[i] == '0') {
-		return false // ".5" cannot occur from the decoder; leading zero
+		return false // “.5”不会来自解码器；前导零
 	}
 	rest := s[d:]
 	for _, c := range rest {
 		if c == 'e' || c == 'E' {
-			return false // exponent form needs expansion
+			return false // 指数形式需要展开
 		}
 	}
 	if i == 1 && intPart == "0" {
-		// possible negative zero ("-0", "-0.0"): the sign must be dropped
+		// 可能是负零（"-0"、"-0.0"）：符号必须丢弃
 		for _, c := range rest {
 			if c >= '1' && c <= '9' {
-				return true // negative non-zero fraction: fine as-is
+				return true // 负的非零小数：原样即可
 			}
 		}
 		return false
@@ -267,19 +266,21 @@ func isNumericTextForm(s string) bool {
 	return true
 }
 
-// maxDupCheckDepth bounds checkNoDuplicateKeys' recursion so an adversarially
-// deep document cannot overflow the stack during verification.
+// maxDupCheckDepth 限制 checkNoDuplicateKeys 的递归深度，恶意构造的
+// 超深文档才不会在校验期间溢出栈。
 const maxDupCheckDepth = 64
 
-// checkNoDuplicateKeys walks the JSON token stream and returns an error when
-// any object repeats a key. encoding/json's decoder silently keeps the last
-// duplicate, which would let {"a":1,"a":2} validate identically to {"a":2}
-// and hide a tampered column behind an unchanged canonical form.
+// checkNoDuplicateKeys 遍历 JSON token 流，任何对象
+// 重复键即报错。encoding/json 的解码器静默保留
+// 最后一个重复项，那会让 {"a":1,"a":2} 与 {"a":2} 校验
+// 结果相同，把被篡改的列藏在未变的规范形
+// 之后。
 func checkNoDuplicateKeys(data []byte) error {
-	// UseNumber: without it the token walk parses numbers as float64 and a
-	// huge literal like 1e999 (which the writer can legitimately produce via
-	// json.Number) fails HERE while the strict UseNumber decode below accepts
-	// it — the mismatch silently downgraded such records to unsigned.
+	// UseNumber：没有它，token 遍历会把数字解析为 float64，像
+	// 1e999 这样的巨大字面量（写入方可经
+	// json.Number 合法产生）会在这里失败，而下方严格的
+	// UseNumber 解码却接受它——该不一致曾把这类记录
+	// 静默降级为未签名。
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	if err := checkValueDupKeys(dec, 0); err != nil {
@@ -298,7 +299,7 @@ func checkValueDupKeys(dec *json.Decoder, depth int) error {
 	}
 	delim, ok := tok.(json.Delim)
 	if !ok {
-		return nil // scalar value
+		return nil // 标量值
 	}
 	switch delim {
 	case '{':
@@ -320,7 +321,7 @@ func checkValueDupKeys(dec *json.Decoder, depth int) error {
 				return err
 			}
 		}
-		_, err = dec.Token() // consume '}'
+		_, err = dec.Token() // 消费 '}'
 		return err
 	case '[':
 		for dec.More() {
@@ -328,28 +329,28 @@ func checkValueDupKeys(dec *json.Decoder, depth int) error {
 				return err
 			}
 		}
-		_, err = dec.Token() // consume ']'
+		_, err = dec.Token() // 消费 ']'
 		return err
 	default:
-		return nil // standalone delimiters cannot occur as values
+		return nil // 独立分隔符不会作为值出现
 	}
 }
 
-// CanonicalBytes returns the canonical byte representation of a record: the
-// exact bytes signed by IntegritySigner at write time and re-computed by
-// VerifyRecord at audit time. It is deterministic and independent of the
-// storage round-trip:
+// CanonicalBytes 返回记录的规范字节表示：
+// 写入时由 IntegritySigner 签名、审计时由
+// VerifyRecord 重新计算的确切字节。它确定且与
+// 存储往返无关：
 //
-//   - Time is converted to UTC and truncated to microsecond precision
-//     (canonicalPrecision), matching the resolution of PostgreSQL
-//     timestamptz columns.
-//   - Fields are normalized via canonicalFields, tolerating the key
-//     reordering and whitespace changes databases apply to JSON columns.
-//     Numbers keep their exact value and literal spelling (json.Number);
-//     documents with duplicate object keys are rejected.
+//   - Time 转为 UTC 并截断到微秒精度
+//     （canonicalPrecision），与 PostgreSQL
+//     timestamptz 列的分辨率一致。
+//   - Fields 经 canonicalFields 规范化，容忍数据库
+//     对 JSON 列施加的键重排与空白变化。
+//     数字保留精确值与字面量写法（json.Number）；
+//     含重复对象键的文档被拒绝。
 //
-// Auditing tools should use this function (not a hand-rolled serialization)
-// when re-computing hashes of stored records.
+// 审计工具重算存储记录 hash 时应使用本函数
+// （而非自造的序列化）。
 func CanonicalBytes(t time.Time, level, message string, fields json.RawMessage) ([]byte, error) {
 	f, err := canonicalFields(fields)
 	if err != nil {
@@ -363,87 +364,87 @@ func CanonicalBytes(t time.Time, level, message string, fields json.RawMessage) 
 	})
 }
 
-// IntegritySigner provides per-record integrity protection (hash + signature)
-// for database log entries.
+// IntegritySigner 为数据库日志条目提供逐记录的完整性保护
+// （hash + 签名）。
 //
-// The handler signs the output of CanonicalBytes for each record. The
-// returned recordHash and signature are persisted alongside the entry so any
-// later tampering can be detected by re-computing the hash with
-// CanonicalBytes and verifying via IntegrityVerifier (see VerifyRecord).
+// handler 对每条记录的 CanonicalBytes 输出签名。
+// 返回的 recordHash 与 signature 随条目一起持久化，之后的
+// 任何篡改都可通过用 CanonicalBytes 重新计算 hash 并经
+// IntegrityVerifier 校验来发现（见 VerifyRecord）。
 //
-// Implementations may use any algorithm pair (e.g. SM2+SM3 for GM compliance,
-// ECDSA+SHA256 for international). The handler is algorithm-agnostic and
-// introduces no cryptographic dependencies itself.
+// 实现可以使用任意算法对（如国密合规的 SM2+SM3，
+// 国际通用的 ECDSA+SHA256）。handler 与算法无关，
+// 自身不引入任何密码学依赖。
 type IntegritySigner interface {
-	// Sign computes a hash of data (typically the output of CanonicalBytes)
-	// and signs it, returning the raw hash and signature bytes. The hash is
-	// stored hex-encoded in the record_hash column; the signature is stored
-	// as raw bytes in the signature column.
+	// Sign 计算 data 的 hash（通常是 CanonicalBytes 的输出）
+	// 并签名，返回原始 hash 与签名字节。hash 以十六进制
+	// 存入 record_hash 列；签名以原始
+	// 字节存入 signature 列。
 	//
-	// Sign must be safe for concurrent use: slog handlers may process records
-	// from multiple goroutines, so the handler calls Sign concurrently.
-	// Implementations that hold mutable state (HSM sessions, reused hash
-	// objects, buffers) must synchronize access themselves.
+	// Sign 必须并发安全：slog handler 可能从多个
+	// goroutine 处理记录，因此 handler 会并发调用 Sign。
+	// 持有可变状态的实现（HSM 会话、复用的 hash
+	// 对象、缓冲区）必须自行同步访问。
 	Sign(data []byte) (recordHash, signature []byte, err error)
 
-	// Algorithm returns a short stable identifier for the algorithm pair,
-	// e.g. "SM2-SM3" or "ECDSA-SHA256". Stored in the sign_algo column so
-	// verifiers know which algorithm to use.
+	// Algorithm 返回算法对的简短稳定标识，
+	// 如 "SM2-SM3" 或 "ECDSA-SHA256"。存入 sign_algo 列，
+	// 校验器据此知道使用哪种算法。
 	Algorithm() string
 }
 
-// IntegrityVerifier is the mirror of IntegritySigner for verification. It is
-// not required at write time; callers that need to audit stored records
-// implement this and pass it to VerifyRecord.
+// IntegrityVerifier 是 IntegritySigner 在校验侧的镜像。写入
+// 时不需要；需要审计存储记录的调用方
+// 实现它并传给 VerifyRecord。
 //
-// Like IntegritySigner, implementations must be safe for concurrent use.
+// 与 IntegritySigner 一样，实现必须并发安全。
 type IntegrityVerifier interface {
-	// Hash computes the record hash of canonical data (the output of
-	// CanonicalBytes) using the same digest algorithm as the matching signer.
-	// VerifyRecord uses it to recompute the hash of a stored record and bind
-	// the stored hash to the record content.
+	// Hash 用与对应 signer 相同的摘要算法计算规范数据
+	//（CanonicalBytes 的输出）的记录 hash。
+	// VerifyRecord 用它重算存储记录的 hash，把
+	// 存储 hash 与记录内容绑定。
 	Hash(data []byte) ([]byte, error)
 
-	// Verify checks that signature is valid for recordHash. Returns nil on
-	// success.
+	// Verify 检查 signature 对 recordHash 是否有效。成功
+	// 返回 nil。
 	Verify(recordHash, signature []byte) error
 
-	// Algorithm returns the algorithm identifier (must match the signer's).
+	// Algorithm 返回算法标识（必须与 signer 的一致）。
 	Algorithm() string
 }
 
-// StoredRecord carries the persisted columns of one log entry as read back
-// from the database, for verification with VerifyRecord.
+// StoredRecord 承载从数据库读回的一条日志条目的
+// 持久化列，供 VerifyRecord 校验。
 type StoredRecord struct {
-	Time     time.Time       // contents of the time column.
-	Level    string          // contents of the level column.
-	Message  string          // contents of the msg column.
-	Fields   json.RawMessage // contents of the fields column; any key order or whitespace.
-	SignAlgo string          // contents of the sign_algo column; empty means the row is unsigned.
+	Time     time.Time       // time 列内容。
+	Level    string          // level 列内容。
+	Message  string          // msg 列内容。
+	Fields   json.RawMessage // fields 列内容；任意键序或空白。
+	SignAlgo string          // sign_algo 列内容；为空表示该行未签名。
 }
 
-// VerifyRecord checks the integrity of a stored log entry end to end:
+// VerifyRecord 端到端校验一条存储日志条目的完整性：
 //
-//  1. The row must carry all three integrity columns (record_hash, signature,
-//     sign_algo); any missing one is reported as ErrUnsignedRecord.
-//  2. The stored sign_algo must equal verifier.Algorithm(), so the verifier
-//     cannot be steered into checking a signature under an algorithm the
-//     tamperer picked (ErrAlgoMismatch otherwise).
-//  3. The hash recomputed from the record content (via CanonicalBytes and
-//     verifier.Hash) must equal the stored record_hash — this binds the hash
-//     to the content, so editing the message or fields after the fact is
-//     detected even if the stored hash and signature are left untouched.
-//  4. The stored signature must verify against that hash.
+//  1. 行必须带全部三个完整性列（record_hash、signature、
+//     sign_algo）；任一缺失即报 ErrUnsignedRecord。
+//  2. 存储的 sign_algo 必须等于 verifier.Algorithm()，校验器
+//     才不会被诱导去按篡改者选定的算法校验
+//     签名（否则为 ErrAlgoMismatch）。
+//  3. 从记录内容重算的 hash（经 CanonicalBytes 与
+//     verifier.Hash）必须等于存储的 record_hash——这把 hash 与
+//     内容绑定，因此即使存储 hash 与签名原封不动，事后
+//     篡改消息或 fields 也会被发现。
+//  4. 存储的签名必须对该 hash 校验通过。
 //
-// It fails closed: records lacking any integrity column return
-// ErrUnsignedRecord rather than passing silently — a tamperer who clears the
-// signature column must not get a free pass. Callers that deliberately allow
-// unsigned records can match this error with errors.Is.
+// 它失败即收紧：缺少任一完整性列的记录返回
+// ErrUnsignedRecord 而非静默通过——清空
+// signature 列的篡改者不能蒙混过关。确实允许
+// 未签名记录的调用方可用 errors.Is 匹配该错误。
 //
-// Scope limitation: signatures are per-record and independent. Whole-row
-// deletion, insertion, and reordering are NOT detectable by VerifyRecord —
-// pair it with an external anchor (row-count manifests, a periodic head/tail
-// hash checkpoint, or a database-level audit log) if those threats matter.
+// 范围限制：签名逐记录且彼此独立。整行
+// 删除、插入与重排无法被 VerifyRecord 发现——
+// 若这些威胁重要，请配合外部锚点（行数清单、周期性头/尾
+// hash 检查点，或数据库级审计日志）。
 func VerifyRecord(rec StoredRecord, recordHashHex string, signature []byte, verifier IntegrityVerifier) error {
 	if len(recordHashHex) == 0 || len(signature) == 0 || rec.SignAlgo == "" {
 		return ErrUnsignedRecord
@@ -478,9 +479,10 @@ func VerifyRecord(rec StoredRecord, recordHashHex string, signature []byte, veri
 	return nil
 }
 
-// isNilVerifier reports whether verifier is an untyped nil or a typed-nil
-// pointer/map/slice/func/chan value, guarding VerifyRecord against panics
-// when a caller fails to construct a verifier (e.g. a nil *MyVerifier).
+// isNilVerifier 判断 verifier 是无类型 nil，还是类型化 nil 的
+// 指针/map/slice/func/chan 值，防止调用方
+// 没能构造出校验器（如 nil *MyVerifier）时
+// VerifyRecord panic。
 func isNilVerifier(verifier IntegrityVerifier) bool {
 	if verifier == nil {
 		return true

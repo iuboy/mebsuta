@@ -1,4 +1,4 @@
-// file: file output with rotation
+// file: 带轮转的文件输出
 package main
 
 import (

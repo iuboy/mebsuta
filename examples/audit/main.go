@@ -1,4 +1,4 @@
-// audit: structured audit logging with event types
+// audit: 带事件类型的结构化审计日志
 package main
 
 import (

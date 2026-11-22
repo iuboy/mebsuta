@@ -9,81 +9,80 @@ import (
 	"github.com/iuboy/mebsuta"
 )
 
-// Retry/delay caps: every failed batch costs MaxRetries × (send deadline +
-// RetryDelay) during both runtime and Close's drain, so unbounded values make
-// shutdown unbounded. Mirrors syslog.MaxRetryDelay.
+// 重试/延迟上限：运行期与 Close 排空期间，每个失败批次都要付出
+// MaxRetries ×（发送 deadline + RetryDelay）的代价，无界取值会让
+// 关闭也无界。与 syslog.MaxRetryDelay 保持一致。
 const (
-	// MaxRetryDelay caps Config.RetryDelay.
+	// MaxRetryDelay 限制 Config.RetryDelay 上限。
 	MaxRetryDelay = 30 * time.Second
-	// MaxMaxRetries caps Config.MaxRetries.
-	MaxMaxRetries = 10
-	// maxBatchSize caps Config.BatchSize. processQueue pre-allocates the batch
-	// slice with this capacity, so a misconfigured huge BatchSize is a giant
-	// up-front allocation (an OOM face). Mirrors database.maxBatchSize.
+	// MaxRetriesLimit 限制 Config.MaxRetries 上限。
+	MaxRetriesLimit = 10
+	// maxBatchSize 限制 Config.BatchSize 上限。processQueue 会按该容量
+	// 预分配批次切片，误配的巨大 BatchSize 相当于一笔巨大的
+	// 预先分配（OOM 隐患）。与 database.maxBatchSize 保持一致。
 	maxBatchSize = 10000
 )
 
-// maskedToken is what String/GoString/Sanitize render for Config.Token.
+// maskedToken 是 String/GoString/Sanitize 渲染 Config.Token 时使用的内容。
 const maskedToken = "***"
 
-// ResultHandler receives the server's terminal RESULT notifications for a
-// batch (accepted / durable / rejected / released), mirroring
-// mbtago.ResultHandler. seq matches the value SendBatch assigned; level is the
-// corepb.ResultLevel enum name (e.g. "RESULT_LEVEL_REJECTED") or the client's
-// synthetic "timeout" when no terminal arrived in time.
+// ResultHandler 接收服务端针对某个批次的终态 RESULT 通知
+// （accepted / durable / rejected / released），与
+// mbtago.ResultHandler 对应。seq 与 SendBatch 分配的值一致；level 是
+// corepb.ResultLevel 的枚举名（如 "RESULT_LEVEL_REJECTED"），或在
+// 终态未按时到达时客户端合成的 "timeout"。
 type ResultHandler func(seq uint64, level string, code uint32, correlation string)
 
-// Config holds configuration for the MBTA log shipping handler.
+// Config 保存 MBTA 日志外发 handler 的配置。
 type Config struct {
-	// Connection settings
-	Server   string // Required: forwarder address (e.g., "localhost:7400")
-	AgentID  string // Required: agent identifier
-	Hostname string // Optional: defaults to system hostname
-	Token    string // Optional: authentication token
+	// 连接设置
+	Server   string // 必填：forwarder 地址（如 "localhost:7400"）
+	AgentID  string // 必填：agent 标识
+	Hostname string // 可选：默认取系统主机名
+	Token    string // 可选：认证 token
 
-	// TLS settings
+	// TLS 设置
 	CAFile             string
 	CertFile           string
 	KeyFile            string
 	ServerName         string
 	InsecureSkipVerify bool
 
-	// Behavior
-	Level        slog.Leveler  // Log level filter. Defaults to slog.LevelInfo.
-	BufferSize   int           // Internal batch buffer. 0 -> 1000.
-	FlushPeriod  time.Duration // How often to flush buffered records. 0 -> 5s.
-	BatchSize    int           // Maximum records per batch. 0 -> 100.
-	MaxRetries   int           // Maximum send retries. 0 -> 3.
-	RetryDelay   time.Duration // Base retry delay. 0 -> 1s.
-	ErrorTimeout time.Duration // Max wait when buffer is full for Error+ logs. 0 -> 1s.
-	CloseTimeout time.Duration // Max wait for the client's graceful close/drain. 0 -> 5s.
-	// Reconnect re-dials the forwarder between send retries when the session
-	// is no longer READY. nil -> true. Without it (or when reconnection keeps
-	// failing) batches are dropped after MaxRetries attempts.
-	Reconnect *bool // Auto-reconnect on disconnect. nil -> true.
+	// 行为
+	Level        slog.Leveler  // 日志级别过滤。默认 slog.LevelInfo。
+	BufferSize   int           // 内部批次缓冲。0 -> 1000。
+	FlushPeriod  time.Duration // 缓冲记录的刷新周期。0 -> 5s。
+	BatchSize    int           // 每批最大记录数。0 -> 100。
+	MaxRetries   int           // 最大发送重试次数。0 -> 3。
+	RetryDelay   time.Duration // 基础重试延迟。0 -> 1s。
+	ErrorTimeout time.Duration // 缓冲满时 Error+ 日志的最大等待。0 -> 1s。
+	CloseTimeout time.Duration // 客户端优雅关闭/排空的最大等待。0 -> 5s。
+	// Reconnect 在发送重试间、会话不再 READY 时重新拨号 forwarder。
+	// nil -> true。没有它（或重连持续失败）时，
+	// 批次在 MaxRetries 次尝试后被丢弃。
+	Reconnect *bool // 断连后自动重连。nil -> true。
 
-	// OnResult optionally receives the server's terminal RESULT notification
-	// for each batch (see ResultHandler).
+	// OnResult 可选地为每个批次接收服务端的终态 RESULT 通知
+	//（见 ResultHandler）。
 	//
-	// It MUST be provided here and not via the mbta-go client's
-	// SetResultHandler: that callback is a single slot, and the handler
-	// registers its own internal wrapper on it at construction (it counts
-	// rejected/released batches into Dropped and surfaces a rate-limited
-	// report). The underlying client is deliberately not exported, so the only
-	// way to observe RESULTs is this field; any future direct access to the
-	// client would silently overwrite the internal accounting.
+	// 必须在此提供，而不是通过 mbta-go 客户端的
+	// SetResultHandler：该回调是单槽位，handler 在构造时
+	// 已在其中注册了自己的内部包装（把 rejected/released 批次计入
+	// Dropped 并做限频上报）。底层客户端刻意不导出，观察
+	// RESULT 的唯一途径就是该字段；将来任何对客户端的直接
+	// 访问都会静默覆盖内部记账。
 	//
-	// SendBatch returns as soon as the batch is written to the wire — a nil
-	// error does NOT mean the server accepted the batch. OnResult (plus the
-	// handler's built-in drop counting) is the only rejection visibility.
+	// SendBatch 在批次写上线后立即返回——nil 错误
+	// 并不代表服务端接受了该批次。OnResult（加上
+	// handler 内置的丢弃计数）是唯一的拒绝可见性。
 	OnResult ResultHandler
 
-	// Metadata
-	Tag    string // Tag for SignalBatch. Defaults to "mebsuta".
-	Source string // Source identifier. Defaults to hostname.
+	// 元数据
+	Tag    string // SignalBatch 的 Tag。默认 "mebsuta"。
+	Source string // Source 标识。默认为主机名。
 }
 
-// Validate checks required fields and returns a normalized copy with defaults.
+// Validate 检查必填字段，并返回应用默认值后的规范化副本。
 func (c Config) Validate() (Config, error) {
 	if c.Server == "" {
 		return Config{}, &mebsuta.ConfigError{Field: "Server", Msg: "mbta server address is required"}
@@ -103,9 +102,9 @@ func (c Config) Validate() (Config, error) {
 	if c.BatchSize <= 0 {
 		c.BatchSize = defaultBatchSize
 	} else if c.BatchSize > maxBatchSize {
-		// Clamp instead of erroring: processQueue pre-allocates its batch slice
-		// with capacity BatchSize, and a misconfigured huge value is an up-front
-		// allocation bomb rather than something an error at dial time helps with.
+		// 钳制而非报错：processQueue 会按 BatchSize 容量预分配
+		// 批次切片，误配的巨大值是一颗预先分配炸弹，
+		// 拨号时报错并无帮助。
 		c.BatchSize = maxBatchSize
 	}
 	if c.MaxRetries <= 0 {
@@ -114,14 +113,14 @@ func (c Config) Validate() (Config, error) {
 	if c.RetryDelay <= 0 {
 		c.RetryDelay = defaultRetryDelay
 	}
-	// Caps keep Close's drain bounded: the final flush costs up to
-	// MaxRetries × (SendBatch deadline + RetryDelay), so unbounded values
-	// would make "bounded close" a lie.
+	// 上限让 Close 的排空有界：最终刷新最多花费
+	// MaxRetries ×（SendBatch deadline + RetryDelay），无界取值
+	// 会让“有界关闭”成为空话。
 	if c.RetryDelay > MaxRetryDelay {
 		c.RetryDelay = MaxRetryDelay
 	}
-	if c.MaxRetries > MaxMaxRetries {
-		c.MaxRetries = MaxMaxRetries
+	if c.MaxRetries > MaxRetriesLimit {
+		c.MaxRetries = MaxRetriesLimit
 	}
 	if c.ErrorTimeout <= 0 {
 		c.ErrorTimeout = time.Second
@@ -141,29 +140,29 @@ func (c Config) Validate() (Config, error) {
 		}
 	}
 	if c.Reconnect == nil {
-		c.Reconnect = mebsuta.BoolPtr(true)
+		c.Reconnect = mebsuta.Ptr(true)
 	}
 	return c, nil
 }
 
-// rawConfig is Config without its methods, so fmt can render the struct
-// without re-entering String/GoString (which would recurse forever).
+// rawConfig 是去掉方法的 Config，fmt 渲染结构体时
+// 不会重入 String/GoString（那会无限递归）。
 type rawConfig Config
 
-// Sanitize returns a copy of Config with the Token replaced by "***". Use it
-// before passing a Config to untrusted sinks (logs, error reports, dumps).
+// Sanitize 返回将 Token 替换为 "***" 的 Config 副本。将
+// Config 交给不受信任的 sink（日志、错误报告、转储）前请先调用。
 func (c Config) Sanitize() Config {
 	c.Token = maskedToken
 	return c
 }
 
-// String renders the config with the Token masked, so accidental logging of a
-// Config value ("%v" / "%+v") cannot leak the credential.
+// String 渲染配置时屏蔽 Token，意外打印 Config
+// 值（"%v" / "%+v"）时也不会泄漏凭据。
 func (c Config) String() string {
 	return fmt.Sprintf("%+v", rawConfig(c.Sanitize()))
 }
 
-// GoString is the "%#v" counterpart of String and masks the Token as well.
+// GoString 是 String 的 "%#v" 对应版本，同样屏蔽 Token。
 func (c Config) GoString() string {
 	return fmt.Sprintf("%#v", rawConfig(c.Sanitize()))
 }

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,9 +72,7 @@ func parseJSONLines(t *testing.T, lines []string) []map[string]any {
 	result := make([]map[string]any, 0, len(lines))
 	for _, line := range lines {
 		var m map[string]any
-		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatalf("invalid JSON line: %q: %v", line, err)
-		}
+		require.NoError(t, json.Unmarshal([]byte(line), &m), "invalid JSON line: %q", line)
 		result = append(result, m)
 	}
 	return result
@@ -109,15 +109,11 @@ func TestChain_SamplingAsyncStdout(t *testing.T) {
 			}
 		}
 	}
-	if initialCount != 5 {
-		t.Errorf("expected 5 initial records, got %d", initialCount)
-	}
+	require.Equal(t, 5, initialCount, "expected 5 initial records")
 
 	// After initial, only every 3rd should pass (Thereafter=3)
 	// Total expected: 5 (initial) + ~5 (sampled from remaining 15) = ~10
-	if len(entries) > 15 {
-		t.Errorf("sampling should reduce output, got %d entries", len(entries))
-	}
+	require.LessOrEqual(t, len(entries), 15, "sampling should reduce output")
 }
 
 // TestChain_SamplingAsyncFile verifies Sampling -> Async -> File writes
@@ -140,9 +136,7 @@ func TestChain_SamplingAsyncFile(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "test.log"))
 	require.NoError(t, err)
 	lines := splitLines(string(data))
-	if len(lines) != 50 {
-		t.Errorf("Initial=100 means all 50 should pass, got %d", len(lines))
-	}
+	require.Equal(t, 50, len(lines), "Initial=100 means all 50 should pass")
 }
 
 // TestChain_MetricsSamplingAsync verifies Metrics -> Sampling -> Async
@@ -163,14 +157,10 @@ func TestChain_MetricsSamplingAsync(t *testing.T) {
 	}
 	require.NoError(t, CloseAll(logger.Handler()))
 
-	if mm.handleLatency == 0 {
-		t.Error("MetricsHandler should have recorded handle latency")
-	}
+	require.NotZero(t, mm.handleLatency, "MetricsHandler should have recorded handle latency")
 
 	lines := buf.Lines()
-	if len(lines) != 5 {
-		t.Errorf("expected 5 output lines, got %d", len(lines))
-	}
+	require.Equal(t, 5, len(lines), "expected 5 output lines")
 }
 
 // TestChain_MultiStdoutFile verifies Multi([Stdout, File]) fans out correctly.
@@ -194,21 +184,15 @@ func TestChain_MultiStdoutFile(t *testing.T) {
 
 	// Stdout should have the message
 	stdoutLines := buf.Lines()
-	if len(stdoutLines) != 1 {
-		t.Fatalf("stdout: expected 1 line, got %d", len(stdoutLines))
-	}
+	require.Len(t, stdoutLines, 1, "stdout: expected 1 line")
 	entry := parseJSONLines(t, stdoutLines)
-	if entry[0]["message"] != "fanout test" {
-		t.Errorf("stdout message = %v, want 'fanout test'", entry[0]["message"])
-	}
+	require.Equal(t, "fanout test", entry[0]["message"], "stdout message")
 
 	// File should also have the message
 	data, err := os.ReadFile(filepath.Join(dir, "test.log"))
 	require.NoError(t, err)
 	fileLines := splitLines(string(data))
-	if len(fileLines) != 1 {
-		t.Fatalf("file: expected 1 line, got %d", len(fileLines))
-	}
+	require.Len(t, fileLines, 1, "file: expected 1 line")
 }
 
 // TestChain_ReverseOrderAsyncSampling verifies Async -> Sampling (reversed order)
@@ -230,9 +214,7 @@ func TestChain_ReverseOrderAsyncSampling(t *testing.T) {
 	lines := buf.Lines()
 	// With reversed order, sampling happens before async buffering.
 	// Initial=3 means first 3 pass, rest are sampled away.
-	if len(lines) != 3 {
-		t.Errorf("expected 3 lines (Initial=3), got %d", len(lines))
-	}
+	require.Len(t, lines, 3, "expected 3 lines (Initial=3)")
 }
 
 // TestChain_AuditLevelNotDropped verifies Audit records pass through
@@ -265,19 +247,13 @@ func TestChain_AuditLevelNotDropped(t *testing.T) {
 	for _, e := range entries {
 		if e["message"] == "audit event" {
 			found = true
-			if e["level"] != "AUDIT" {
-				t.Errorf("audit level = %v, want AUDIT", e["level"])
-			}
+			require.Equal(t, "AUDIT", e["level"], "audit level")
 		}
 	}
-	if !found {
-		t.Errorf("audit record not found in %d entries", len(entries))
-	}
+	require.True(t, found, "audit record not found in %d entries", len(entries))
 
 	// Only 3 normal (Initial=3) + 1 audit = 4 total
-	if len(entries) != 4 {
-		t.Errorf("expected 4 entries (3 normal + 1 audit), got %d", len(entries))
-	}
+	require.Len(t, entries, 4, "expected 4 entries (3 normal + 1 audit)")
 }
 
 // AuditFunc logs at Audit level using the provided logger directly.
@@ -304,9 +280,7 @@ func TestChain_CloseAllPropagation(t *testing.T) {
 	// Verify file was written before close
 	data, err := os.ReadFile(filepath.Join(dir, "test.log"))
 	require.NoError(t, err)
-	if len(data) == 0 {
-		t.Error("file should have data after CloseAll")
-	}
+	require.NotEmpty(t, data, "file should have data after CloseAll")
 }
 
 // TestChain_AuditBypassesAsyncBuffer verifies that Error/Audit level records
@@ -349,9 +323,7 @@ func TestChain_AuditBypassesAsyncBuffer(t *testing.T) {
 			}
 		}
 	}
-	if !found {
-		t.Errorf("audit record not found in %d output lines", len(lines))
-	}
+	require.True(t, found, "audit record not found in %d output lines", len(lines))
 }
 
 // mockSelfBuffered is a minimal handler implementing SelfBufferedHandler,
@@ -395,7 +367,159 @@ func TestChain_CloseAllThroughDecorators(t *testing.T) {
 	// Verify file was written and closed
 	data, err := os.ReadFile(filepath.Join(dir, "test.log"))
 	require.NoError(t, err)
-	if len(data) == 0 {
-		t.Error("file should have data after CloseAll through decorators")
+	require.NotEmpty(t, data, "file should have data after CloseAll through decorators")
+}
+
+// closeCountHandler tracks how many times Close was called. It embeds handlerCore
+// to opt into CloseAll deduplication (the contract built-in handlers satisfy).
+type closeCountHandler struct {
+	handlerCore
+	closeCount atomic.Int32
+	inner      slog.Handler
+}
+
+func (h *closeCountHandler) Enabled(ctx context.Context, lv slog.Level) bool {
+	return h.inner.Enabled(ctx, lv)
+}
+func (h *closeCountHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.inner.Handle(ctx, r)
+}
+func (h *closeCountHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &closeCountHandler{handlerCore: newHandlerCore(), inner: h.inner.WithAttrs(attrs)}
+}
+func (h *closeCountHandler) WithGroup(name string) slog.Handler {
+	return &closeCountHandler{handlerCore: newHandlerCore(), inner: h.inner.WithGroup(name)}
+}
+func (h *closeCountHandler) Close() error {
+	h.closeCount.Add(1)
+	return nil
+}
+
+// TestCloseAll_SharedHandler_Dedup verifies that when fanout branches share the same
+// terminal handler that opts into deduplication (handlerIdentifier), CloseAll calls
+// Close only once.
+func TestCloseAll_SharedHandler_Dedup(t *testing.T) {
+	inner, err := NewStdoutHandler(StdoutConfig{})
+	require.NoError(t, err)
+	shared := &closeCountHandler{handlerCore: newHandlerCore(), inner: inner}
+
+	// Build: safeMulti([shared, shared])
+	multi := safeMultiHandler([]slog.Handler{shared, shared}, nil)
+
+	err = CloseAll(multi)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), shared.closeCount.Load(),
+		"shared handler should be closed exactly once, got %d", shared.closeCount.Load())
+}
+
+// selfRefHandler implements handlerUnwrapper but returns itself from unwrapHandler.
+// It deliberately does NOT implement handlerIdentifier, modeling a third-party
+// handler. Termination is guaranteed by maxUnwrapDepth (not identity), and repeated
+// Close calls are absorbed by idempotent Close — the documented contract for
+// handlers that do not opt into deduplication.
+type selfRefHandler struct {
+	closed atomic.Bool
+	count  atomic.Int32
+}
+
+func (h *selfRefHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (h *selfRefHandler) Handle(context.Context, slog.Record) error { return nil }
+func (h *selfRefHandler) WithAttrs(attrs []slog.Attr) slog.Handler  { return h }
+func (h *selfRefHandler) WithGroup(name string) slog.Handler        { return h }
+func (h *selfRefHandler) Close() error {
+	if h.closed.CompareAndSwap(false, true) {
+		h.count.Add(1)
 	}
+	return nil
+}
+func (h *selfRefHandler) unwrapHandler() slog.Handler { return h } // returns self!
+
+// TestCloseAll_SelfReferencingHandler verifies that a handler whose unwrapHandler
+// returns itself does not cause infinite recursion (terminated by maxUnwrapDepth),
+// and that idempotent Close absorbs the repeated calls.
+func TestCloseAll_SelfReferencingHandler(t *testing.T) {
+	h := &selfRefHandler{}
+	err := CloseAll(h)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), h.count.Load(), "idempotent Close should record exactly one effective close")
+}
+
+// errorOnCloseHandler returns an error on Close for testing error aggregation.
+type errorOnCloseHandler struct {
+	err error
+}
+
+func (h *errorOnCloseHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (h *errorOnCloseHandler) Handle(context.Context, slog.Record) error { return nil }
+func (h *errorOnCloseHandler) WithAttrs(attrs []slog.Attr) slog.Handler  { return h }
+func (h *errorOnCloseHandler) WithGroup(name string) slog.Handler        { return h }
+func (h *errorOnCloseHandler) Close() error                              { return h.err }
+
+// TestCloseAll_ErrorAggregation verifies CloseAll collects errors from all layers.
+func TestCloseAll_ErrorAggregation(t *testing.T) {
+	err1 := errors.New("close error 1")
+	err2 := errors.New("close error 2")
+
+	h1 := &errorOnCloseHandler{err: err1}
+	h2 := &errorOnCloseHandler{err: err2}
+	multi := safeMultiHandler([]slog.Handler{h1, h2}, nil)
+
+	err := CloseAll(multi)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "close error 1")
+	require.Contains(t, err.Error(), "close error 2")
+}
+
+// unwrapSpy tracks whether unwrapHandler was called.
+type unwrapSpy struct {
+	inner     slog.Handler
+	unwrapped atomic.Int32
+}
+
+func (h *unwrapSpy) Enabled(ctx context.Context, lv slog.Level) bool { return h.inner.Enabled(ctx, lv) }
+func (h *unwrapSpy) Handle(ctx context.Context, r slog.Record) error { return h.inner.Handle(ctx, r) }
+func (h *unwrapSpy) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &unwrapSpy{inner: h.inner.WithAttrs(attrs)}
+}
+func (h *unwrapSpy) WithGroup(name string) slog.Handler {
+	return &unwrapSpy{inner: h.inner.WithGroup(name)}
+}
+func (h *unwrapSpy) unwrapHandler() slog.Handler {
+	h.unwrapped.Add(1)
+	return h.inner
+}
+
+// TestCloseAll_UnwrapsMiddlewareChain verifies CloseAll recursively unwraps
+// each middleware layer.
+func TestCloseAll_UnwrapsMiddlewareChain(t *testing.T) {
+	cfg := FileConfig{}
+	fileH, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
+	require.NoError(t, err)
+
+	// Build: unwrapSpy -> Async -> File
+	spy := &unwrapSpy{inner: fileH}
+
+	err = CloseAll(spy)
+	require.NoError(t, err)
+	require.Equal(t, int32(1), spy.unwrapped.Load(), "unwrapHandler should be called once")
+}
+
+// plainHandler implements slog.Handler but neither handlerIdentifier nor
+// handlerUnwrapper, modeling a third-party handler that does not opt into
+// CloseAll deduplication.
+type plainHandler struct{ _ int }
+
+func (h *plainHandler) Enabled(context.Context, slog.Level) bool  { return false }
+func (h *plainHandler) Handle(context.Context, slog.Record) error { return nil }
+func (h *plainHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
+func (h *plainHandler) WithGroup(string) slog.Handler             { return h }
+
+// TestHandlerIdentity_NoFallbackForThirdParty verifies that a handler without
+// handlerIdentifier yields no identity — closeAll does not attempt any unsafe
+// or reflect-based probing. Such handlers are not deduplicated; cycle protection
+// comes from maxUnwrapDepth and repeated Close is absorbed by idempotent Close.
+func TestHandlerIdentity_NoFallbackForThirdParty(t *testing.T) {
+	h := &plainHandler{}
+	_, ok := handlerIdentity(h)
+	require.False(t, ok, "third-party handler without handlerIdentifier must not get an identity")
 }

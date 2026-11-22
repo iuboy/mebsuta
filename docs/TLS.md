@@ -34,7 +34,7 @@ syslogH, err := syslog.NewHandler(syslog.Config{
     Secure:     true,
     Tag:        "myapp",
     Facility:   1,
-    Reconnect:  mebsuta.BoolPtr(true),
+    Reconnect:  mebsuta.Ptr(true),
     RetryDelay: 500 * time.Millisecond,
     RFC5424:    true,
 })
@@ -51,3 +51,21 @@ syslogH, err := syslog.NewHandler(syslog.Config{
 | `RFC5424` | bool | `false` | 使用 RFC5424 格式 |
 
 标准端口：`514`（明文）、`601`（RFC5424 明文）、`6514`（TLS，推荐）。
+
+
+## telemetry（OTLP/HTTP）TLS / mTLS
+
+`telemetry.Config` 四件套：`TLSCAFile`（私有 CA，缺省系统池）、
+`TLSCertFile`/`TLSKeyFile`（mTLS 客户端身份，必须成对）、`TLSServerName`
+（SAN 覆写）。裸 `host:port` + TLS 字段升级为 TLS；显式 `http://` + TLS
+字段被 `Validate` 拒绝。MinVersion TLS 1.2（对齐 syslog）。
+
+## database（PostgreSQL / openGauss）mTLS
+
+pgx DSN 原生支持，无需代码面：
+
+```
+postgres://u@h/db?sslmode=verify-full&sslrootcert=/etc/ca.pem&sslcert=/etc/client.pem&sslkey=/etc/client.key
+```
+
+mebsuta 侧 `dsnHasTLS` 仅用于无 TLS 告警启发；证书校验完全由驱动执行。

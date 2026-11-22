@@ -166,9 +166,7 @@ func TestWithContextExtractor_EmptyGroupNoMutation(t *testing.T) {
 	logger.Info("first")
 	logger.Info("second")
 
-	if called != 2 {
-		t.Fatalf("expected 2 calls, got %d", called)
-	}
+	require.Equal(t, 2, called)
 	// Each call should have exactly 1 extracted attr
 	count := 0
 	for _, a := range capturedAttrs {
@@ -176,9 +174,7 @@ func TestWithContextExtractor_EmptyGroupNoMutation(t *testing.T) {
 			count++
 		}
 	}
-	if count != 1 {
-		t.Errorf("expected exactly 1 ctx_key attr in last call, got %d", count)
-	}
+	require.Equal(t, 1, count, "expected exactly 1 ctx_key attr in last call")
 }
 
 type captureAttrsHandler struct {
@@ -195,3 +191,37 @@ func (h *captureAttrsHandler) Handle(_ context.Context, r slog.Record) error {
 }
 func (h *captureAttrsHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *captureAttrsHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestContextExtractor_PanicRecovered: an extractor that panics (classic
+// unchecked ctx.Value type assertion) must not kill the log call — the record
+// is still logged without the context attrs, and the panic is reported.
+func TestContextExtractor_PanicRecovered(t *testing.T) {
+	var buf mutexBuffer
+	inner := newContractJSONHandler(&buf, nil)
+	h := WithContextExtractor(inner, func(ctx context.Context) []slog.Attr {
+		_ = ctx.Value(traceKey{}).(string) // panics when key absent
+		return nil
+	})
+
+	var reported int
+	h.(*contextExtractorHandler).setErrorHandler(func(*HandlerError) { reported++ })
+
+	logger := slog.New(h)
+	logger.Info("must survive")
+
+	require.Contains(t, buf.String(), "must survive", "record lost after extractor panic")
+	require.NotZero(t, reported, "extractor panic was not reported to the error handler")
+}
+
+// TestContextExtractor_NilExtractorPassthrough: nil extractor must degrade to
+// a no-op pass-through, NOT replace the whole output chain with a discard
+// handler (which silently ate every log including audit records).
+func TestContextExtractor_NilExtractorPassthrough(t *testing.T) {
+	var buf mutexBuffer
+	inner := newContractJSONHandler(&buf, nil)
+	h := WithContextExtractor(inner, nil)
+	_, same := h.(*contractJSONHandler)
+	require.True(t, same, "nil extractor should return inner unchanged, got %T", h)
+	slog.New(h).Info("still logged")
+	require.Contains(t, buf.String(), "still logged", "nil extractor discarded the output chain")
+}

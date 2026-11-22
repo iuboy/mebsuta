@@ -1,4 +1,4 @@
-// sampling: time-window log sampling
+// sampling: 时间窗口日志采样
 package main
 
 import (

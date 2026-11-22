@@ -1,14 +1,13 @@
-// Package mebsutatest provides test utilities for mebsuta log handlers.
+// Package mebsutatest 为 mebsuta 日志 handler 提供测试工具。
 //
-// # TEST-ONLY
+// # 仅限测试
 //
-// This package is for test assertions, not production use. CaptureHandler
-// retains every record it receives in memory without bound — a long-running
-// process logging through it grows until the process runs out of memory.
-// Never install it in a production handler chain; use a real sink handler
-// (stdout, file, syslog, database) instead.
+// 本包用于测试断言，不用于生产。CaptureHandler 会把收到的每条记录
+// 无上限地留在内存——长时间运行的进程经它打日志会持续膨胀，直到内存
+// 耗尽。绝不要把它装进生产 handler 链；请使用真正的落盘 handler
+// （stdout、文件、syslog、数据库）。
 //
-// Typical usage:
+// 典型用法：
 //
 //	h := mebsutatest.NewCaptureHandler()
 //	logger := slog.New(h)
@@ -24,7 +23,7 @@ import (
 	"time"
 )
 
-// CapturedRecord holds a single captured log record with all its attributes.
+// CapturedRecord 持有一条被捕获的日志记录及其全部属性。
 type CapturedRecord struct {
 	Time    time.Time
 	Level   slog.Level
@@ -32,30 +31,30 @@ type CapturedRecord struct {
 	Attrs   []slog.Attr
 }
 
-// CaptureHandler is a slog.Handler that captures all records in memory
-// for test assertions. It is safe for concurrent use.
+// CaptureHandler 是把所有记录捕获到内存供测试断言的 slog.Handler。
+// 并发安全。
 type CaptureHandler struct {
 	mu      sync.Mutex
 	records []CapturedRecord
 	enabled slog.Level
 }
 
-// NewCaptureHandler creates a CaptureHandler that accepts all log levels.
+// NewCaptureHandler 创建接受所有日志级别的 CaptureHandler。
 func NewCaptureHandler() *CaptureHandler {
 	return &CaptureHandler{enabled: slog.LevelDebug}
 }
 
-// NewCaptureHandlerAt creates a CaptureHandler that only accepts levels >= min.
+// NewCaptureHandlerAt 创建只接受级别 >= min 的 CaptureHandler。
 func NewCaptureHandlerAt(min slog.Level) *CaptureHandler {
 	return &CaptureHandler{enabled: min}
 }
 
-// Enabled implements slog.Handler.
+// Enabled 实现 slog.Handler。
 func (h *CaptureHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return level >= h.enabled
 }
 
-// Handle implements slog.Handler.
+// Handle 实现 slog.Handler。
 func (h *CaptureHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -72,17 +71,17 @@ func (h *CaptureHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs implements slog.Handler.
+// WithAttrs 实现 slog.Handler。
 func (h *CaptureHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &captureAttrsHandler{parent: h, attrs: attrs}
 }
 
-// WithGroup implements slog.Handler.
+// WithGroup 实现 slog.Handler。
 func (h *CaptureHandler) WithGroup(name string) slog.Handler {
 	return &captureGroupHandler{parent: h, group: name}
 }
 
-// Records returns all captured records. The returned slice is a copy.
+// Records 返回全部被捕获的记录。返回的切片是副本。
 func (h *CaptureHandler) Records() []CapturedRecord {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -91,21 +90,21 @@ func (h *CaptureHandler) Records() []CapturedRecord {
 	return out
 }
 
-// Len returns the number of captured records.
+// Len 返回被捕获记录的数量。
 func (h *CaptureHandler) Len() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.records)
 }
 
-// Reset clears all captured records.
+// Reset 清空全部被捕获的记录。
 func (h *CaptureHandler) Reset() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.records = nil
 }
 
-// Last returns the most recently captured record, or false if none.
+// Last 返回最近捕获的一条记录；没有记录时返回 false。
 func (h *CaptureHandler) Last() (CapturedRecord, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -132,16 +131,15 @@ func (h *captureAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 			prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 			return true
 		})
-		// Apply group prefix to h.attrs as well so that
-		// WithGroup("g").WithAttrs(slog.String("k","v")) outputs "g.k"="v".
+		// 对 h.attrs 同样施加 group 前缀，使
+		// WithGroup("g").WithAttrs(slog.String("k","v")) 输出 "g.k"="v"。
 		for _, a := range h.attrs {
 			prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 		}
 		return h.parent.Handle(ctx, prefixed)
 	}
-	// Clone before AddAttrs (slog contract): in fan-out setups the original
-	// record is shared with sibling handlers, and mutating it would leak the
-	// capture preset attrs into their records.
+	// AddAttrs 前先 Clone（slog 契约）：在 fan-out 场景中原始记录与兄弟
+	// handler 共享，直接修改会把捕获的预置属性泄漏进它们的记录。
 	newR := r.Clone()
 	newR.AddAttrs(h.attrs...)
 	r = newR
@@ -149,8 +147,8 @@ func (h *captureAttrsHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *captureAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// Allocate a fresh slice so a shared backing array can't be corrupted by
-	// a later append, matching the immutability contract of WithAttrs.
+	// 分配全新切片，使共享底层数组不会因后续 append 被污染，
+	// 符合 WithAttrs 的不可变契约。
 	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
 	merged = append(merged, h.attrs...)
 	merged = append(merged, attrs...)
@@ -158,8 +156,8 @@ func (h *captureAttrsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *captureAttrsHandler) WithGroup(name string) slog.Handler {
-	// Join groups so that WithGroup("g1").WithAttrs(...).WithGroup("g2")
-	// produces "g1.g2" rather than discarding "g1".
+	// 拼接 group，使 WithGroup("g1").WithAttrs(...).WithGroup("g2")
+	// 产出 "g1.g2" 而不是丢弃 "g1"。
 	joinedGroup := name
 	if h.group != "" {
 		joinedGroup = h.group + "." + name
@@ -183,8 +181,8 @@ func (h *captureGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 		prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 		return true
 	})
-	// Apply group prefix to h.attrs as well so that
-	// WithGroup("g").WithAttrs(slog.String("k","v")) outputs "g.k"="v".
+	// 对 h.attrs 同样施加 group 前缀，使
+	// WithGroup("g").WithAttrs(slog.String("k","v")) 输出 "g.k"="v"。
 	for _, a := range h.attrs {
 		prefixed.AddAttrs(slog.Attr{Key: h.group + "." + a.Key, Value: a.Value})
 	}
@@ -192,9 +190,8 @@ func (h *captureGroupHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *captureGroupHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// Preserve attrs accumulated on the group handler — the previous code
-	// dropped h.attrs entirely, so WithGroup("g").WithAttrs([a1]).WithAttrs([a2])
-	// would lose a1.
+	// 保留 group handler 上累积的属性——此前的代码会整体丢弃 h.attrs，
+	// 导致 WithGroup("g").WithAttrs([a1]).WithAttrs([a2]) 丢失 a1。
 	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
 	merged = append(merged, h.attrs...)
 	merged = append(merged, attrs...)

@@ -6,51 +6,41 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sync"
 	"sync/atomic"
-	"time"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
-// ReportError invokes the ErrorHandler if non-nil.
-func ReportError(eh ErrorHandler, he *HandlerError) {
-	if eh != nil {
-		if he.Time.IsZero() {
-			he.Time = time.Now()
-		}
-		eh(he)
-	}
-}
-
-// safeMultiHandler wraps multiple sub-handlers, adding panic recovery to each call. Prevents a single handler panic from crashing the entire log call.
+// safeMultiHandler 包裹多个子 handler，为每次调用加上 panic 恢复。防止单个 handler 的 panic 崩溃整条日志调用。
 func safeMultiHandler(handlers []slog.Handler, eh ErrorHandler) slog.Handler {
-	p := new(atomic.Pointer[ErrorHandler])
-	p.Store(&eh)
 	return &safeMulti{
 		handlerCore:  newHandlerCore(),
 		handlers:     handlers,
-		errorHandler: p,
+		errorHandler: handlerkit.NewErrorSlot(eh),
 	}
 }
 
-// safeMulti fans out log records to multiple handlers with per-handler panic recovery.
-// errorHandler is an *atomic.Pointer[ErrorHandler] so that clones produced by
-// WithAttrs/WithGroup share the same ErrorHandler slot: calling setErrorHandler
-// on the original or any clone is visible to all, and a concurrent swap cannot
-// race a Handle-path load (the previous bare *ErrorHandler write/read was a
-// data race — set during logger construction raced concurrent Handle calls).
+// safeMulti 把日志记录 fanout 到多个 handler，并带逐 handler 的 panic
+// 恢复。errorHandler 是 *handlerkit.ErrorSlot，使
+// WithAttrs/WithGroup 产生的克隆共享同一个 ErrorHandler 槽位：在原始
+// 或任一克隆上调用 setErrorHandler 对全部可见，且并发换入不会与
+// Handle 路径的读取竞争（此前裸 *ErrorHandler 的写/读是数据竞争
+// ——logger 构造期间的赋值与并发 Handle 调用相争）。
 type safeMulti struct {
 	handlerCore
 	handlers     []slog.Handler
-	errorHandler *atomic.Pointer[ErrorHandler]
+	errorHandler *handlerkit.ErrorSlot
 }
 
 func (h *safeMulti) Close() error {
-	visited := &sync.Map{}
+	// 直接调用路径(不经 CloseAll):以独立去重口径对全部子 handler 走
+	// 同一关闭遍历。CloseAll 的路径会跳过 safeMulti 的 Close、由 fanout
+	// 下降直接关闭子级(见 closeVisit),两条路径互不叠加。
 	var errs []error
+	visit := closeVisit(&errs)
+	visited := map[uint64]struct{}{}
 	for _, hh := range h.handlers {
-		if err := closeAll(hh, visited, 0); err != nil {
-			errs = append(errs, err)
-		}
+		_ = walkDepth(hh, visit, visited, 0)
 	}
 	return errors.Join(errs...)
 }
@@ -64,11 +54,11 @@ func (h *safeMulti) Enabled(ctx context.Context, level slog.Level) bool {
 	return false
 }
 
-// handleWithRecovery calls handler.Handle with panic recovery. Panics are reported via the error handler and converted to nil errors.
+// handleWithRecovery 带 panic 恢复地调用 handler.Handle。panic 经错误处理器上报并转换为 nil 错误。
 func (h *safeMulti) handleWithRecovery(handler slog.Handler, ctx context.Context, r slog.Record) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
-			ReportError(LoadErrorHandler(h.errorHandler), &HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
+			h.errorHandler.Report(&HandlerError{Component: "multi", Operation: "handle", Err: fmt.Errorf("handler panic recovered: %v", p)})
 			err = nil
 		}
 	}()
@@ -77,7 +67,7 @@ func (h *safeMulti) handleWithRecovery(handler slog.Handler, ctx context.Context
 
 func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 	if len(h.handlers) == 1 {
-		// Single handler: call directly without goroutine overhead
+		// 单 handler：直接调用，无 goroutine 开销
 		hh := h.handlers[0]
 		if !hh.Enabled(ctx, r.Level) {
 			return nil
@@ -85,46 +75,22 @@ func (h *safeMulti) Handle(ctx context.Context, r slog.Record) error {
 		return h.handleWithRecovery(hh, ctx, r)
 	}
 
-	// Filter to only enabled handlers.
-	var enabled []slog.Handler
-	for _, hh := range h.handlers {
-		if hh.Enabled(ctx, r.Level) {
-			enabled = append(enabled, hh)
-		}
-	}
-	if len(enabled) == 0 {
-		return nil
-	}
-
-	// For 2-3 enabled handlers, use sequential calls to avoid goroutine scheduling overhead.
-	// Clone the record once per handler to prevent data races on slog.Record internals.
-	if len(enabled) <= 3 {
-		var errs []error
-		for _, hh := range enabled {
-			if err := h.handleWithRecovery(hh, ctx, r.Clone()); err != nil {
-				errs = append(errs, err)
-			}
-		}
-		return errors.Join(errs...)
-	}
-
-	// For 4+ enabled handlers, fan out with goroutines.
+	// 多 handler 顺序分发。曾经 4 个及以上启用 handler 走 goroutine
+	// fanout，但基准显示每条记录 spawn N 个 goroutine 的调度开销在
+	// 10–28µs/op 间波动（顺序路径稳定在 ~2µs）；slog 的设计预期是
+	// handler 快速返回，需要解耦慢消费者的链应使用 UseAsync（其后台
+	// worker 才是做这件事的正确位置）。顺序调用同时让 errors.Join 的
+	// 错误顺序确定。每个 handler 克隆一次记录，防止 slog.Record 内部
+	// 的数据竞争。
 	var errs []error
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-
-	for _, hh := range enabled {
-		wg.Add(1)
-		go func(handler slog.Handler) {
-			defer wg.Done()
-			if err := h.handleWithRecovery(handler, ctx, r.Clone()); err != nil {
-				mu.Lock()
-				errs = append(errs, err)
-				mu.Unlock()
-			}
-		}(hh)
+	for _, hh := range h.handlers {
+		if !hh.Enabled(ctx, r.Level) {
+			continue
+		}
+		if err := h.handleWithRecovery(hh, ctx, r.Clone()); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	wg.Wait()
 	return errors.Join(errs...)
 }
 
@@ -152,33 +118,32 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 	}
 }
 func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler.Store(&fn)
+	h.errorHandler.Store(fn)
 	for _, hh := range h.handlers {
 		propagateErrorHandler(hh, fn, 0)
 	}
 }
 
-// errorHandlerSetter is an internal interface for handlers that support custom error handling.
+// errorHandlerSetter 是支持自定义错误处理的 handler 的内部接口。
 type errorHandlerSetter interface {
 	setErrorHandler(fn ErrorHandler)
 }
 
-// ErrorHandlerSetter is the exported form of errorHandlerSetter for handlers
-// in other packages (database, syslog, mbta), which cannot implement an
-// interface with an unexported method. Before this interface existed,
-// WithErrorHandler silently never reached those sub-package handlers.
+// ErrorHandlerSetter 是 errorHandlerSetter 的导出形式，供其他包的
+// handler（database、syslog、mbta）实现——它们无法实现含未导出方法的
+// 接口。该接口出现之前，WithErrorHandler 静默地永远到不了那些子包
+// handler。
 type ErrorHandlerSetter interface {
 	SetErrorHandler(fn ErrorHandler)
 }
 
-// propagateErrorHandler recursively unwraps the decorator chain, injecting
-// errorHandler into all handlers that support it. Depth is bounded by
-// maxUnwrapDepth so a self-referential third-party unwrapHandler chain
-// cannot overflow the stack during logger construction.
+// propagateErrorHandler 递归展开装饰器链，把 errorHandler 注入所有
+// 支持它的 handler。深度受 maxUnwrapDepth 限制，防止自引用的第三方
+// unwrapHandler 链在 logger 构造期间栈溢出。
 func propagateErrorHandler(h slog.Handler, fn ErrorHandler, depth int) {
-	// Skip nil: do not overwrite handler defaults that were set at construction time.
-	// When buildHandler is called without WithErrorHandler, fn is nil, and each
-	// handler already initialized with DefaultErrorHandler should keep it.
+	// 跳过 nil：不要覆盖构造时设置的 handler 默认值。
+	// buildHandler 不带 WithErrorHandler 调用时 fn 为 nil，每个已用
+	// DefaultErrorHandler 初始化的 handler 应保留原值。
 	if fn == nil || h == nil || depth > maxUnwrapDepth {
 		return
 	}
@@ -188,49 +153,70 @@ func propagateErrorHandler(h slog.Handler, fn ErrorHandler, depth int) {
 	case ErrorHandlerSetter:
 		s.SetErrorHandler(fn)
 	}
-	if uw, ok := h.(handlerUnwrapper); ok {
-		propagateErrorHandler(uw.unwrapHandler(), fn, depth+1)
+	if inner, ok := unwrapOf(h); ok {
+		propagateErrorHandler(inner, fn, depth+1)
 	}
 }
 
-// handlerUnwrapper is an internal interface for decorator implementations, used by CloseAll for recursive unwrapping.
+// handlerUnwrapper 是装饰器实现的内部接口，CloseAll 借它递归展开。
+// 它只能被根包内的类型满足(未导出方法);跨包装饰器(handlerkit 的
+// AttrsSub/GroupSub)实现导出的 UnwrapHandler 方法,经 unwrapOf 统一识别。
 type handlerUnwrapper interface {
 	unwrapHandler() slog.Handler
 }
 
-// CloseAll recursively closes all resources in the handler and decorator chain that implement io.Closer.
-// Built-in handlers are deduplicated by stable id; cycle protection is guaranteed
-// by maxUnwrapDepth regardless of identity.
+// CloseAll 递归关闭 handler 及装饰器链中所有实现 io.Closer 的资源。
+// 内置 handler 按稳定 id 去重；无论标识如何，环保护均由
+// maxUnwrapDepth 保证。
 func CloseAll(handler slog.Handler) error {
-	return closeAll(handler, &sync.Map{}, 0)
+	var errs []error
+	_ = walkHandlers(handler, closeVisit(&errs))
+	return errors.Join(errs...)
 }
 
-// handlerSeq assigns a unique, stable id to each built-in handler instance,
-// replacing pointer-based identity so the close path no longer relies on
-// unsafe.Pointer or interface-layout probing.
+// closeVisit 返回关闭单个节点的 visit 函数:在闭包内收集错误而非中止
+// 遍历,使 CloseAll 覆盖全图后一次性 Join。*safeMulti 自身无资源,
+// 跳过它的 Close——其子 handler 由 walkHandlers 的 fanout 下降直接
+// 关闭(与本遍历共享同一去重口径);safeMulti.Close 仅供不经 CloseAll
+// 的直接调用使用,两条路径互不叠加。
+func closeVisit(errs *[]error) func(slog.Handler) error {
+	return func(h slog.Handler) error {
+		if _, ok := h.(*safeMulti); ok {
+			return nil
+		}
+		if closer, ok := h.(io.Closer); ok {
+			if err := closer.Close(); err != nil {
+				*errs = append(*errs, err)
+			}
+		}
+		return nil
+	}
+}
+
+// handlerSeq 为每个内置 handler 实例分配唯一且稳定的 id，
+// 取代基于指针的身份判定，使关闭路径不再依赖 unsafe.Pointer
+// 或接口布局探测。
 var handlerSeq atomic.Uint64
 
-// handlerCore equips a built-in handler with a stable identity for CloseAll
-// deduplication. Embed it in any concrete handler type; the embedded handlerID
-// method satisfies handlerIdentifier.
+// handlerCore 为内置 handler 提供稳定身份，供 CloseAll 去重。
+// 嵌入任意具体 handler 类型即可；嵌入的 handlerID 方法即满足
+// handlerIdentifier。
 type handlerCore struct{ id uint64 }
 
 func newHandlerCore() handlerCore { return handlerCore{id: handlerSeq.Add(1)} }
 
 func (c handlerCore) handlerID() uint64 { return c.id }
 
-// handlerIdentifier is an internal interface for handlers that opt into CloseAll
-// deduplication. All built-in handlers satisfy it via embedded handlerCore.
-// External (third-party) handlers do not implement it: they are not deduplicated
-// and rely on Close being idempotent (the standard io.Closer contract). Cycle
-// protection comes from maxUnwrapDepth, not from identity, so no unsafe/reflect
-// probing is required.
+// handlerIdentifier 是选择加入 CloseAll 去重的 handler 的内部接口。
+// 所有内置 handler 经嵌入 handlerCore 满足它。外部（第三方）handler
+// 不实现它：它们不去重，依赖 Close 幂等（标准 io.Closer 契约）。环
+// 保护来自 maxUnwrapDepth 而非身份，因此无需 unsafe/reflect 探测。
 type handlerIdentifier interface {
 	handlerID() uint64
 }
 
-// handlerIdentity returns a built-in handler's stable id. There is deliberately
-// no fallback: third-party handlers are not deduplicated.
+// handlerIdentity 返回内置 handler 的稳定 id。有意不提供回退：
+// 第三方 handler 不去重。
 func handlerIdentity(h slog.Handler) (uint64, bool) {
 	if hi, ok := h.(handlerIdentifier); ok {
 		return hi.handlerID(), true
@@ -238,82 +224,75 @@ func handlerIdentity(h slog.Handler) (uint64, bool) {
 	return 0, false
 }
 
-// maxUnwrapDepth caps recursion through handlerUnwrapper chains to guarantee
-// termination even if a handler's unwrapHandler is self-referential. Real
-// decorator chains are shallow (<10 layers); 64 is a generous safety bound.
+// maxUnwrapDepth 限制沿 handlerUnwrapper 链的递归深度，即使 handler 的
+// unwrapHandler 自引用也能保证终止。真实装饰器链很浅（<10 层）；
+// 64 是宽裕的安全上界。
 const maxUnwrapDepth = 64
 
-func closeAll(handler slog.Handler, visited *sync.Map, depth int) error {
-	if handler == nil {
+// unwrapOf 返回装饰器的内层 handler:根包内装饰器经未导出的
+// handlerUnwrapper 接口,跨包装饰器(handlerkit.AttrsSub/GroupSub)经
+// 导出的 UnwrapHandler 方法。同一 handler 不会同时实现两者。
+func unwrapOf(h slog.Handler) (slog.Handler, bool) {
+	if uw, ok := h.(handlerUnwrapper); ok {
+		return uw.unwrapHandler(), true
+	}
+	if uw, ok := h.(interface{ UnwrapHandler() slog.Handler }); ok {
+		return uw.UnwrapHandler(), true
+	}
+	return nil, false
+}
+
+// errStopWalk 是 walkHandlers 的内部哨兵:visit 返回它时遍历立即正常
+// 终止(walkHandlers 返回 nil),供"找到即停"的查找类遍历使用。
+var errStopWalk = errors.New("mebsuta: stop walk")
+
+// walkHandlers 以统一口径遍历 handler 图:每个节点先交 visit,再沿
+// handlerUnwrapper 装饰器链下行,并展开 *safeMulti 的全部 fanout 子
+// handler。内置 handler(handlerIdentifier)按稳定 id 去重;环与超深
+// 链由 maxUnwrapDepth 保证终止。visit 返回非哨兵错误时立即中止遍历并
+// 原样返回;需要收集全部节点错误的调用方(CloseAll)在 visit 内
+// 自行累积。CloseAll、SetLevel、SetFileMaxAge、findSelfBuffered 与
+// findDroppedCounter 共用本遍历,新增运维面时在此之上挂 visit 即可。
+func walkHandlers(h slog.Handler, visit func(slog.Handler) error) error {
+	return walkDepth(h, visit, map[uint64]struct{}{}, 0)
+}
+
+// walkDepth 是 walkHandlers 的递归实现。visited 在同一次遍历的所有
+// 分支间共享:需要自定义入口的调用方(safeMulti.Close)传入同一 map
+// 即共享去重口径。遍历是单 goroutine 的,普通 map 足够。
+func walkDepth(h slog.Handler, visit func(slog.Handler) error, visited map[uint64]struct{}, depth int) error {
+	// 针对自引用 unwrapHandler 环的硬终止保证,
+	// 独立于任何身份/去重逻辑。
+	if h == nil || depth > maxUnwrapDepth {
 		return nil
 	}
-	// Hard termination guarantee against self-referential unwrapHandler cycles,
-	// independent of any identity/dedup logic.
-	if depth > maxUnwrapDepth {
-		return nil
-	}
-	// Dedupe built-in handlers by stable id. External handlers without
-	// handlerIdentifier are not deduplicated; their Close must be idempotent.
-	if ptr, ok := handlerIdentity(handler); ok {
-		if _, loaded := visited.LoadOrStore(ptr, true); loaded {
+	// 内置 handler 按稳定 id 去重。无 handlerIdentifier 的外部
+	// handler 不去重;其 Close 必须幂等。
+	if id, ok := handlerIdentity(h); ok {
+		if _, seen := visited[id]; seen {
 			return nil
 		}
+		visited[id] = struct{}{}
 	}
-
-	var errs []error
-	if closer, ok := handler.(io.Closer); ok {
-		if err := closer.Close(); err != nil {
-			errs = append(errs, err)
+	if err := visit(h); err != nil {
+		if err == errStopWalk {
+			return nil
+		}
+		return err
+	}
+	if inner, ok := unwrapOf(h); ok {
+		if err := walkDepth(inner, visit, visited, depth+1); err != nil {
+			return err
 		}
 	}
-	if uw, ok := handler.(handlerUnwrapper); ok {
-		if err := closeAll(uw.unwrapHandler(), visited, depth+1); err != nil {
-			errs = append(errs, err)
+	if sm, ok := h.(*safeMulti); ok {
+		for _, hh := range sm.handlers {
+			if err := walkDepth(hh, visit, visited, depth+1); err != nil {
+				return err
+			}
 		}
 	}
-	return errors.Join(errs...)
-}
-
-// prefixAttrs prepends "group." to each attr's key. Returns attrs unchanged when group is empty.
-func prefixAttrs(group string, attrs []slog.Attr) []slog.Attr {
-	if group == "" {
-		return attrs
-	}
-	out := make([]slog.Attr, len(attrs))
-	for i, a := range attrs {
-		out[i] = slog.Attr{Key: group + "." + a.Key, Value: a.Value}
-	}
-	return out
-}
-
-// MergeAttrs merges existing and newAttrs, prefixing newAttrs keys with the given group.
-func MergeAttrs(existing, newAttrs []slog.Attr, group string) []slog.Attr {
-	merged := make([]slog.Attr, len(existing), len(existing)+len(newAttrs))
-	copy(merged, existing)
-	merged = append(merged, prefixAttrs(group, newAttrs)...)
-	return merged
-}
-
-// RecordWithGroupAttrs creates a new slog.Record with group-prefixed attrs from the
-// original record plus extraAttrs. extraAttrs are assumed to already be group-prefixed
-// (they were built by MergeAttrs at construction time). The prefix semantics for
-// record attrs match prefixAttrs: when group is empty attrs are passed through unchanged;
-// otherwise "group." is prepended to each record attr key.
-func RecordWithGroupAttrs(r slog.Record, group string, extraAttrs []slog.Attr) slog.Record {
-	newR := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
-	if group == "" {
-		r.Attrs(func(attr slog.Attr) bool {
-			newR.AddAttrs(attr)
-			return true
-		})
-	} else {
-		r.Attrs(func(attr slog.Attr) bool {
-			newR.AddAttrs(slog.Attr{Key: group + "." + attr.Key, Value: attr.Value})
-			return true
-		})
-	}
-	newR.AddAttrs(extraAttrs...)
-	return newR
+	return nil
 }
 
 var (

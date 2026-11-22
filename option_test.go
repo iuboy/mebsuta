@@ -2,9 +2,12 @@ package mebsuta
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,3 +203,53 @@ func TestNew_MultipleUseFile_CreatesFanout(t *testing.T) {
 	_, ok := logger.Handler().(*safeMulti)
 	require.True(t, ok, "expected safeMulti for multiple UseFile, got %T", logger.Handler())
 }
+
+// TestWithErrorHandler_ReachesSubHandlers verifies the exported
+// ErrorHandlerSetter path: WithErrorHandler must reach handlers in other
+// packages (here represented by a fake implementing the exported interface).
+func TestWithErrorHandler_ReachesSubHandlers(t *testing.T) {
+	fake := &fakeSettableHandler{}
+	logger, err := New(WithHandler(fake), WithErrorHandler(SilentErrorHandler()))
+	require.NoError(t, err)
+	require.NotNil(t, fake.set, "WithErrorHandler did not propagate to the exported SetErrorHandler")
+	_ = logger
+}
+
+type fakeSettableHandler struct{ set ErrorHandler }
+
+func (f *fakeSettableHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (f *fakeSettableHandler) Handle(context.Context, slog.Record) error {
+	var buf bytes.Buffer
+	_, _ = buf.WriteString("")
+	return nil
+}
+func (f *fakeSettableHandler) WithAttrs([]slog.Attr) slog.Handler { return f }
+func (f *fakeSettableHandler) WithGroup(string) slog.Handler      { return f }
+func (f *fakeSettableHandler) SetErrorHandler(fn ErrorHandler)    { f.set = fn }
+
+type mutexBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *mutexBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *mutexBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+type ctxProbeHandler2 struct{ onHandle func(error) }
+
+func (c ctxProbeHandler2) Enabled(context.Context, slog.Level) bool { return true }
+func (c ctxProbeHandler2) Handle(ctx context.Context, _ slog.Record) error {
+	c.onHandle(ctx.Err())
+	return nil
+}
+func (c ctxProbeHandler2) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c ctxProbeHandler2) WithGroup(string) slog.Handler      { return c }

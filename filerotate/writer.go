@@ -14,49 +14,49 @@ import (
 	"time"
 )
 
-// Writer is a rotating file writer implementing io.Writer and io.Closer.
-// It handles size-based and time-based rotation, backup management, and optional
-// gzip compression.
+// Writer 是实现 io.Writer 与 io.Closer 的轮转文件 writer。
+// 它负责按大小与按时间轮转、备份管理以及可选的 gzip
+// 压缩。
 type Writer struct {
 	mu         sync.Mutex
 	file       *os.File
 	size       atomic.Int64
-	maxBytes   int64 // pre-computed from cfg.MaxSizeMB * mib, avoids multiplication on every Write
+	maxBytes   int64 // 由 cfg.MaxSizeMB * mib 预先算好，避免每次 Write 都做乘法
 	rotatedAt  time.Time
 	closed     atomic.Bool
 	cfg        Config
 	onError    atomic.Pointer[errorFunc]
 	compressWg sync.WaitGroup
-	// compressSem caps concurrent rotate-path compressions at
-	// maxRotateCompressors (same bound as compressResidual): a rotation
-	// burst must not fork an unbounded gzip fan-out. rotateLocked acquires a
-	// slot BEFORE spawning, so excess compressions QUEUE (never dropped); the
-	// acquire happens under w.mu, which is safe because compression
-	// goroutines release slots without ever needing w.mu.
+	// compressSem 将轮转路径上的并发压缩限制在
+	// maxRotateCompressors（与 compressResidual 相同的上限）：轮转
+	// 风暴不得衍生出无界的 gzip fan-out。rotateLocked 在启动压缩前
+	// 先获取槽位，超出的压缩会排队（绝不丢弃）；获取动作
+	// 发生在 w.mu 之下也是安全的，因为压缩
+	// goroutine 释放槽位时从不需要 w.mu。
 	compressSem chan struct{}
-	// H2: paths currently being compressed; cleanupBackupsLocked skips these.
-	// Has its own mutex so the compression goroutine can mark a path done
-	// without acquiring w.mu — Close() holds w.mu while waiting on
-	// compressWg, so re-locking w.mu from the goroutine would deadlock.
+	// H2：当前正在压缩的路径；cleanupBackupsLocked 会跳过它们。
+	// 使用独立锁，压缩 goroutine 标记路径完成时
+	// 无需获取 w.mu——Close() 等待 compressWg 期间持有
+	// w.mu，goroutine 里再锁 w.mu 会死锁。
 	compressMu  sync.Mutex
 	compressing map[string]struct{}
-	// M4: rotateLocked (under w.mu) appends errors here; reportRotateErrors
-	// (outside w.mu, concurrent across Write callers) drains them. A separate
-	// mutex guards the slice so the unlock-then-report pattern stays race-free.
+	// M4：rotateLocked（在 w.mu 之下）把错误追加到这里；reportRotateErrors
+	//（在 w.mu 之外，多个 Write 调用方并发）负责清空。用单独的
+	// 锁保护该切片，保证先解锁再上报的模式无数据竞争。
 	errMu               sync.Mutex
 	pendingRotateErrors []error
 }
 
-// errorFunc wraps a function type for use with atomic.Pointer.
+// errorFunc 包装函数类型，以便配合 atomic.Pointer 使用。
 type errorFunc struct {
 	fn func(error)
 }
 
-// maxRotateCompressors is the cap on concurrent gzip compressions of rotated
-// backups — mirrors compressResidual's maxConcurrent=4.
+// maxRotateCompressors 是轮转备份并发 gzip 压缩的上限——
+// 与 compressResidual 的 maxConcurrent=4 保持一致。
 const maxRotateCompressors = 4
 
-// New creates a rotating file writer for the given config.
+// New 根据给定配置创建轮转文件 writer。
 func New(cfg Config) (*Writer, error) {
 	cfg, err := cfg.Validate()
 	if err != nil {
@@ -97,7 +97,7 @@ func New(cfg Config) (*Writer, error) {
 	return w, nil
 }
 
-// Write writes bytes to the log file, triggering rotation if needed.
+// Write 将字节写入日志文件，必要时触发轮转。
 func (w *Writer) Write(p []byte) (int, error) {
 	if w.closed.Load() {
 		return 0, os.ErrClosed
@@ -110,13 +110,13 @@ func (w *Writer) Write(p []byte) (int, error) {
 		return 0, os.ErrClosed
 	}
 
-	// Pre-write rotation check.
+	// 写前轮转检查。
 	if w.needsRotation() {
 		w.rotateLocked()
 	}
 
-	// H1: rotateLocked may fail (disk full, permission, recovery failure),
-	// leaving w.file == nil. Re-check to avoid nil-pointer panic.
+	// H1：rotateLocked 可能失败（磁盘满、权限、恢复失败），
+	// 导致 w.file == nil。重新检查以避免空指针 panic。
 	if w.file == nil {
 		w.mu.Unlock()
 		w.reportRotateErrors()
@@ -128,23 +128,23 @@ func (w *Writer) Write(p []byte) (int, error) {
 		w.size.Add(int64(n))
 	}
 
-	// Post-write rotation check: if this write pushed past the limit,
-	// rotate immediately so the oversized file doesn't persist until
-	// the next Write call (which may never come for low-frequency logs).
+	// 写后轮转检查：若本次写入超过上限，
+	// 立即轮转，避免超限文件一直留存到下一次
+	// Write 调用（低频日志可能永远等不到那次调用）。
 	if err == nil && w.needsRotation() {
 		w.rotateLocked()
 	}
-	// Snapshot closed while still holding mu so that a concurrent Close
-	// does not cause a successful write to return a spurious os.ErrClosed.
+	// 仍在持有 mu 时快照 closed，避免并发的 Close
+	// 让一次成功写入莫名返回 os.ErrClosed。
 	isClosed := w.closed.Load()
 	w.mu.Unlock()
 
-	// M4: report rotation errors outside the lock to prevent deadlock if
-	// the user's onError callback re-enters the Writer.
+	// M4：在锁外上报轮转错误，防止用户的
+	// onError 回调重入 Writer 造成死锁。
 	w.reportRotateErrors()
 
-	// If post-write rotation failed and closed the writer, the write itself
-	// still succeeded — surface the count but let the next Write return ErrClosed.
+	// 若写后轮转失败并关闭了 writer，写入本身
+	// 仍算成功——返回写入字节数，让下一次 Write 返回 ErrClosed。
 	if isClosed {
 		return n, os.ErrClosed
 	}
@@ -152,29 +152,29 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Close waits for async compression to finish, then closes the file.
+// Close 等待异步压缩完成后关闭文件。
 //
-// M6: Close blocks until all in-flight gzip compressions finish. There is no
-// deadline — a very large backup on a slow disk can delay shutdown indefinitely.
-// If your shutdown path requires a bound, drain compressions out-of-band before
-// calling Close, or skip Close and let the process exit reap the goroutines.
+// M6：Close 会阻塞到所有在途 gzip 压缩结束。没有
+// 超时限制——慢速磁盘上的超大备份可能无限拖延关闭。
+// 若关闭路径需要上限，请在调用 Close 前另行排空压缩，
+// 或跳过 Close，让进程退出时回收这些 goroutine。
 func (w *Writer) Close() error {
 	if !w.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 
-	// Acquire write lock before Wait to prevent a concurrent rotate() from
-	// calling compressWg.Add(1) after Wait returns. Without this lock, the
-	// sequence is: Close sets closed=true, Wait sees 0 goroutines, Lock+close
-	// file — while a rotate() that already passed its closed.Load() check
-	// starts a new compression goroutine that outlives Close.
+	// 在 Wait 之前先取写锁，防止并发 rotate() 在 Wait 返回后
+	// 再调用 compressWg.Add(1)。没有这把锁，时序会是：
+	// Close 置 closed=true，Wait 看到 0 个 goroutine，加锁+关闭
+	// 文件——而一个已通过 closed.Load() 检查的 rotate()
+	// 此时启动新的压缩 goroutine，存活时间超过 Close。
 	w.mu.Lock()
 
 	w.compressWg.Wait()
 
-	// H2: after all compressions finish, re-run cleanup to reap any backups
-	// that were skipped earlier because they were mid-compression. Without
-	// this, a high-frequency rotation burst can leave stale backups.
+	// H2：全部压缩结束后重新执行清理，回收之前因正在压缩
+	// 而被跳过的备份。否则高频轮转风暴
+	// 可能遗留过期备份。
 	var closeErr error
 	if w.file != nil {
 		w.cleanupBackupsLocked()
@@ -183,16 +183,16 @@ func (w *Writer) Close() error {
 	}
 	w.mu.Unlock()
 
-	// M4 contract: report pending rotation errors OUTSIDE w.mu. The Write
-	// path honors this; reporting under the lock deadlocks any OnError
-	// callback that re-enters the Writer (e.g. logging the error through
-	// this same writer).
+	// M4 契约：在 w.mu 之外上报待处理的轮转错误。Write
+	// 路径已遵守；在锁内上报会让任何重入 Writer 的 OnError
+	// 回调死锁（例如通过同一个 writer
+	// 记录该错误）。
 	w.reportRotateErrors()
 
 	return closeErr
 }
 
-// SetOnError updates the error callback. Safe to call concurrently.
+// SetOnError 更新错误回调。可并发调用。
 func (w *Writer) SetOnError(fn func(error)) {
 	w.onError.Store(&errorFunc{fn: fn})
 }
@@ -205,7 +205,7 @@ func (w *Writer) loadOnError() func(error) {
 	return v.fn
 }
 
-// needsRotation checks whether rotation is needed. Caller must hold w.mu.
+// needsRotation 检查是否需要轮转。调用方必须持有 w.mu。
 func (w *Writer) needsRotation() bool {
 	if w.maxBytes > 0 && w.size.Load() >= w.maxBytes {
 		return true
@@ -216,13 +216,13 @@ func (w *Writer) needsRotation() bool {
 	return false
 }
 
-// rotateLocked performs rotation. Re-checks conditions to avoid thundering herd.
-// Caller must hold w.mu.
+// rotateLocked 执行轮转。重新检查条件以避免惊群。
+// 调用方必须持有 w.mu。
 //
-// M4: errors are collected and reported via reportRotateErrors *after* the lock
-// is released (by the caller, Write/rotateAndReport), so a user-provided
-// onError callback that touches the Writer cannot deadlock on the non-reentrant
-// w.mu.
+// M4：错误先收集，待锁释放后（由调用方 Write/rotateAndReport）经
+// reportRotateErrors 上报，这样触碰 Writer 的用户自定义
+// onError 回调不会在不可重入的
+// w.mu 上死锁。
 func (w *Writer) rotateLocked() {
 	if w.closed.Load() || w.file == nil {
 		return
@@ -231,9 +231,9 @@ func (w *Writer) rotateLocked() {
 		return
 	}
 
-	// M5: best-effort fsync before close so page-cache data survives a crash
-	// immediately after rotation. Sync errors are non-fatal (may be a pipe or
-	// a filesystem that doesn't support fsync); collect and continue to close.
+	// M5：关闭前尽力 fsync，让页缓存数据在轮转后
+	// 紧接着的崩溃中也能幸存。Sync 错误并非致命（可能是管道或
+	// 不支持 fsync 的文件系统）；收集后继续关闭。
 	var errs []error
 	if err := w.file.Sync(); err != nil {
 		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("sync for rotation: %w", err)})
@@ -267,22 +267,22 @@ func (w *Writer) rotateLocked() {
 	w.rotatedAt = time.Now()
 
 	if w.cfg.compress() {
-		// H2: track the in-flight compression path so cleanupBackupsLocked
-		// can skip it, preventing deletion of a backup still being compressed.
-		// compressMu (not w.mu) protects compressing because Close() holds
-		// w.mu while waiting on compressWg — locking w.mu here would deadlock.
+		// H2：跟踪在途压缩路径，让 cleanupBackupsLocked
+		// 跳过它，避免删除仍在压缩中的备份。
+		// 用 compressMu（而非 w.mu）保护 compressing，因为 Close() 等待
+		// compressWg 时持有 w.mu——这里再锁 w.mu 会死锁。
 		w.compressMu.Lock()
 		w.compressing[backup] = struct{}{}
 		w.compressMu.Unlock()
-		// Cap concurrent compressions at maxRotateCompressors, mirroring
-		// compressResidual: a rotation burst (many Write calls crossing
-		// MaxSizeMB back-to-back) must not fork an unbounded gzip fan-out of
-		// goroutines and file descriptors. Acquiring the slot BEFORE spawning
-		// means excess compressions queue here (never dropped); blocking under
-		// w.mu is deadlock-free because compression goroutines release slots
-		// (and finish) without needing w.mu. M7 order: register with the
-		// WaitGroup before acquiring the slot so every in-flight slot is also
-		// Wait-tracked (Close waits under w.mu).
+		// 将并发压缩限制在 maxRotateCompressors，与
+		// compressResidual 对齐：轮转风暴（大量连续越过
+		// MaxSizeMB 的 Write 调用）不得衍生出无界的 gzip fan-out
+		//（goroutine 与文件描述符）。在启动压缩前先获取槽位
+		// 意味着超出的压缩在此排队（绝不丢弃）；在
+		// w.mu 下阻塞也不会死锁，因为压缩 goroutine 释放槽位
+		//（以及结束）都不需要 w.mu。M7 顺序：先向
+		// WaitGroup 注册再获取槽位，保证每个在途槽位也被
+		// Wait 跟踪（Close 在 w.mu 下等待）。
 		w.compressWg.Add(1)
 		w.compressSem <- struct{}{}
 		go func() {
@@ -299,9 +299,9 @@ func (w *Writer) rotateLocked() {
 	w.addRotateErrors(errs...)
 }
 
-// reportRotateErrors drains pending rotation errors and reports them via onError.
-// Caller must NOT hold w.mu — this is the M4 deadlock fix. The pending slice
-// is guarded by errMu so concurrent Write callers can drain it safely.
+// reportRotateErrors 清空待处理的轮转错误并经 onError 上报。
+// 调用方不得持有 w.mu——这正是 M4 死锁修复。待处理切片
+// 由 errMu 保护，多个并发 Write 调用方都能安全清空。
 func (w *Writer) reportRotateErrors() {
 	w.errMu.Lock()
 	errs := w.pendingRotateErrors
@@ -314,9 +314,9 @@ func (w *Writer) reportRotateErrors() {
 	}
 }
 
-// addRotateErrors appends errors to the pending slice under errMu. Safe to
-// call while holding w.mu — the lock order is w.mu → errMu (consistent with
-// reportRotateErrors which takes errMu without w.mu).
+// addRotateErrors 在 errMu 之下向待处理切片追加错误。持有
+// w.mu 时调用也安全——加锁顺序为 w.mu → errMu（与
+// 不带 w.mu 直接取 errMu 的 reportRotateErrors 一致）。
 func (w *Writer) addRotateErrors(errs ...error) {
 	if len(errs) == 0 {
 		return
@@ -326,11 +326,11 @@ func (w *Writer) addRotateErrors(errs ...error) {
 	w.errMu.Unlock()
 }
 
-// recoverOpen attempts to reopen the log file after a rotation failure.
-// M3: updates w.size and w.rotatedAt from the reopened file so the next
-// needsRotation() check reflects reality instead of triggering an immediate
-// re-rotation loop. Errors are collected into pendingRotateErrors and drained
-// by reportRotateErrors() outside the lock (M4).
+// recoverOpen 在轮转失败后尝试重新打开日志文件。
+// M3：用重新打开的文件更新 w.size 与 w.rotatedAt，让下一次
+// needsRotation() 检查符合实际，而不是立刻触发
+// 重复轮转循环。错误收集进 pendingRotateErrors，由
+// reportRotateErrors() 在锁外清空（M4）。
 func (w *Writer) recoverOpen(path string) {
 	f, fi, err := openAppend(path, w.cfg.FileMode)
 	if err != nil {
@@ -343,21 +343,21 @@ func (w *Writer) recoverOpen(path string) {
 	w.rotatedAt = time.Now()
 }
 
-// backupNameLocked generates a unique backup filename. Caller must hold w.mu Lock.
-// Uses a single ReadDir call + in-memory set to avoid up to maxRotationSuffixSeq Stat syscalls.
+// backupNameLocked 生成唯一的备份文件名。调用方必须持有 w.mu 写锁。
+// 用一次 ReadDir 调用 + 内存集合，避免最多 maxRotationSuffixSeq 次 Stat 系统调用。
 func (w *Writer) backupNameLocked() string {
 	ts := time.Now().Format("2006-01-02T15-04-05.000")
 	name := w.cfg.Path + "." + ts
 
-	// Single ReadDir to get all existing files in the log directory.
+	// 仅一次 ReadDir 获取日志目录下全部现存文件。
 	dir := filepath.Dir(w.cfg.Path)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// Fallback: can't read dir, just use the name directly.
+		// 兜底：读不了目录，直接使用该名称。
 		return name
 	}
 
-	// Build a set of existing filenames for O(1) lookup.
+	// 构建现存文件名集合，O(1) 查找。
 	existing := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		existing[e.Name()] = struct{}{}
@@ -376,8 +376,8 @@ func (w *Writer) backupNameLocked() string {
 	return w.cfg.Path + "." + fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
-// cleanupBackupsLocked removes old backup files that exceed MaxBackups or MaxAgeDays.
-// Caller must hold w.mu Lock.
+// cleanupBackupsLocked 删除超出 MaxBackups 或 MaxAgeDays 的旧备份文件。
+// 调用方必须持有 w.mu 写锁。
 func (w *Writer) cleanupBackupsLocked() {
 	cfg := w.cfg
 	if cfg.MaxBackups == 0 && cfg.MaxAgeDays == 0 {
@@ -404,10 +404,10 @@ func (w *Writer) cleanupBackupsLocked() {
 		if name == base || !strings.HasPrefix(name, prefix) {
 			continue
 		}
-		// Only consider files whose suffix matches a real rotation artifact
-		// (timestamp, optional sequence number, optional .gz). A bare prefix
-		// match could otherwise sweep up unrelated same-prefix files that
-		// happen to share the log directory.
+		// 只考虑后缀是真正轮转产物
+		//（时间戳、可选序号、可选 .gz）的文件。若仅按前缀
+		// 匹配，可能误扫恰好同处日志目录的
+		// 无关同名前缀文件。
 		if !isBackupName(base, name) {
 			continue
 		}
@@ -423,20 +423,20 @@ func (w *Writer) cleanupBackupsLocked() {
 	})
 
 	keep := backups
-	// Negative MaxBackups means unlimited (keep all backups).
+	// MaxBackups 为负表示不限（保留全部备份）。
 	if cfg.MaxBackups > 0 && len(keep) > cfg.MaxBackups {
 		keep = keep[:cfg.MaxBackups]
 	}
 
 	cutoff := time.Time{}
-	// Negative MaxAgeDays means unlimited (no age-based removal).
+	// MaxAgeDays 为负表示不限（不按时间删除）。
 	if cfg.MaxAgeDays > 0 {
 		cutoff = time.Now().AddDate(0, 0, -cfg.MaxAgeDays)
 	}
 
-	// H2: snapshot the in-flight compression set under compressMu so cleanup
-	// can skip backups still being compressed. compressMu is a separate lock
-	// from w.mu to avoid the Close→Wait vs goroutine→Lock deadlock.
+	// H2：在 compressMu 之下快照在途压缩集合，让清理
+	// 跳过仍在压缩中的备份。compressMu 独立于
+	// w.mu，以避免 Close→Wait 与 goroutine→Lock 的死锁。
 	w.compressMu.Lock()
 	inFlight := make(map[string]struct{}, len(w.compressing))
 	for k := range w.compressing {
@@ -445,14 +445,14 @@ func (w *Writer) cleanupBackupsLocked() {
 	w.compressMu.Unlock()
 
 	var cleanupErrs []error
-	// H2: collect errors but report them via pendingRotateErrors (drained
-	// outside the lock by reportRotateErrors) to honor the M4 non-reentrancy
-	// contract on w.mu.
+	// H2：收集错误但经 pendingRotateErrors 上报（由
+	// reportRotateErrors 在锁外清空），以遵守 w.mu 上的 M4
+	// 不可重入契约。
 	for _, b := range backups[len(keep):] {
 		path := filepath.Join(dir, b.name)
-		// H2: skip backups still being compressed; the compression goroutine
-		// will remove the tracking entry when done, and a later cleanup pass
-		// will reap it.
+		// H2：跳过仍在压缩中的备份；压缩 goroutine
+		// 完成后会移除跟踪条目，之后的清理
+		// 会将其回收。
 		if _, busy := inFlight[path]; busy {
 			continue
 		}
@@ -478,29 +478,29 @@ func (w *Writer) cleanupBackupsLocked() {
 	}
 }
 
-// reportError calls onError if non-nil, otherwise falls back to stderr.
+// reportError 在 onError 非 nil 时调用它，否则回退到 stderr。
 func reportError(onError func(error), err error) {
 	if onError != nil {
 		onError(err)
 	}
 }
 
-// defaultOnError writes error details to os.Stderr.
+// defaultOnError 将错误详情写入 os.Stderr。
 func defaultOnError(err error) {
 	fmt.Fprintf(os.Stderr, "filerotate: %v\n", err)
 }
 
-// backupSuffixRe matches the suffix appended to a rotated backup filename:
-// either a millisecond timestamp (with optional sequence number) or a
-// unix-nano fallback, each optionally followed by ".gz" for compressed copies.
-// The nano fallback requires 15+ digits: nanosecond timestamps are 19 digits
-// today and were 18 as recently as 2001, while a bare \d+ would sweep up
-// unrelated same-prefix files like app.log.12345 — which compressResidual
-// (Compress defaults to true) would then gzip and DELETE on every startup.
+// backupSuffixRe 匹配轮转备份文件名追加的后缀：
+// 毫秒时间戳（可带序号）或 unix-nano 兜底，二者
+// 都可后跟 ".gz" 表示压缩副本。
+// nano 兜底要求至少 15 位数字：纳秒时间戳如今是 19 位，
+// 近至 2001 年还有 18 位；而裸 \d+ 会误扫
+// app.log.12345 这类无关同名前缀文件——compressResidual
+// （Compress 默认开启）会在每次启动时将其 gzip 压缩并删除。
 var backupSuffixRe = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}|\d{15,})(\.\d+)?(\.gz)?$`)
 
-// isBackupName reports whether name is a rotation artifact of base
-// (i.e. base + "." + a suffix matching backupSuffixRe).
+// isBackupName 判断 name 是否为 base 的轮转产物
+// （即 base + "." + 符合 backupSuffixRe 的后缀）。
 func isBackupName(base, name string) bool {
 	suffix, ok := strings.CutPrefix(name, base+".")
 	if !ok {
@@ -509,24 +509,24 @@ func isBackupName(base, name string) bool {
 	return backupSuffixRe.MatchString(suffix)
 }
 
-// Compile-time assertions.
+// 编译期断言。
 var (
 	_ io.Writer = (*Writer)(nil)
 	_ io.Closer = (*Writer)(nil)
 )
 
-// checkNotSymlink verifies the log file path is not a symlink. If the file does not
-// exist yet, it checks the parent directory. Intermediate system directories (e.g.
-// macOS /var → /private/var) are intentionally not walked — those are legitimate
-// symlinks, and TOCTOU protection for the final component is handled by
-// openAppend's O_NOFOLLOW plus the post-open inode comparison.
+// checkNotSymlink 校验日志文件路径不是符号链接。若文件尚不
+// 存在，则检查父目录。中间系统目录（如
+// macOS 的 /var → /private/var）有意不逐一检查——它们是合法的
+// 符号链接，最终组件的 TOCTOU 防护由
+// openAppend 的 O_NOFOLLOW 与打开后的 inode 比较承担。
 func checkNotSymlink(path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("stat log file: %w", err)
 		}
-		// File doesn't exist yet — check parent directory.
+		// 文件尚不存在——检查父目录。
 		dir := filepath.Dir(path)
 		di, err := os.Lstat(dir)
 		if err != nil {
@@ -543,18 +543,18 @@ func checkNotSymlink(path string) error {
 	return nil
 }
 
-// openAppend opens path for create+append and defends against symlink
-// substitution (TOCTOU) with two layers:
+// openAppend 以创建+追加模式打开 path，用两层防护
+// 抵御符号链接替换（TOCTOU）：
 //
-//  1. O_NOFOLLOW (Unix): the open itself refuses a symlink final component —
-//     including the critical window during rotation, where os.Rename leaves
-//     the path absent and a pre-existing symlink would otherwise be followed
-//     by O_CREATE. This covers the case the inode check cannot: when the
-//     path did not exist at Lstat time, there is no pre-open inode to
-//     compare against.
-//  2. inode comparison: if the file existed before the open, the opened
-//     descriptor's inode must match the pre-open Lstat. On Windows (no
-//     O_NOFOLLOW) this is the only defense for pre-existing files.
+//  1. O_NOFOLLOW（Unix）：open 自身拒绝符号链接的最终组件——
+//     包括轮转期间的关键窗口，此时 os.Rename 让路径
+//     短暂不存在，预先埋好的符号链接本会被 O_CREATE
+//     跟随。这补上了 inode 检查覆盖不到的情形：Lstat 时
+//     路径尚不存在，就没有打开前的 inode 可供
+//     比较。
+//  2. inode 比较：若打开前文件已存在，打开的
+//     描述符的 inode 必须与打开前 Lstat 的一致。在 Windows 上
+//     （没有 O_NOFOLLOW）这是已存在文件的唯一防线。
 func openAppend(path string, mode os.FileMode) (*os.File, os.FileInfo, error) {
 	lstat, lerr := os.Lstat(path)
 	preExist := lerr == nil

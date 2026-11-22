@@ -287,7 +287,7 @@ func Example_filerotateAdvancedConfig() {
 			MaxSizeMB:      1,
 			MaxBackups:     5,
 			MaxAgeDays:     30,
-			Compress:       mebsuta.BoolPtr(true),
+			Compress:       mebsuta.Ptr(true),
 			RotateInterval: 24 * time.Hour,
 			FileMode:       0644,
 		}, mebsuta.FileConfig{

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta/filerotate"
+	"github.com/stretchr/testify/require"
 )
 
 // =============================================================================
@@ -122,12 +123,8 @@ func (h *captureHandler) Close() error                       { h.closed.Store(tr
 // TestIntegration_New_DefaultLogger 验证 New() 零配置返回可用 logger
 func TestIntegration_New_DefaultLogger(t *testing.T) {
 	logger, err := New()
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
-	if logger == nil {
-		t.Fatal("New() returned nil logger")
-	}
+	require.NoError(t, err, "New() error")
+	require.NotNil(t, logger, "New() returned nil logger")
 	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("test message", "key", "value")
@@ -136,22 +133,16 @@ func TestIntegration_New_DefaultLogger(t *testing.T) {
 // TestIntegration_Init_SetsDefault 验证 Init() 设置 slog.Default()
 func TestIntegration_Init_SetsDefault(t *testing.T) {
 	logger, err := Init()
-	if err != nil {
-		t.Fatalf("Init() error: %v", err)
-	}
+	require.NoError(t, err, "Init() error")
 	defer func() { _ = CloseAll(logger.Handler()) }()
 
-	if slog.Default() != logger {
-		t.Error("Init() did not set slog.Default()")
-	}
+	require.Equal(t, logger, slog.Default(), "Init() did not set slog.Default()")
 }
 
 // TestIntegration_UseStdout 验证 stdout 输出不 panic
 func TestIntegration_UseStdout(t *testing.T) {
 	logger, err := New(UseStdout(StdoutConfig{}))
-	if err != nil {
-		t.Fatalf("New(UseStdout) error: %v", err)
-	}
+	require.NoError(t, err, "New(UseStdout) error")
 	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("stdout test")
@@ -165,37 +156,23 @@ func TestIntegration_UseFile_WritesToDisk(t *testing.T) {
 	logger, err := New(
 		UseFile(filerotate.Config{Path: logPath}, FileConfig{Level: slog.LevelDebug}),
 	)
-	if err != nil {
-		t.Fatalf("New(UseFile) error: %v", err)
-	}
+	require.NoError(t, err, "New(UseFile) error")
 
 	logger.Info("file test", "key", "value", "count", 42)
 	_ = CloseAll(logger.Handler())
 
 	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read log file: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("log file is empty")
-	}
+	require.NoError(t, err, "read log file")
+	require.NotEmpty(t, data, "log file is empty")
 
 	var record map[string]any
-	if err := json.Unmarshal(data, &record); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(data, &record), "invalid JSON")
 
 	for _, key := range []string{"time", "level", "message", "attributes"} {
-		if _, ok := record[key]; !ok {
-			t.Errorf("missing required field: %s", key)
-		}
+		require.Contains(t, record, key, "missing required field")
 	}
-	if record["message"] != "file test" {
-		t.Errorf("message = %v, want 'file test'", record["message"])
-	}
-	if record["level"] != "INFO" {
-		t.Errorf("level = %v, want INFO", record["level"])
-	}
+	require.Equal(t, "file test", record["message"], "message")
+	require.Equal(t, "INFO", record["level"], "level")
 }
 
 // TestIntegration_UseFile_ConsoleFormat 验证 console 格式输出
@@ -209,20 +186,14 @@ func TestIntegration_UseFile_ConsoleFormat(t *testing.T) {
 			Format: "console",
 		}),
 	)
-	if err != nil {
-		t.Fatalf("New(UseFile console) error: %v", err)
-	}
+	require.NoError(t, err, "New(UseFile console) error")
 
 	logger.Info("console message", "status", "ok")
 	_ = CloseAll(logger.Handler())
 
 	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read log: %v", err)
-	}
-	if !bytes.Contains(data, []byte("console message")) {
-		t.Errorf("console output missing message, got: %s", data)
-	}
+	require.NoError(t, err, "read log")
+	require.Contains(t, string(data), "console message", "console output missing message")
 }
 
 // TestIntegration_LevelFiltering 验证级别过滤（用 capture handler）
@@ -231,19 +202,13 @@ func TestIntegration_LevelFiltering(t *testing.T) {
 	ch.level = slog.LevelInfo
 
 	logger, err := New(WithHandler(ch))
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	logger.Debug("filtered")
 	logger.Info("passed")
 
-	if got := ch.sink.len(); got != 1 {
-		t.Fatalf("captured %d records, want 1", got)
-	}
-	if msg := ch.sink.message(0); msg != "passed" {
-		t.Errorf("message = %q, want 'passed'", msg)
-	}
+	require.Equal(t, 1, ch.sink.len(), "captured records")
+	require.Equal(t, "passed", ch.sink.message(0), "message")
 }
 
 // TestIntegration_MultipleOutputs 验证多输出扇出
@@ -252,16 +217,13 @@ func TestIntegration_MultipleOutputs(t *testing.T) {
 	ch2 := newCaptureHandler()
 
 	logger, err := New(WithHandler(ch1), WithHandler(ch2))
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	logger.Info("multi output", "key", "val")
 	_ = CloseAll(logger.Handler())
 
-	if ch1.sink.len() != 1 || ch2.sink.len() != 1 {
-		t.Errorf("capture1=%d capture2=%d, both want 1", ch1.sink.len(), ch2.sink.len())
-	}
+	require.Equal(t, 1, ch1.sink.len(), "capture1")
+	require.Equal(t, 1, ch2.sink.len(), "capture2")
 }
 
 // TestIntegration_AsyncHandler 验证异步写入最终到达 inner handler
@@ -271,9 +233,7 @@ func TestIntegration_AsyncHandler(t *testing.T) {
 		UseAsync(AsyncConfig{BufferSize: 64}),
 		WithHandler(ch),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	const n = 50
 	for i := range n {
@@ -281,9 +241,7 @@ func TestIntegration_AsyncHandler(t *testing.T) {
 	}
 	_ = CloseAll(logger.Handler())
 
-	if got := ch.sink.len(); got < n {
-		t.Errorf("captured %d records, want at least %d", got, n)
-	}
+	require.GreaterOrEqual(t, ch.sink.len(), n, "captured records")
 }
 
 // TestIntegration_SamplingHandler 验证采样行为
@@ -298,23 +256,17 @@ func TestIntegration_SamplingHandler(t *testing.T) {
 		}),
 		WithHandler(ch),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	for range 10 {
 		logger.Info("sampled")
 	}
-	if got := ch.sink.len(); got != 10 {
-		t.Errorf("initial %d, want 10", got)
-	}
+	require.Equal(t, 10, ch.sink.len(), "initial")
 
 	// Error 级别不受采样限制
 	ch.sink.reset()
 	logger.Error("always recorded")
-	if got := ch.sink.len(); got != 1 {
-		t.Errorf("error sampled=%d, want 1", got)
-	}
+	require.Equal(t, 1, ch.sink.len(), "error sampled")
 
 	_ = CloseAll(logger.Handler())
 }
@@ -331,20 +283,14 @@ func TestIntegration_ContextExtractor(t *testing.T) {
 		}),
 		WithHandler(ch),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	ctx := context.WithValue(context.Background(), requestIDKey, "req-123")
 	logger.InfoContext(ctx, "with context")
 	_ = CloseAll(logger.Handler())
 
-	if got := ch.sink.len(); got != 1 {
-		t.Fatalf("captured %d, want 1", got)
-	}
-	if !ch.sink.hasAttr(0, "request_id", "req-123") {
-		t.Error("missing request_id attribute")
-	}
+	require.Equal(t, 1, ch.sink.len(), "captured")
+	require.True(t, ch.sink.hasAttr(0, "request_id", "req-123"), "missing request_id attribute")
 }
 
 // TestIntegration_MetricsDecorator 验证指标收集
@@ -362,20 +308,14 @@ func TestIntegration_MetricsDecorator(t *testing.T) {
 		UseMetrics(metrics, "test"),
 		WithHandler(ch),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	logger.Info("metric test")
 	logger.Warn("another")
 	_ = CloseAll(logger.Handler())
 
-	if got := handleCount.Load(); got != 2 {
-		t.Errorf("handle count = %d, want 2", got)
-	}
-	if got := ch.sink.len(); got != 2 {
-		t.Errorf("captured %d, want 2", got)
-	}
+	require.Equal(t, int64(2), handleCount.Load(), "handle count")
+	require.Equal(t, 2, ch.sink.len(), "captured")
 }
 
 // TestIntegration_ErrorHandler 验证自定义错误处理不 panic
@@ -384,9 +324,7 @@ func TestIntegration_ErrorHandler(t *testing.T) {
 		WithErrorHandler(func(he *HandlerError) {}),
 		UseStdout(StdoutConfig{}),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("with error handler")
@@ -398,9 +336,7 @@ func TestIntegration_SilentErrorHandler(t *testing.T) {
 		WithErrorHandler(SilentErrorHandler()),
 		UseStdout(StdoutConfig{}),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 	defer func() { _ = CloseAll(logger.Handler()) }()
 
 	logger.Info("silent handler test")
@@ -422,34 +358,24 @@ func TestIntegration_FullChain(t *testing.T) {
 		}),
 		UseAsync(AsyncConfig{BufferSize: 256}),
 	)
-	if err != nil {
-		t.Fatalf("New(full chain) error: %v", err)
-	}
+	require.NoError(t, err, "New(full chain) error")
 
 	slog.SetDefault(logger)
 	for i := range 20 {
 		slog.Info("chain test", "i", i)
 	}
 
-	if err := CloseAll(logger.Handler()); err != nil {
-		t.Errorf("CloseAll error: %v", err)
-	}
+	require.NoError(t, CloseAll(logger.Handler()), "CloseAll error")
 
 	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read log: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("chain log file is empty")
-	}
+	require.NoError(t, err, "read log")
+	require.NotEmpty(t, data, "chain log file is empty")
 
 	// 验证每行都是有效 JSON
 	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
 	for i, line := range lines {
 		var v map[string]any
-		if err := json.Unmarshal(line, &v); err != nil {
-			t.Errorf("line %d: invalid JSON: %v", i, err)
-		}
+		require.NoError(t, json.Unmarshal(line, &v), "line %d: invalid JSON", i)
 	}
 }
 
@@ -457,9 +383,7 @@ func TestIntegration_FullChain(t *testing.T) {
 func TestIntegration_ConcurrentWrites(t *testing.T) {
 	ch := newCaptureHandler()
 	logger, err := New(WithHandler(ch))
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	const goroutines = 50
 	const perGoroutine = 10
@@ -476,9 +400,7 @@ func TestIntegration_ConcurrentWrites(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := ch.sink.len(); got != goroutines*perGoroutine {
-		t.Errorf("captured %d, want %d", got, goroutines*perGoroutine)
-	}
+	require.Equal(t, goroutines*perGoroutine, ch.sink.len(), "captured")
 	_ = CloseAll(logger.Handler())
 }
 
@@ -486,17 +408,11 @@ func TestIntegration_ConcurrentWrites(t *testing.T) {
 func TestIntegration_CloseAll_Idempotent(t *testing.T) {
 	ch := newCaptureHandler()
 	logger, err := New(WithHandler(ch))
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	h := logger.Handler()
-	if err := CloseAll(h); err != nil {
-		t.Errorf("first CloseAll error: %v", err)
-	}
-	if err := CloseAll(h); err != nil {
-		t.Errorf("second CloseAll error: %v", err)
-	}
+	require.NoError(t, CloseAll(h), "first CloseAll error")
+	require.NoError(t, CloseAll(h), "second CloseAll error")
 }
 
 // TestIntegration_NonFiniteFloats 验证 NaN/Inf 产生有效 JSON
@@ -507,9 +423,7 @@ func TestIntegration_NonFiniteFloats(t *testing.T) {
 	logger, err := New(
 		UseFile(filerotate.Config{Path: logPath}, FileConfig{}),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	logger.Info("nan test",
 		"nan", math.NaN(),
@@ -520,14 +434,10 @@ func TestIntegration_NonFiniteFloats(t *testing.T) {
 	_ = CloseAll(logger.Handler())
 
 	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read log: %v", err)
-	}
+	require.NoError(t, err, "read log")
 
 	var record map[string]any
-	if err := json.Unmarshal(data, &record); err != nil {
-		t.Fatalf("invalid JSON (NaN/Inf handling failed): %v\nraw: %s", err, data)
-	}
+	require.NoError(t, json.Unmarshal(data, &record), "invalid JSON (NaN/Inf handling failed), raw: %s", data)
 }
 
 // TestIntegration_FileRotation 验证文件大小轮转
@@ -542,9 +452,7 @@ func TestIntegration_FileRotation(t *testing.T) {
 			MaxBackups: 2,
 		}, FileConfig{Level: slog.LevelDebug}),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	for i := range 50000 {
 		logger.Info("rotation pressure test", "data", "padding-content-to-trigger-rotation", "i", i)
@@ -552,9 +460,7 @@ func TestIntegration_FileRotation(t *testing.T) {
 	_ = CloseAll(logger.Handler())
 
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
+	require.NoError(t, err, "read dir")
 
 	hasBackup := false
 	for _, e := range entries {
@@ -563,28 +469,20 @@ func TestIntegration_FileRotation(t *testing.T) {
 			break
 		}
 	}
-	if !hasBackup {
-		t.Error("expected backup files after rotation, found none")
-	}
+	require.True(t, hasBackup, "expected backup files after rotation, found none")
 }
 
 // TestIntegration_WithAttrsPropagation 验证 logger.With 属性传播
 func TestIntegration_WithAttrsPropagation(t *testing.T) {
 	ch := newCaptureHandler()
 	logger, err := New(WithHandler(ch))
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	child := logger.With("request_id", "abc-123")
 	child.Info("with attrs")
 
-	if got := ch.sink.len(); got != 1 {
-		t.Fatalf("captured %d, want 1", got)
-	}
-	if !ch.sink.hasAttr(0, "request_id", "abc-123") {
-		t.Error("missing request_id attribute in child logger")
-	}
+	require.Equal(t, 1, ch.sink.len(), "captured")
+	require.True(t, ch.sink.hasAttr(0, "request_id", "abc-123"), "missing request_id attribute in child logger")
 	_ = CloseAll(logger.Handler())
 }
 
@@ -592,9 +490,7 @@ func TestIntegration_WithAttrsPropagation(t *testing.T) {
 func TestIntegration_SlogDefaultInterop(t *testing.T) {
 	ch := newCaptureHandler()
 	logger, err := New(WithHandler(ch))
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	original := slog.Default()
 	slog.SetDefault(logger)
@@ -603,42 +499,22 @@ func TestIntegration_SlogDefaultInterop(t *testing.T) {
 	slog.Info("via slog.Default()")
 	slog.Warn("warn via default", "code", 404)
 
-	if got := ch.sink.len(); got != 2 {
-		t.Fatalf("captured %d, want 2", got)
-	}
-	if ch.sink.message(0) != "via slog.Default()" {
-		t.Errorf("message[0] = %q, want 'via slog.Default()'", ch.sink.message(0))
-	}
-	if ch.sink.message(1) != "warn via default" {
-		t.Errorf("message[1] = %q, want 'warn via default'", ch.sink.message(1))
-	}
+	require.Equal(t, 2, ch.sink.len(), "captured")
+	require.Equal(t, "via slog.Default()", ch.sink.message(0), "message[0]")
+	require.Equal(t, "warn via default", ch.sink.message(1), "message[1]")
 	_ = CloseAll(logger.Handler())
 }
 
-// TestIntegration_BoolPtr 验证 BoolPtr 辅助函数
-func TestIntegration_BoolPtr(t *testing.T) {
-	p := BoolPtr(true)
-	if p == nil || !*p {
-		t.Error("BoolPtr(true) returned nil or false")
-	}
-	p2 := BoolPtr(false)
-	if p2 == nil || *p2 {
-		t.Error("BoolPtr(false) returned nil or true")
-	}
-}
-
-// TestIntegration_RecordToLogEntry 验证 RecordToLogEntry 转换
-func TestIntegration_RecordToLogEntry(t *testing.T) {
-	r := slog.NewRecord(time.Now(), slog.LevelInfo, "entry test", 0)
-	r.AddAttrs(slog.String("key", "val"))
-
-	entry := RecordToLogEntry(r)
-	if entry.Message != "entry test" {
-		t.Errorf("Message = %v, want 'entry test'", entry.Message)
-	}
-	if entry.Level != slog.LevelInfo {
-		t.Errorf("Level = %v, want Info", entry.Level)
-	}
+// TestIntegration_Ptr 验证泛型 Ptr 辅助函数
+func TestIntegration_Ptr(t *testing.T) {
+	p := Ptr(true)
+	require.NotNil(t, p, "Ptr(true) returned nil")
+	require.True(t, *p, "Ptr(true) returned false")
+	p2 := Ptr(false)
+	require.NotNil(t, p2, "Ptr(false) returned nil")
+	require.False(t, *p2, "Ptr(false) returned true")
+	n := Ptr(42)
+	require.Equal(t, 42, *n, "Ptr(42)")
 }
 
 // TestIntegration_AuditLevelInChain 验证审计级别在装饰器链中不受采样限制
@@ -653,15 +529,11 @@ func TestIntegration_AuditLevelInChain(t *testing.T) {
 		}),
 		WithHandler(ch),
 	)
-	if err != nil {
-		t.Fatalf("New() error: %v", err)
-	}
+	require.NoError(t, err, "New() error")
 
 	// Error 级别应始终通过采样
 	logger.Error("must pass sampling")
-	if got := ch.sink.len(); got != 1 {
-		t.Errorf("error through sampling=%d, want 1", got)
-	}
+	require.Equal(t, 1, ch.sink.len(), "error through sampling")
 
 	_ = CloseAll(logger.Handler())
 }

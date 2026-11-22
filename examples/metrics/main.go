@@ -1,4 +1,4 @@
-// metrics: Prometheus-style metrics collection for log handlers
+// metrics: 面向日志 handler 的 Prometheus 风格指标采集
 package main
 
 import (

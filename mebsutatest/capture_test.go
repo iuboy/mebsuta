@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCaptureHandler_Basic(t *testing.T) {
@@ -86,21 +88,15 @@ func TestCaptureHandler_Last(t *testing.T) {
 	h := NewCaptureHandler()
 
 	_, ok := h.Last()
-	if ok {
-		t.Fatal("expected no records")
-	}
+	require.False(t, ok, "不应有记录")
 
 	logger := slog.New(h)
 	logger.Info("msg1")
 	logger.Info("msg2")
 
 	rec, ok := h.Last()
-	if !ok {
-		t.Fatal("expected a record")
-	}
-	if rec.Message != "msg2" {
-		t.Fatalf("expected msg2, got %q", rec.Message)
-	}
+	require.True(t, ok, "应有一条记录")
+	require.Equal(t, "msg2", rec.Message)
 }
 
 func TestCaptureHandler_Concurrent(t *testing.T) {
@@ -131,20 +127,11 @@ func TestCaptureHandler_RecordFields(t *testing.T) {
 	_ = h.Handle(ctx, r)
 
 	records := h.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 record, got %d", len(records))
-	}
+	require.Len(t, records, 1)
 	rec := records[0]
-	if !rec.Time.Equal(ts) {
-		t.Fatalf("expected time %v, got %v", ts, rec.Time)
-	}
-	if rec.Level != slog.LevelError {
-		t.Fatalf("expected ERROR, got %v", rec.Level)
-	}
-	if rec.Message != "error msg" {
-		t.Fatalf("expected 'error msg', got %q", rec.Message)
-	}
-	if len(rec.Attrs) != 1 || rec.Attrs[0].Key != "code" {
-		t.Fatalf("expected attr 'code', got %v", rec.Attrs)
-	}
+	require.True(t, rec.Time.Equal(ts), "时间应为 %v，实际 %v", ts, rec.Time)
+	require.Equal(t, slog.LevelError, rec.Level)
+	require.Equal(t, "error msg", rec.Message)
+	require.Len(t, rec.Attrs, 1)
+	require.Equal(t, "code", rec.Attrs[0].Key)
 }

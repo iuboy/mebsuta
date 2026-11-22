@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // newJSONHandler creates a contractJSONHandler writing to a buffer for testing.
@@ -24,9 +26,7 @@ func newJSONHandler(t *testing.T) (*contractJSONHandler, *bytes.Buffer) {
 func parseJSONLine(t *testing.T, data []byte) map[string]any {
 	t.Helper()
 	var result map[string]any
-	if err := json.Unmarshal(data, &result); err != nil {
-		t.Fatalf("invalid JSON: %v, got: %s", err, string(data))
-	}
+	require.NoError(t, json.Unmarshal(data, &result), "invalid JSON: %s", string(data))
 	return result
 }
 
@@ -43,16 +43,10 @@ func TestContractJSONHandler_RequiredFields(t *testing.T) {
 	result := parseJSONLine(t, buf.Bytes())
 
 	for _, key := range []string{"time", "level", "message", "attributes"} {
-		if _, ok := result[key]; !ok {
-			t.Errorf("missing required key: %s", key)
-		}
+		require.Contains(t, result, key, "missing required key")
 	}
-	if result["message"] != "test message" {
-		t.Errorf("message = %v, want 'test message'", result["message"])
-	}
-	if result["level"] != "INFO" {
-		t.Errorf("level = %v, want INFO", result["level"])
-	}
+	require.Equal(t, "test message", result["message"], "message")
+	require.Equal(t, "INFO", result["level"], "level")
 }
 
 // =============================================================================
@@ -76,9 +70,7 @@ func TestContractJSONHandler_LevelStrings(t *testing.T) {
 			r := slog.NewRecord(time.Now(), tt.level, "test", 0)
 			_ = h.Handle(context.Background(), r)
 			result := parseJSONLine(t, buf.Bytes())
-			if result["level"] != tt.want {
-				t.Errorf("level = %v, want %s", result["level"], tt.want)
-			}
+			require.Equal(t, tt.want, result["level"], "level")
 		})
 	}
 }
@@ -101,15 +93,9 @@ func TestContractJSONHandler_UserAttributes(t *testing.T) {
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
 
-	if attrs["str"] != "hello" {
-		t.Errorf("attrs.str = %v, want hello", attrs["str"])
-	}
-	if attrs["num"] != float64(42) {
-		t.Errorf("attrs.num = %v, want 42", attrs["num"])
-	}
-	if attrs["flag"] != true {
-		t.Errorf("attrs.flag = %v, want true", attrs["flag"])
-	}
+	require.Equal(t, "hello", attrs["str"], "attrs.str")
+	require.Equal(t, float64(42), attrs["num"], "attrs.num")
+	require.Equal(t, true, attrs["flag"], "attrs.flag")
 }
 
 // =============================================================================
@@ -140,32 +126,18 @@ func TestContractJSONHandler_AuditFieldPromotion(t *testing.T) {
 	result := parseJSONLine(t, buf.Bytes())
 
 	// Promoted top-level fields carry the PRESET values.
-	if result["event_type"] != "login" {
-		t.Errorf("event_type = %v, want login (preset)", result["event_type"])
-	}
-	if result["actor"] != "user:42" {
-		t.Errorf("actor = %v, want user:42 (preset)", result["actor"])
-	}
-	if result["success"] != true {
-		t.Errorf("success = %v, want true (preset)", result["success"])
-	}
+	require.Equal(t, "login", result["event_type"], "event_type (preset)")
+	require.Equal(t, "user:42", result["actor"], "actor (preset)")
+	require.Equal(t, true, result["success"], "success (preset)")
 
 	attrs := result["attributes"].(map[string]any)
-	if attrs["ip"] != "127.0.0.1" {
-		t.Errorf("attributes.ip = %v, want 127.0.0.1", attrs["ip"])
-	}
+	require.Equal(t, "127.0.0.1", attrs["ip"], "attributes.ip")
 
 	// The forged record-level values remain inside attributes as forensic
 	// evidence — they could not reach the promoted top-level fields.
-	if attrs["actor"] != "attacker" {
-		t.Errorf("attributes.actor = %v, want attacker (record value kept for evidence)", attrs["actor"])
-	}
-	if attrs["event_type"] != "forged" {
-		t.Errorf("attributes.event_type = %v, want forged (record value kept for evidence)", attrs["event_type"])
-	}
-	if attrs["success"] != false {
-		t.Errorf("attributes.success = %v, want false (record value kept for evidence)", attrs["success"])
-	}
+	require.Equal(t, "attacker", attrs["actor"], "attributes.actor (record value kept for evidence)")
+	require.Equal(t, "forged", attrs["event_type"], "attributes.event_type (record value kept for evidence)")
+	require.Equal(t, false, attrs["success"], "attributes.success (record value kept for evidence)")
 }
 
 // TestContractJSONHandler_RecordAttrNoPromotion verifies that when NO preset
@@ -183,19 +155,11 @@ func TestContractJSONHandler_RecordAttrNoPromotion(t *testing.T) {
 	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
-	if _, ok := result["actor"]; ok {
-		t.Error("record-level actor must not be promoted to top level")
-	}
-	if _, ok := result["event_type"]; ok {
-		t.Error("record-level event_type must not be promoted to top level")
-	}
-	if _, ok := result["success"]; ok {
-		t.Error("record-level success must not be promoted to top level")
-	}
+	require.NotContains(t, result, "actor", "record-level actor must not be promoted to top level")
+	require.NotContains(t, result, "event_type", "record-level event_type must not be promoted to top level")
+	require.NotContains(t, result, "success", "record-level success must not be promoted to top level")
 	attrs := result["attributes"].(map[string]any)
-	if attrs["actor"] != "attacker" {
-		t.Errorf("attributes.actor = %v, want attacker", attrs["actor"])
-	}
+	require.Equal(t, "attacker", attrs["actor"], "attributes.actor")
 }
 
 // 类型不匹配时不提升：event_type 不是 string、success 不是 bool
@@ -212,17 +176,11 @@ func TestContractJSONHandler_AuditFieldNoPromotionOnTypeMismatch(t *testing.T) {
 	result := parseJSONLine(t, buf.Bytes())
 
 	// 不应提升到顶层（类型不匹配）
-	if _, ok := result["event_type"]; ok {
-		t.Error("event_type should not be promoted when not a string")
-	}
-	if _, ok := result["success"]; ok {
-		t.Error("success should not be promoted when not a bool")
-	}
+	require.NotContains(t, result, "event_type", "event_type should not be promoted when not a string")
+	require.NotContains(t, result, "success", "success should not be promoted when not a bool")
 
 	attrs := result["attributes"].(map[string]any)
-	if attrs["event_type"] == nil {
-		t.Error("event_type should remain in attributes")
-	}
+	require.NotNil(t, attrs["event_type"], "event_type should remain in attributes")
 }
 
 // =============================================================================
@@ -246,9 +204,7 @@ func TestContractJSONHandler_NonFiniteFloats(t *testing.T) {
 
 	// NaNSafe 策略：NaN/Inf → nil
 	for _, key := range []string{"nan", "pos_inf", "neg_inf"} {
-		if _, ok := attrs[key]; !ok {
-			t.Errorf("%s missing from attributes", key)
-		}
+		require.Contains(t, attrs, key, "missing from attributes")
 	}
 }
 
@@ -266,9 +222,7 @@ func TestContractJSONHandler_WithGroup(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
-	if attrs["request.id"] != "abc" {
-		t.Errorf("attributes[request.id] = %v, want abc", attrs["request.id"])
-	}
+	require.Equal(t, "abc", attrs["request.id"], "attributes[request.id]")
 }
 
 // =============================================================================
@@ -288,12 +242,8 @@ func TestContractJSONHandler_WithGroupWithAttrs(t *testing.T) {
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
 
-	if attrs["http.method"] != "GET" {
-		t.Errorf("attributes[http.method] = %v, want GET", attrs["http.method"])
-	}
-	if attrs["http.status"] != float64(200) {
-		t.Errorf("attributes[http.status] = %v, want 200", attrs["http.status"])
-	}
+	require.Equal(t, "GET", attrs["http.method"], "attributes[http.method]")
+	require.Equal(t, float64(200), attrs["http.status"], "attributes[http.status]")
 }
 
 // =============================================================================
@@ -310,9 +260,7 @@ func TestContractJSONHandler_NestedGroup(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
-	if attrs["http.request.id"] != "123" {
-		t.Errorf("attributes[http.request.id] = %v, want 123", attrs["http.request.id"])
-	}
+	require.Equal(t, "123", attrs["http.request.id"], "attributes[http.request.id]")
 }
 
 // =============================================================================
@@ -328,12 +276,8 @@ func TestContractJSONHandler_SourceField(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	if source, ok := result["source"].(string); ok {
-		if source == "" {
-			t.Error("source field should not be empty when PC is set")
-		}
-		if !contains(source, "json_handler_test.go") {
-			t.Errorf("source should contain test file name, got: %s", source)
-		}
+		require.NotEmpty(t, source, "source field should not be empty when PC is set")
+		require.Contains(t, source, "json_handler_test.go", "source should contain test file name")
 	}
 }
 
@@ -376,13 +320,9 @@ func TestContractJSONHandler_Concurrent(t *testing.T) {
 			continue
 		}
 		var result map[string]any
-		if err := json.Unmarshal(line, &result); err != nil {
-			t.Errorf("invalid JSON line: %v, got: %s", err, string(line))
-		}
+		require.NoError(t, json.Unmarshal(line, &result), "invalid JSON line: %s", string(line))
 	}
-	if len(lines) != 100 {
-		t.Errorf("expected 100 lines, got %d", len(lines))
-	}
+	require.Len(t, lines, 100, "expected 100 lines")
 }
 
 // =============================================================================
@@ -406,28 +346,14 @@ func TestContractJSONHandler_AuditRecordLevelPromotion(t *testing.T) {
 	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
-	if result["event_type"] != "login" {
-		t.Errorf("event_type = %v, want login promoted from the AUDIT record", result["event_type"])
-	}
-	if result["actor"] != "user:42" {
-		t.Errorf("actor = %v, want user:42 promoted from the AUDIT record", result["actor"])
-	}
-	if result["success"] != true {
-		t.Errorf("success = %v, want true promoted from the AUDIT record", result["success"])
-	}
+	require.Equal(t, "login", result["event_type"], "event_type promoted from the AUDIT record")
+	require.Equal(t, "user:42", result["actor"], "actor promoted from the AUDIT record")
+	require.Equal(t, true, result["success"], "success promoted from the AUDIT record")
 	attrs := result["attributes"].(map[string]any)
-	if _, ok := attrs["event_type"]; ok {
-		t.Error("promoted event_type must be removed from attributes")
-	}
-	if _, ok := attrs["actor"]; ok {
-		t.Error("promoted actor must be removed from attributes")
-	}
-	if _, ok := attrs["success"]; ok {
-		t.Error("promoted success must be removed from attributes")
-	}
-	if attrs["ip"] != "127.0.0.1" {
-		t.Errorf("attributes.ip = %v, want 127.0.0.1", attrs["ip"])
-	}
+	require.NotContains(t, attrs, "event_type", "promoted event_type must be removed from attributes")
+	require.NotContains(t, attrs, "actor", "promoted actor must be removed from attributes")
+	require.NotContains(t, attrs, "success", "promoted success must be removed from attributes")
+	require.Equal(t, "127.0.0.1", attrs["ip"], "attributes.ip")
 }
 
 // TestContractJSONHandler_AuditPresetWinsOverRecord: with BOTH a preset and
@@ -442,13 +368,9 @@ func TestContractJSONHandler_AuditPresetWinsOverRecord(t *testing.T) {
 	_ = derived.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
-	if result["event_type"] != "login" {
-		t.Errorf("event_type = %v, want login (preset wins)", result["event_type"])
-	}
+	require.Equal(t, "login", result["event_type"], "event_type (preset wins)")
 	attrs := result["attributes"].(map[string]any)
-	if attrs["event_type"] != "delete" {
-		t.Errorf("attributes.event_type = %v, want delete (record value kept as evidence)", attrs["event_type"])
-	}
+	require.Equal(t, "delete", attrs["event_type"], "attributes.event_type (record value kept as evidence)")
 }
 
 // TestContractJSONHandler_InfoPresetPromotesRecordStays: on non-AUDIT
@@ -463,13 +385,9 @@ func TestContractJSONHandler_InfoPresetPromotesRecordStays(t *testing.T) {
 	_ = derived.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
-	if result["actor"] != "user:42" {
-		t.Errorf("actor = %v, want user:42 (preset promotes on INFO too)", result["actor"])
-	}
+	require.Equal(t, "user:42", result["actor"], "actor (preset promotes on INFO too)")
 	attrs := result["attributes"].(map[string]any)
-	if attrs["actor"] != "impostor" {
-		t.Errorf("attributes.actor = %v, want impostor (record value never promoted on INFO)", attrs["actor"])
-	}
+	require.Equal(t, "impostor", attrs["actor"], "attributes.actor (record value never promoted on INFO)")
 }
 
 // TestContractJSONHandler_AuditRecordTypeMismatchNoPromotion: a type-
@@ -485,16 +403,10 @@ func TestContractJSONHandler_AuditRecordTypeMismatchNoPromotion(t *testing.T) {
 	_ = h.Handle(context.Background(), r)
 
 	result := parseJSONLine(t, buf.Bytes())
-	if _, ok := result["event_type"]; ok {
-		t.Error("int event_type must not be promoted, even on AUDIT records")
-	}
-	if _, ok := result["success"]; ok {
-		t.Error("int success must not be promoted, even on AUDIT records")
-	}
+	require.NotContains(t, result, "event_type", "int event_type must not be promoted, even on AUDIT records")
+	require.NotContains(t, result, "success", "int success must not be promoted, even on AUDIT records")
 	attrs := result["attributes"].(map[string]any)
-	if attrs["event_type"] == nil {
-		t.Error("type-mismatched event_type should remain in attributes")
-	}
+	require.NotNil(t, attrs["event_type"], "type-mismatched event_type should remain in attributes")
 }
 
 // =============================================================================
@@ -514,13 +426,9 @@ func TestContractJSONHandler_TruncationMarkerOnAttrCount(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
-	if attrs["_truncated"] != true {
-		t.Error("attributes._truncated must be true when the attr count cap is hit")
-	}
+	require.Equal(t, true, attrs["_truncated"], "attributes._truncated must be true when the attr count cap is hit")
 	// 1024 capped entries + the marker itself.
-	if len(attrs) != 1025 {
-		t.Errorf("attributes len = %d, want 1025 (1024 cap + marker)", len(attrs))
-	}
+	require.Len(t, attrs, 1025, "attributes len (1024 cap + marker)")
 }
 
 // TestContractJSONHandler_TruncationMarkerOnKeyLen: a key longer than the
@@ -535,18 +443,14 @@ func TestContractJSONHandler_TruncationMarkerOnKeyLen(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
-	if attrs["_truncated"] != true {
-		t.Error("attributes._truncated must be true when a key is clipped")
-	}
+	require.Equal(t, true, attrs["_truncated"], "attributes._truncated must be true when a key is clipped")
 	foundClipped := false
 	for k := range attrs {
 		if k != "_truncated" && strings.HasPrefix(k, strings.Repeat("k", 200)) && len(k) <= 256 {
 			foundClipped = true
 		}
 	}
-	if !foundClipped {
-		t.Errorf("expected a clipped <=256B key among attributes: %d entries", len(attrs))
-	}
+	require.True(t, foundClipped, "expected a clipped <=256B key among attributes: %d entries", len(attrs))
 }
 
 // TestContractJSONHandler_NoTruncationMarker: intact records must not carry
@@ -560,9 +464,7 @@ func TestContractJSONHandler_NoTruncationMarker(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
-	if _, ok := attrs["_truncated"]; ok {
-		t.Error("_truncated must be absent when nothing was dropped or clipped")
-	}
+	require.NotContains(t, attrs, "_truncated", "_truncated must be absent when nothing was dropped or clipped")
 }
 
 // TestContractJSONHandler_TruncationMarkerOnDepth: a group nesting deeper
@@ -581,7 +483,27 @@ func TestContractJSONHandler_TruncationMarkerOnDepth(t *testing.T) {
 
 	result := parseJSONLine(t, buf.Bytes())
 	attrs := result["attributes"].(map[string]any)
-	if attrs["_truncated"] != true {
-		t.Error("attributes._truncated must be true when the nesting cap drops a subtree")
-	}
+	require.Equal(t, true, attrs["_truncated"], "attributes._truncated must be true when the nesting cap drops a subtree")
+}
+
+// TestContractJSONHandler_NestedUnserializableFallback is the regression test
+// for the silent record loss: a NaN (or chan/func) nested inside a map attr
+// used to fail json.Marshal, and Handle returned the error — which
+// slog.Logger discards — so the record vanished with no trace. Now a
+// fallback ERROR record must be written.
+func TestContractJSONHandler_NestedUnserializableFallback(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "IMPORTANT audit message", 0)
+	r.AddAttrs(slog.Any("nested", map[string]any{"ratio": math.NaN()}))
+	require.NoError(t, h.Handle(context.Background(), r), "Handle returned error instead of degrading")
+
+	out := buf.String()
+	require.Contains(t, out, "marshal failed", "expected fallback record")
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed), "fallback output is not valid JSON: %s", out)
+	require.Equal(t, "ERROR", parsed["level"], "fallback level")
+	attrs := parsed["attributes"].(map[string]any)
+	require.Contains(t, attrs["original_message"].(string), "IMPORTANT audit message", "fallback lost original message")
+	require.NotNil(t, attrs["marshal_error"], "fallback missing marshal_error attribute")
 }

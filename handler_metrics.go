@@ -6,97 +6,93 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
-// HandlerMetrics defines the interface for collecting handler-level metrics such as latency, errors, and drops.
+// HandlerMetrics 定义采集 handler 级指标（延迟、错误、丢弃）的接口。
 type HandlerMetrics interface {
-	// ObserveHandle records the latency of a single Handle call.
+	// ObserveHandle 记录一次 Handle 调用的延迟。
 	ObserveHandle(duration time.Duration)
 
-	// IncError increments the error counter.
+	// IncError 递增错误计数器。
 	IncError(handlerName string)
 
-	// IncDroppedN adds n dropped records to the dropped-record counter.
-	// The magnitude form lets MetricsHandler forward a buffering handler's
-	// cumulative drop counter exactly: when an inner flush fails and drops a
-	// whole batch between two Handle calls, the jump surfaces as one
-	// IncDroppedN(name, batchSize) call instead of an under-counting +1.
+	// IncDroppedN 向丢弃记录计数器加 n。带幅值的形式让 MetricsHandler
+	// 能精确转发缓冲 handler 的累计丢弃计数：当内层刷写失败并在两次
+	// Handle 调用之间丢弃整批记录时，跳变作为一次
+	// IncDroppedN(name, batchSize) 上报，而非少计的 +1。
 	IncDroppedN(handlerName string, n int64)
 }
 
-// DroppedCounter is implemented by handlers that track records dropped due to
-// a full backlog or shutdown (AsyncHandler, database/syslog/mbta Handlers).
-// MetricsHandler probes its inner chain for one and surfaces the delta as
-// IncDropped — without this, buffer-full floods were invisible to Prometheus.
+// DroppedCounter 由跟踪因积压满或关闭而丢弃记录的 handler 实现
+// （AsyncHandler、database/syslog/mbta Handler）。MetricsHandler 探测其
+// 内层链并以上报丢弃的方式呈现增量——没有它，缓冲满洪峰对
+// Prometheus 是不可见的。
 type DroppedCounter interface {
 	Dropped() int64
 }
 
-// droppedNone is the sentinel stored when no DroppedCounter exists in the
-// chain, so the probe walk runs at most once per handler instance.
+// droppedNone 是链中不存在 DroppedCounter 时存储的哨兵，
+// 使探测遍历每个 handler 实例至多执行一次。
 type droppedNone struct{}
 
 func (droppedNone) Dropped() int64 { return 0 }
 
-// findDroppedCounter walks the decorator chain for a DroppedCounter. Depth is
-// bounded like every other unwrap walk.
+// findDroppedCounter 沿 handler 图查找首个 DroppedCounter,经
+// walkHandlers 统一口径(unwrap 链 + fanout 展开),找到即停。
 func findDroppedCounter(h slog.Handler) DroppedCounter {
-	for depth := 0; h != nil && depth <= maxUnwrapDepth; depth++ {
-		if dc, ok := h.(DroppedCounter); ok {
-			return dc
+	var dc DroppedCounter
+	_ = walkHandlers(h, func(x slog.Handler) error {
+		if d, ok := x.(DroppedCounter); ok {
+			dc = d
+			return errStopWalk
 		}
-		uw, ok := h.(handlerUnwrapper)
-		if !ok {
-			return nil
-		}
-		h = uw.unwrapHandler()
-	}
-	return nil
+		return nil
+	})
+	return dc
 }
 
-// MetricsHandler is a slog.Handler decorator that records write latency and error counts via the HandlerMetrics interface.
+// MetricsHandler 是一个 slog.Handler 装饰器，经 HandlerMetrics 接口
+// 记录写入延迟与错误计数。
 //
-// Drops: when the wrapped chain contains a buffering handler (declare
-// UseMetrics AFTER UseAsync/UseSyslog-style options so this middleware ends
-// up outermost), each Handle surfaces the buffering handler's dropped delta
-// as IncDroppedN, by magnitude: a jump of N in the inner Dropped counter
-// between two Handle calls reports N dropped records, not 1.
+// 丢弃：当被包裹的链中含有缓冲 handler 时（把 UseMetrics 声明在
+// UseAsync/UseSyslog 类选项之后，使本中间件位于最外层），每次 Handle
+// 都以幅值形式把缓冲 handler 的丢弃增量上报为 IncDroppedN：两次
+// Handle 调用之间内层 Dropped 计数跳变 N 就上报 N 条丢弃记录，而非 1。
 type MetricsHandler struct {
 	inner        slog.Handler
 	metrics      HandlerMetrics
 	handlerName  string
-	dropCounter  atomic.Value // DroppedCounter or droppedNone; resolved lazily
+	dropCounter  atomic.Value // DroppedCounter 或 droppedNone；惰性解析
 	lastDropped  atomic.Int64
-	errorHandler *atomic.Pointer[ErrorHandler] // shared across clones
+	errorHandler *handlerkit.ErrorSlot // 克隆间共享
 }
 
-// WithMetrics wraps inner in a MetricsHandler that observes latency and errors for the named handler.
+// WithMetrics 把 inner 包进 MetricsHandler，为具名 handler 观测延迟与错误。
 func WithMetrics(inner slog.Handler, m HandlerMetrics, handlerName string) slog.Handler {
 	if inner == nil || m == nil {
 		return inner
 	}
-	eh := DefaultErrorHandler
-	ep := new(atomic.Pointer[ErrorHandler])
-	ep.Store(&eh)
 	return &MetricsHandler{
 		inner:        inner,
 		metrics:      m,
 		handlerName:  handlerName,
-		errorHandler: ep,
+		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler),
 	}
 }
 
-// Enabled implements slog.Handler.
+// Enabled 实现 slog.Handler。
 func (h *MetricsHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-// metricsSafe contains panics from user-supplied HandlerMetrics
-// implementations — the same containment every other user callback gets.
+// metricsSafe 遏制用户提供的 HandlerMetrics 实现的 panic
+// ——与其他所有用户回调相同的遏制措施。
 func (h *MetricsHandler) metricsSafe(op string, fn func()) {
 	defer func() {
 		if p := recover(); p != nil {
-			ReportError(LoadErrorHandler(h.errorHandler), &HandlerError{
+			h.errorHandler.Report(&HandlerError{
 				Component: "metrics", Operation: op,
 				Err: fmt.Errorf("HandlerMetrics panic recovered: %v", p),
 			})
@@ -105,7 +101,7 @@ func (h *MetricsHandler) metricsSafe(op string, fn func()) {
 	fn()
 }
 
-// reportDropped surfaces the inner chain's dropped-record delta.
+// reportDropped 呈现内层链的丢弃记录增量。
 func (h *MetricsHandler) reportDropped() {
 	var dc DroppedCounter
 	if v := h.dropCounter.Load(); v != nil {
@@ -132,7 +128,7 @@ func (h *MetricsHandler) reportDropped() {
 	}
 }
 
-// Handle implements slog.Handler.
+// Handle 实现 slog.Handler。
 func (h *MetricsHandler) Handle(ctx context.Context, r slog.Record) error {
 	start := time.Now()
 	err := h.inner.Handle(ctx, r)
@@ -145,7 +141,7 @@ func (h *MetricsHandler) Handle(ctx context.Context, r slog.Record) error {
 	return err
 }
 
-// WithAttrs implements slog.Handler.
+// WithAttrs 实现 slog.Handler。
 func (h *MetricsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &MetricsHandler{
 		inner:        h.inner.WithAttrs(attrs),
@@ -155,7 +151,7 @@ func (h *MetricsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup implements slog.Handler.
+// WithGroup 实现 slog.Handler。
 func (h *MetricsHandler) WithGroup(name string) slog.Handler {
 	return &MetricsHandler{
 		inner:        h.inner.WithGroup(name),
@@ -170,8 +166,8 @@ func (h *MetricsHandler) unwrapHandler() slog.Handler {
 }
 
 func (h *MetricsHandler) setErrorHandler(fn ErrorHandler) {
-	h.errorHandler.Store(&fn)
-	// propagateErrorHandler also recurses via unwrapHandler to reach inner.
+	h.errorHandler.Store(fn)
+	// propagateErrorHandler 也会经 unwrapHandler 递归触达 inner。
 }
 
 var (

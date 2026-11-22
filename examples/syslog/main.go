@@ -1,4 +1,4 @@
-// syslog: send logs to a remote syslog server
+// syslog: 将日志发送到远程 syslog 服务器
 package main
 
 import (

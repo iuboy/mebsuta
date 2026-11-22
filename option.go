@@ -3,12 +3,11 @@ package mebsuta
 import (
 	"fmt"
 	"log/slog"
-	"sync/atomic"
 
 	"github.com/iuboy/mebsuta/filerotate"
 )
 
-// HandlerOption is a functional option for configuring the handler chain built by New.
+// HandlerOption 是用于配置 New 所构建 handler 链的函数式选项。
 type HandlerOption func(*handlerOptions) error
 
 type handlerOptions struct {
@@ -17,7 +16,7 @@ type handlerOptions struct {
 	errorHandler ErrorHandler
 }
 
-// WithHandler adds a slog.Handler to the multi-handler chain.
+// WithHandler 向多 handler 链中添加一个 slog.Handler。
 func WithHandler(h slog.Handler) HandlerOption {
 	return func(o *handlerOptions) error {
 		if h == nil {
@@ -28,7 +27,7 @@ func WithHandler(h slog.Handler) HandlerOption {
 	}
 }
 
-// UseStdout adds a StdoutHandler with the given config.
+// UseStdout 以给定配置添加一个 StdoutHandler。
 func UseStdout(cfg StdoutConfig) HandlerOption {
 	return func(o *handlerOptions) error {
 		h, err := NewStdoutHandler(cfg)
@@ -40,7 +39,7 @@ func UseStdout(cfg StdoutConfig) HandlerOption {
 	}
 }
 
-// UseFile adds a FileHandler with the given rotation and file config.
+// UseFile 以给定的轮转配置与文件配置添加一个 FileHandler。
 func UseFile(rotateCfg filerotate.Config, cfg FileConfig) HandlerOption {
 	return func(o *handlerOptions) error {
 		h, err := NewFileHandler(rotateCfg, cfg)
@@ -52,12 +51,12 @@ func UseFile(rotateCfg filerotate.Config, cfg FileConfig) HandlerOption {
 	}
 }
 
-// UseAsync wraps the handler chain with async buffering.
+// UseAsync 为 handler 链包裹异步缓冲。
 func UseAsync(cfg AsyncConfig) HandlerOption {
 	return func(o *handlerOptions) error {
-		// Fail fast: an oversized BufferSize is an at-construction OOM
-		// surface (the channel is allocated eagerly), so New rejects it as
-		// *ConfigError before any handler is built.
+		// 快速失败：超限的 BufferSize 是构造期 OOM 面（channel 立即
+		// 分配），因此 New 在构建任何 handler 之前就以 *ConfigError
+		// 拒绝。
 		if _, err := cfg.Validate(); err != nil {
 			return err
 		}
@@ -68,7 +67,7 @@ func UseAsync(cfg AsyncConfig) HandlerOption {
 	}
 }
 
-// UseSampling wraps the handler chain with time-window sampling.
+// UseSampling 为 handler 链包裹时间窗口采样。
 func UseSampling(cfg SamplingConfig) HandlerOption {
 	return func(o *handlerOptions) error {
 		o.middlewares = append(o.middlewares, func(inner slog.Handler) slog.Handler {
@@ -78,7 +77,7 @@ func UseSampling(cfg SamplingConfig) HandlerOption {
 	}
 }
 
-// UseMetrics wraps the handler chain with Prometheus metrics collection.
+// UseMetrics 为 handler 链包裹 Prometheus 指标采集。
 func UseMetrics(m HandlerMetrics, name string) HandlerOption {
 	return func(o *handlerOptions) error {
 		o.middlewares = append(o.middlewares, func(inner slog.Handler) slog.Handler {
@@ -88,7 +87,7 @@ func UseMetrics(m HandlerMetrics, name string) HandlerOption {
 	}
 }
 
-// UseContextExtractor injects context-derived attributes into each log record.
+// UseContextExtractor 向每条日志记录注入从 context 提取的属性。
 func UseContextExtractor(extract ContextExtractor) HandlerOption {
 	return func(o *handlerOptions) error {
 		o.middlewares = append(o.middlewares, func(inner slog.Handler) slog.Handler {
@@ -98,10 +97,10 @@ func UseContextExtractor(extract ContextExtractor) HandlerOption {
 	}
 }
 
-// WithErrorHandler sets the function that handles internal handler errors. Default writes to os.Stderr.
-// To silently discard internal errors, pass SilentErrorHandler().
-// When fn is nil, handlers retain their DefaultErrorHandler (os.Stderr output) —
-// nil does not propagate and does not silence errors.
+// WithErrorHandler 设置处理 handler 内部错误的函数。默认写入 os.Stderr。
+// 要静默丢弃内部错误，传入 SilentErrorHandler()。
+// fn 为 nil 时，handler 保留其 DefaultErrorHandler（输出到 os.Stderr）——
+// nil 既不传播也不静默错误。
 func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	return func(o *handlerOptions) error {
 		o.errorHandler = fn
@@ -109,17 +108,7 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	}
 }
 
-// LoadErrorHandler loads the ErrorHandler from an atomic pointer.
-// Exported for use by sub-packages (database, syslog) to avoid duplicating this logic.
-func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
-	v := p.Load()
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
-// buildHandler builds a slog.Handler from options. With 0 handlers, uses the default stdout JSON logger.
+// buildHandler 根据选项构建 slog.Handler。0 个 handler 时使用默认的 stdout JSON logger。
 func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	o := &handlerOptions{}
 	for _, opt := range opts {
@@ -135,13 +124,13 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 		o.handlers = append(o.handlers, h)
 	}
 
-	// Build terminal: single handler or fanout
+	// 构建末端：单个 handler 或 fanout
 	var handler slog.Handler
 	if len(o.handlers) == 1 {
 		handler = o.handlers[0]
 	} else {
-		// When no custom error handler is set, use the default (os.Stderr)
-		// so that panic recovery errors in safeMulti are not silently discarded.
+		// 未设置自定义错误处理器时使用默认值（os.Stderr），
+		// 避免 safeMulti 中 panic 恢复产生的错误被静默丢弃。
 		eh := o.errorHandler
 		if eh == nil {
 			eh = DefaultErrorHandler
@@ -149,12 +138,12 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 		handler = safeMultiHandler(o.handlers, eh)
 	}
 
-	// Apply middlewares: declared later wraps outermost
+	// 应用中间件：后声明的包裹在最外层
 	for _, mw := range o.middlewares {
 		handler = mw(handler)
 	}
 
-	// Propagate error handler to all layers
+	// 向所有层传播错误处理器
 	propagateErrorHandler(handler, o.errorHandler, 0)
 
 	return handler, nil

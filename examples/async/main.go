@@ -1,4 +1,4 @@
-// async: async buffered logging
+// async: 异步缓冲日志
 package main
 
 import (

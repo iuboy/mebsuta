@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
-// ConfigError represents a configuration validation error.
+// ConfigError 表示配置校验错误。
 type ConfigError struct {
 	Field string
 	Msg   string
@@ -18,14 +20,14 @@ func (e *ConfigError) Error() string {
 
 // --- FileConfig ---
 
-// Default configuration values.
+// 默认配置值。
 const (
 	DefaultAsyncBufferSize = 256
 
-	// DefaultErrorTimeout bounds how long an Error-or-above record may block
-	// the calling goroutine waiting for buffer space before being dropped.
-	// Callers of slog are typically request handlers: a long block turns a
-	// slow sink plus an Error spike into a whole-service stall.
+	// DefaultErrorTimeout 限定 Error 及以上级别的记录在缓冲无空间时
+	// 阻塞调用方 goroutine 的最长时间，超时后丢弃。slog 的调用方通常
+	// 是请求处理者：长时间阻塞会把「慢速下游 + Error 洪峰」放大为
+	// 整个服务的停摆。
 	DefaultErrorTimeout = time.Second
 
 	DefaultSamplingInitial    = 100
@@ -33,17 +35,17 @@ const (
 	DefaultSamplingWindow     = time.Second
 )
 
-// FileConfig holds mebsuta-specific configuration for file log output (format and level).
-// Rotation configuration is handled by filerotate.Config.
+// FileConfig 持有文件日志输出的 mebsuta 专属配置（格式与级别）。
+// 轮转配置由 filerotate.Config 处理。
 type FileConfig struct {
-	Level    slog.Leveler   // Log level filter. Defaults to slog.LevelInfo.
-	Format   string         // "json" or "console". Defaults to "json".
+	Level    slog.Leveler   // 日志级别过滤。默认 slog.LevelInfo。
+	Format   string         // "json" 或 "console"。默认 "json"。
 	Timezone *time.Location // 日志时间展示时区，nil 用 UTC。
 }
 
-// Validate returns a normalized copy with defaults applied.
+// Validate 返回应用默认值后的规范化副本。
 func (c FileConfig) Validate() (FileConfig, error) {
-	if isNilLeveler(c.Level) {
+	if handlerkit.IsNilLeveler(c.Level) {
 		c.Level = slog.LevelInfo
 	}
 	if err := validateFormat(c.Format); err != nil {
@@ -57,20 +59,19 @@ func (c FileConfig) Validate() (FileConfig, error) {
 
 // --- StdoutConfig ---
 
-// StdoutConfig holds configuration for stdout log output.
-// It intentionally mirrors FileConfig rather than sharing a common embedded type,
-// because file and stdout output may diverge in the future (e.g., stdout gaining
-// color/theme options, file gaining compression settings). Keeping them separate
-// avoids breaking API changes when they evolve independently.
+// StdoutConfig 持有 stdout 日志输出的配置。
+// 它有意与 FileConfig 保持镜像而非共享公共嵌入类型，因为文件与
+// stdout 输出未来可能分道扬镳（如 stdout 增加颜色/主题选项、文件增加
+// 压缩设置）。保持分离可避免二者独立演进时产生破坏性 API 变更。
 type StdoutConfig struct {
-	Level    slog.Leveler   // Log level filter. Defaults to slog.LevelInfo.
-	Format   string         // "json" or "console". Defaults to "json".
+	Level    slog.Leveler   // 日志级别过滤。默认 slog.LevelInfo。
+	Format   string         // "json" 或 "console"。默认 "json"。
 	Timezone *time.Location // 日志时间展示时区，nil 用 UTC。
 }
 
-// Validate checks required fields and returns a normalized copy with defaults applied.
+// Validate 检查必填字段并返回应用默认值后的规范化副本。
 func (c StdoutConfig) Validate() (StdoutConfig, error) {
-	if isNilLeveler(c.Level) {
+	if handlerkit.IsNilLeveler(c.Level) {
 		c.Level = slog.LevelInfo
 	}
 	if err := validateFormat(c.Format); err != nil {
@@ -82,23 +83,16 @@ func (c StdoutConfig) Validate() (StdoutConfig, error) {
 	return c, nil
 }
 
-// level returns the effective slog.Level, resolving any Leveler implementation.
-// Unlike calling c.Level.Level() directly, this avoids panicking when a typed nil
-// pointer (e.g. (*slog.Level)(nil)) is stored in the Leveler interface.
+// level 返回生效的 slog.Level，解析任意 Leveler 实现。
+// 与直接调用 c.Level.Level() 不同，当 Leveler 接口中存有类型化 nil
+// 指针（如 (*slog.Level)(nil)）时可避免 panic。
 func (c StdoutConfig) level() slog.Level {
-	if lv, ok := c.Level.(slog.Level); ok {
-		return lv
-	}
-	if isNilLeveler(c.Level) {
-		return slog.LevelInfo
-	}
-	return c.Level.Level()
+	return handlerkit.SafeLevel(c.Level)
 }
 
-// validateFormat rejects unsupported Format values (e.g. "text", "yaml") that
-// would otherwise silently fall through to JSON in newInnerHandler's default
-// case — a silent misconfiguration where the user requests console but gets JSON.
-// An empty format is valid and defaulted to "json" by the caller.
+// validateFormat 拒绝不支持的 Format 值（如 "text"、"yaml"），否则它们会在
+// newInnerHandler 的 default 分支中静默落到 JSON——一种用户要求 console 却
+// 得到 JSON 的静默配置错误。空格式合法，由调用方默认为 "json"。
 func validateFormat(format string) error {
 	switch format {
 	case "", "json", "console":
@@ -108,59 +102,25 @@ func validateFormat(format string) error {
 	}
 }
 
-// isNilLeveler checks whether l is a nil interface or contains a nil pointer,
-// both of which would cause a panic if l.Level() is called.
-func isNilLeveler(l slog.Leveler) bool {
-	if l == nil {
-		return true
-	}
-	// Detect typed nil pointers stored in the interface. slog.Level and
-	// slog.LevelVar both implement Leveler via pointer receiver; a nil
-	// *slog.Level or *slog.LevelVar passed to the interface makes the
-	// interface non-nil (it holds the type), but calling l.Level()
-	// dereferences nil and panics.
-	if lv, ok := l.(*slog.Level); ok && lv == nil {
-		return true
-	}
-	if lv, ok := l.(*slog.LevelVar); ok && lv == nil {
-		return true
-	}
-	return false
-}
-
-// SafeLevel calls l.Level() defensively. If l is nil or contains a nil pointer
-// (e.g. (*slog.Level)(nil) or (*slog.LevelVar)(nil) stored in the Leveler
-// interface), it returns slog.LevelInfo as a safe default instead of panicking.
-// Exported for use by sub-packages (database, syslog, mbta) that hold a
-// slog.Leveler field.
-func SafeLevel(l slog.Leveler) slog.Level {
-	if isNilLeveler(l) {
-		return slog.LevelInfo
-	}
-	return l.Level()
-}
-
 // --- AsyncConfig ---
 
-// MaxAsyncBufferSize is the upper bound for AsyncConfig.BufferSize. The
-// channel is allocated eagerly at construction, so an unvalidated huge value
-// (e.g. 1<<30 from a misread config file) is an at-construction OOM: every
-// slot reserves space for a full asyncRecord. 10000 matches the backlog caps
-// of the syslog and database handlers.
+// MaxAsyncBufferSize 是 AsyncConfig.BufferSize 的上界。channel 在构造时
+// 立即分配，未经校验的巨大值（如配置文件误读出的 1<<30）会造成构造期
+// OOM：每个槽位都为一个完整 asyncRecord 预留空间。10000 与 syslog、
+// database handler 的积压上限一致。
 const MaxAsyncBufferSize = 10000
 
-// AsyncConfig holds configuration for async log processing.
+// AsyncConfig 持有异步日志处理的配置。
 type AsyncConfig struct {
-	// BufferSize is the channel buffer size. 0 → 256; values above
-	// MaxAsyncBufferSize are rejected as *ConfigError.
+	// BufferSize 是 channel 缓冲大小。0 → 256；超过 MaxAsyncBufferSize
+	// 的值以 *ConfigError 拒绝。
 	BufferSize int
-	// ErrorTimeout bounds how long an Error-or-above record may block the
-	// calling goroutine when the buffer is full, before the record is
-	// dropped. 0 → 1s.
+	// ErrorTimeout 限定缓冲满时 Error 及以上级别的记录阻塞调用方
+	// goroutine 的最长时间，超时后丢弃该记录。0 → 1s。
 	ErrorTimeout time.Duration
 }
 
-// Validate checks required fields and returns a normalized copy with defaults applied.
+// Validate 检查必填字段并返回应用默认值后的规范化副本。
 func (c AsyncConfig) Validate() (AsyncConfig, error) {
 	if c.BufferSize <= 0 {
 		c.BufferSize = DefaultAsyncBufferSize
@@ -178,15 +138,15 @@ func (c AsyncConfig) Validate() (AsyncConfig, error) {
 
 // --- SamplingConfig ---
 
-// SamplingConfig holds configuration for log sampling.
+// SamplingConfig 持有日志采样的配置。
 type SamplingConfig struct {
-	Enabled    bool          // Enable sampling.
-	Initial    int           // First N records per window to always log. 0 → 100.
-	Thereafter int           // Log 1-in-N after initial. 0 → 10.
-	Window     time.Duration // Sampling window duration. 0 → 1s.
+	Enabled    bool          // 启用采样。
+	Initial    int           // 每窗口前 N 条始终记录。0 → 100。
+	Thereafter int           // 初始之后每 N 条记 1 条。0 → 10。
+	Window     time.Duration // 采样窗口时长。0 → 1s。
 }
 
-// Validate checks required fields and returns a normalized copy with defaults applied.
+// Validate 检查必填字段并返回应用默认值后的规范化副本。
 func (c SamplingConfig) Validate() (SamplingConfig, error) {
 	if !c.Enabled {
 		return c, nil

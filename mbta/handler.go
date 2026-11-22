@@ -1,5 +1,5 @@
-// Package mbta provides a slog.Handler that ships log records to a
-// mebsuta-forwarder server via the MBTA binary transport protocol.
+// Package mbta 提供一个 slog.Handler，通过 MBTA 二进制传输协议将日志
+// 记录外发到 mebsuta-forwarder 服务。
 package mbta
 
 import (
@@ -20,6 +20,7 @@ import (
 	v1 "github.com/iuboy/mbta-go/v1"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
 const (
@@ -32,64 +33,64 @@ const (
 	maxBufferSize       = 10000
 	connectTimeout      = 10 * time.Second
 
-	// maxAttrDepth caps group flattening recursion in recordToSignal, mirroring
-	// attrutil's depth cap. Values beyond it render as "<max-depth>".
+	// maxAttrDepth 限制 recordToSignal 中组展平的递归深度，与
+	// attrutil 的深度上限一致。超出后渲染为 "<max-depth>"。
 	maxAttrDepth = 16
 
-	// stateReady mirrors core.StateReady.String() from mbta-go, used to gate
-	// reconnection attempts.
+	// stateReady 与 mbta-go 的 core.StateReady.String() 一致，用于
+	// 门控重连尝试。
 	stateReady = "READY"
 
-	// RESULT level strings as delivered to mbta-go's ResultHandler: the
-	// corepb.ResultLevel enum names plus the client's synthetic "timeout"
-	// (internal/protocol fires it when an in-flight slot expires with no
-	// terminal RESULT).
+	// 传递给 mbta-go ResultHandler 的 RESULT 级别字符串：
+	// corepb.ResultLevel 枚举名加上客户端合成的 "timeout"
+	//（internal/protocol 在在途槽位到期且无终态
+	// RESULT 时触发）。
 	resultLevelRejected = "RESULT_LEVEL_REJECTED"
 	resultLevelReleased = "RESULT_LEVEL_RELEASED"
 	resultLevelTimeout  = "timeout"
 
-	// defaultFlushTimeout is used when Flush is called with timeout <= 0.
+	// defaultFlushTimeout 用于 Flush 以 timeout <= 0 调用时。
 	defaultFlushTimeout = 5 * time.Second
 )
 
-// Handler ships log records to a mebsuta-forwarder via MBTA protocol.
-// It implements slog.Handler, io.Closer, and mebsuta.SelfBufferedHandler.
+// Handler 通过 MBTA 协议将日志记录外发到 mebsuta-forwarder。
+// 它实现 slog.Handler、io.Closer 与 mebsuta.SelfBufferedHandler。
 type Handler struct {
-	leveler slog.Leveler
-	cfg     Config
-	client  *mbtago.Client
-	// connectMu serializes Connect attempts. mbta-go's binding converges
-	// concurrent Connects on the single-use client by closing the winner's
-	// connection (application error 0x1 "conn closed") — a reconnect fired
-	// while the initial connect was still in flight killed every live
-	// session under load. TryLock makes re-entry a no-op instead.
+	level  handlerkit.LevelGate
+	cfg    Config
+	client *mbtago.Client
+	// connectMu 串行化 Connect 尝试。mbta-go 的绑定层在单用途
+	// 客户端上收敛并发 Connect 的方式是关闭胜者的
+	// 连接（应用错误 0x1 "conn closed"）——初始连接仍在途时
+	// 触发的重连曾把负载下的每个活跃
+	// 会话都杀掉。TryLock 让重入变成 no-op。
 	connectMu *sync.Mutex
-	// pendingResults tracks seqs written to the wire whose terminal RESULT
-	// has not arrived yet (sendBatch success → handleResult visibility).
-	// Close waits on this set before sending CLOSE: control and data streams
-	// have no ordering guarantee, so an early CLOSE frame lets the server
-	// tear the connection down before the last data-stream BATCH is read.
+	// pendingResults 跟踪已写上线但终态 RESULT 尚未到达的 seq
+	//（sendBatch 成功 → handleResult 可见）。
+	// Close 在发送 CLOSE 前等待该集合：控制流与数据流
+	// 没有顺序保证，过早的 CLOSE 帧会让服务端在读完最后一个
+	// 数据流 BATCH 前就拆除连接。
 	pendingResults sync.Map
 	buffer         chan *core.SignalRecord
-	sendMu         sync.RWMutex // RLock during buffer send; Lock during Close's close(buffer)
+	sendMu         sync.RWMutex // 缓冲发送期间 RLock；Close 的 close(buffer) 期间 Lock
 	flushCh        chan chan struct{}
 	wg             sync.WaitGroup
 	ctx            context.Context
 	cancel         context.CancelFunc
 	closing        atomic.Bool
 	dropped        atomic.Int64
-	attrsDropped   atomic.Int64 // attribute entries cut by the wire-schema pre-filter
-	lastDropReport atomic.Int64 // unix nanos of the last surfaced drop report
-	errorHandler   atomic.Pointer[mebsuta.ErrorHandler]
+	attrsDropped   atomic.Int64        // 被 wire-schema 预过滤裁掉的属性条目数
+	dropGate       handlerkit.RateGate // 丢弃上报限流：每秒至多一次
+	errorHandler   *handlerkit.ErrorSlot
 	hostname       string
-	// batchSizes maps an in-flight batch's seq (returned by SendBatch) to the
-	// number of records it carried, so the internal result handler can count
-	// server-side rejections as dropped records. Entries are removed when the
-	// terminal RESULT arrives.
+	// batchSizes 将在途批次的 seq（由 SendBatch 返回）映射到
+	// 其携带的记录数，内部结果处理器据此把服务端拒绝
+	// 计为丢弃记录。终态 RESULT 到达后
+	// 条目即被移除。
 	batchSizes sync.Map
 }
 
-// NewHandler creates a Handler that connects to the forwarder specified in cfg.
+// NewHandler 创建连接到 cfg 所指定 forwarder 的 Handler。
 func NewHandler(cfg Config) (*Handler, error) {
 	cfg, err := cfg.Validate()
 	if err != nil {
@@ -105,14 +106,14 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	bufferSize := min(cfg.BufferSize, maxBufferSize)
 
-	// Dial: create client + connect in one step. The connectMu hold pairs
-	// with tryReconnect's serialization (single Connect in flight, ever).
+	// 拨号：一步完成创建客户端 + 连接。持有 connectMu 与
+	// tryReconnect 的串行化配合（同一时刻至多一个 Connect 在飞）。
 	connectMu := &sync.Mutex{}
 	connectMu.Lock()
 
-	// Propagate the full TLS credential set. Previously only InsecureSkipVerify
-	// was forwarded, so CAFile/CertFile/KeyFile/ServerName silently never took
-	// effect — leaving mTLS / custom CA / SNI configurations as no-ops.
+	// 传递完整的 TLS 凭据集。此前只转发 InsecureSkipVerify，
+	// CAFile/CertFile/KeyFile/ServerName 静默失效——
+	// mTLS / 自定义 CA / SNI 配置沦为 no-op。
 	creds := v1.ClientCredentials{
 		CAFile:             cfg.CAFile,
 		CertFile:           cfg.CertFile,
@@ -121,14 +122,14 @@ func NewHandler(cfg Config) (*Handler, error) {
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 	}
 	if cfg.InsecureSkipVerify {
-		mebsuta.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
+		handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 	}
 
-	// Dial ctx MUST be the handler-lifetime ctx: quic-go derives the
-	// connection's context from the dial context (conn.run watches ctx.Done),
-	// so canceling (or timing out) the dial context closes the ESTABLISHED
-	// connection. The connectTimeout bounds only the dial wait here; on
-	// timeout we cancel the base ctx to abort the in-flight dial.
+	// 拨号 ctx 必须是 handler 生命周期的 ctx：quic-go 从拨号
+	// context 派生连接的 context（conn.run 监视 ctx.Done），
+	// 因此取消（或超时）拨号 context 会关闭已建立的
+	// 连接。connectTimeout 在此仅限制拨号等待；
+	// 超时时我们取消基础 ctx 以中止在途拨号。
 	type dialResult struct {
 		client *mbtago.Client
 		err    error
@@ -146,7 +147,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	case r := <-dialCh:
 		client, dialErr = r.client, r.err
 	case <-time.After(connectTimeout):
-		cancel() // abort the in-flight dial
+		cancel() // 中止在途拨号
 		dialErr = fmt.Errorf("dial timed out after %v", connectTimeout)
 	}
 	if dialErr != nil {
@@ -157,7 +158,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	connectMu.Unlock() // 连接成功：锁只护「同一时刻至多一个 Connect 在飞」
 
 	h := &Handler{
-		leveler:   cfg.Level,
+		level:     handlerkit.NewLevelGate(cfg.Level),
 		cfg:       cfg,
 		client:    client,
 		connectMu: connectMu,
@@ -168,14 +169,13 @@ func NewHandler(cfg Config) (*Handler, error) {
 		hostname:  hostname,
 	}
 
-	eh := mebsuta.DefaultErrorHandler
-	h.errorHandler.Store(&eh)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
 
-	// Register the internal result handler on the client's single RESULT slot.
-	// It wraps cfg.OnResult (the only supported way for users to observe
-	// RESULTs — see Config.OnResult for the slot-ownership ruling) with drop
-	// accounting for server-side rejections, closing the "SendBatch returned
-	// nil but the server rejected the batch" blind spot.
+	// 在客户端唯一的 RESULT 槽位上注册内部结果处理器。
+	// 它包装 cfg.OnResult（用户观察 RESULT 的唯一受支持方式
+	//——槽位归属裁定见 Config.OnResult），并对服务端拒绝做丢弃
+	// 记账，堵上“SendBatch 返回 nil 但服务端拒绝该批次”的
+	// 盲区。
 	h.client.SetResultHandler(h.handleResult)
 
 	h.wg.Add(1)
@@ -184,16 +184,16 @@ func NewHandler(cfg Config) (*Handler, error) {
 	return h, nil
 }
 
-// Enabled implements slog.Handler.
+// Enabled 实现 slog.Handler。
 func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= mebsuta.SafeLevel(h.leveler)
+	return h.level.Enabled(level)
 }
 
-// Handle implements slog.Handler.
+// Handle 实现 slog.Handler。
 func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 	if h.closing.Load() {
-		// Count silently-dropped post-close records so the loss is at least
-		// visible in metrics, not just an invisible nil (mirrors database).
+		// 统计关闭后被静默丢弃的记录，让损失至少
+		// 在指标中可见，而不是不可见的 nil（与 database 一致）。
 		h.dropped.Add(1)
 		return nil
 	}
@@ -203,31 +203,31 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 	return h.safeSend(record, r.Level)
 }
 
-// Close implements io.Closer.
+// Close 实现 io.Closer。
 //
-// Drain BEFORE cancelling: processQueue's final flush (triggered by the
-// closed channel) sends with h.ctx, and the previous cancel()-first order
-// made mbta-go reject the send with context.Canceled — silently dropping
-// every buffered record on shutdown.
+// 先排空再取消：processQueue 的最终刷新（由关闭的
+// channel 触发）使用 h.ctx 发送，而过去先 cancel() 的顺序
+// 会让 mbta-go 以 context.Canceled 拒绝发送——在关闭时
+// 静默丢弃所有缓冲记录。
 func (h *Handler) Close() error {
 	if !h.closing.CompareAndSwap(false, true) {
-		// A concurrent Close already owns the drain. Wait for its drain phase
-		// to finish instead of returning early, so a double-Close caller still
-		// gets the "buffer flushed" guarantee (wg.Wait is idempotent once
-		// processQueue has exited).
+		// 并发的 Close 已接管排空。等待其排空阶段
+		// 结束而非提前返回，双 Close 调用方仍能
+		// 得到“缓冲已刷新”的保证（processQueue 退出后
+		// wg.Wait 是幂等的）。
 		h.wg.Wait()
 		return nil
 	}
 
-	// sendMu makes close(buffer) race-free against in-flight sends.
+	// sendMu 让 close(buffer) 与在途发送无竞争。
 	h.sendMu.Lock()
 	close(h.buffer)
 	h.sendMu.Unlock()
 
-	// Bounded drain: the final flush costs up to MaxRetries × (send deadline
-	// + RetryDelay) — both config-capped — but even the capped worst case can
-	// exceed CloseTimeout, so the drain itself is deadline-bounded and the
-	// remainder is dropped and reported.
+	// 有界排空：最终刷新最多花费 MaxRetries ×（发送 deadline
+	// + RetryDelay）——两者都有配置上限——但即使封顶后的最坏情况也可能
+	// 超过 CloseTimeout，因此排空本身也有 deadline，剩余部分
+	// 被丢弃并上报。
 	drained := make(chan struct{})
 	go func() {
 		h.wg.Wait()
@@ -236,20 +236,20 @@ func (h *Handler) Close() error {
 	select {
 	case <-drained:
 	case <-time.After(h.cfg.CloseTimeout):
-		h.cancel() // processQueue exits via ctx.Done; sendBatch aborts on ctx.Err
+		h.cancel() // processQueue 经 ctx.Done 退出；sendBatch 以 ctx.Err 中止
 		<-drained
-		// Accounting after the drain, not before: records processQueue pulled
-		// out of the channel are counted by sendBatch's ctx-abort branch
-		// (in-flight batches), so snapshotting the channel beforehand would
-		// double-count them. Post-drain the channel is closed with no readers,
-		// which makes len() an exact count of records never handed off.
+		// 排空后再记账，而不是之前：processQueue 已从 channel
+		// 取出的记录由 sendBatch 的 ctx 中止分支计数
+		//（在途批次），事先对 channel 快照会造成
+		// 重复计数。排空后 channel 已关闭且无读者，
+		// len() 恰好是从未交接的记录数。
 		if remaining := len(h.buffer); remaining > 0 {
 			h.dropped.Add(int64(remaining))
 			h.reportErr("close", fmt.Errorf("close drain timed out after %v: %d buffered records dropped (in-flight batches counted separately)", h.cfg.CloseTimeout, remaining))
 		}
 	}
-	// Wait for the final batches' RESULTs before sending CLOSE (see
-	// waitResults): the drain's SendBatch only means "on the wire".
+	// 发送 CLOSE 前等待最后批次的 RESULT（见
+	// waitResults）：排空的 SendBatch 只代表“已上线”。
 	h.waitResults(h.cfg.CloseTimeout)
 
 	h.cancel()
@@ -260,10 +260,10 @@ func (h *Handler) Close() error {
 	return nil
 }
 
-// closeClientBounded waits at most cfg.CloseTimeout for the mbta-go client's
-// graceful close. The client's internal drain can block up to 30s even with
-// nothing pending; an unbounded Close stalls shutdown until the orchestrator
-// SIGKILLs the process (which loses the drain anyway).
+// closeClientBounded 最多等待 cfg.CloseTimeout 让 mbta-go 客户端
+// 完成优雅关闭。客户端内部排空即使无事可做也可能阻塞 30 秒；
+// 无界的 Close 会拖住关闭流程，直到编排器
+// SIGKILL 进程（排空同样会丢失）。
 func (h *Handler) closeClientBounded() error {
 	done := make(chan error, 1)
 	go func() { done <- h.client.Close() }()
@@ -275,7 +275,7 @@ func (h *Handler) closeClientBounded() error {
 	}
 }
 
-// Flush drains all buffered records without closing the connection.
+// Flush 排空全部缓冲记录，不关闭连接。
 func (h *Handler) Flush(timeout time.Duration) error {
 	if h.closing.Load() {
 		return nil
@@ -297,74 +297,68 @@ func (h *Handler) Flush(timeout time.Duration) error {
 	}
 }
 
-// WithAttrs implements slog.Handler.
+// WithAttrs 实现 slog.Handler。
+
+// SetLevel 运行时热调级别（0.1.0-14）。仅当构造期 Level 传入
+// *slog.LevelVar 时生效并返回 true；固定级别返回 false（进入
+// mebsuta.SetLevel 的 skipped 诚实面）。
+func (h *Handler) SetLevel(level slog.Level) bool {
+	return h.level.Set(level)
+}
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &mebsuta.AttrsSub{Parent: h, Attrs: attrs}
+	return &handlerkit.AttrsSub{Parent: h, Attrs: attrs}
 }
 
-// WithGroup implements slog.Handler.
+// WithGroup 实现 slog.Handler。
 func (h *Handler) WithGroup(name string) slog.Handler {
-	return &mebsuta.GroupSub{Parent: h, Group: name}
+	return &handlerkit.GroupSub{Parent: h, Group: name}
 }
 
-// SelfBuffered marks Handler as having built-in async buffering.
+// SelfBuffered 标记 Handler 内置异步缓冲。
 func (*Handler) SelfBuffered() {}
 
-func (h *Handler) loadEH() mebsuta.ErrorHandler {
-	v := h.errorHandler.Load()
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
 func (h *Handler) reportErr(op string, err error) {
-	mebsuta.ReportError(h.loadEH(), &mebsuta.HandlerError{Component: "mbta", Operation: op, Err: err})
+	h.errorHandler.Report(&mebsuta.HandlerError{Component: "mbta", Operation: op, Err: err})
 }
 
-// SetErrorHandler updates the error handler at runtime. It implements
-// mebsuta.ErrorHandlerSetter so WithErrorHandler propagates into this
-// handler; before it existed, SilentErrorHandler and custom hooks silently
-// never reached mbta and its errors always went to stderr.
-// Dropped returns the total number of records dropped due to a full buffer
-// (or during Close's bounded drain) — feeds mebsuta.DroppedCounter probes.
+// SetErrorHandler 在运行时更新错误处理器。它实现
+// mebsuta.ErrorHandlerSetter，WithErrorHandler 得以传播到本
+// handler；此前 SilentErrorHandler 与自定义钩子静默地
+// 从未到达 mbta，其错误总是打到 stderr。
+// Dropped 返回因缓冲满（或 Close 有界排空期间）而丢弃的
+// 记录总数——供 mebsuta.DroppedCounter 探针使用。
 func (h *Handler) Dropped() int64 {
 	return h.dropped.Load()
 }
 
 func (h *Handler) SetErrorHandler(fn mebsuta.ErrorHandler) {
-	h.errorHandler.Store(&fn)
+	h.errorHandler.Store(fn)
 }
 
-// shouldReportDrop reports whether a drop should be surfaced now: at most one
-// report per second, so a flood that overflows the buffer cannot amplify into
-// one error-handler invocation per dropped record.
+// shouldReportDrop 判断当前是否应上报丢弃：每秒至多一次
+// 上报（handlerkit.RateGate），溢出缓冲的洪水才不会被放大成每条
+// 丢弃记录一次错误处理器调用。
 func (h *Handler) shouldReportDrop() bool {
-	now := time.Now().UnixNano()
-	last := h.lastDropReport.Load()
-	if now-last < int64(time.Second) {
-		return false
-	}
-	return h.lastDropReport.CompareAndSwap(last, now)
+	return h.dropGate.Allow()
 }
 
 func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) error {
-	// sendMu makes Close's close(buffer) race-free against in-flight sends.
+	// sendMu 让 Close 的 close(buffer) 与在途发送无竞争。
 	h.sendMu.RLock()
 	defer h.sendMu.RUnlock()
 
 	if h.closing.Load() {
-		// Counted here (not only in Handle's early return) because closing can
-		// flip between Handle's check and this one; the two paths are mutually
-		// exclusive so each dropped record is counted exactly once.
+		// 在此计数（而非只在 Handle 的提前返回里），因为 closing 可能在
+		// Handle 检查与本次检查之间翻转；两条路径互斥，
+		// 每条丢弃记录恰好计一次。
 		h.dropped.Add(1)
 		return fmt.Errorf("mebsuta/mbta: handler closed, log dropped")
 	}
 
-	// Error and Audit (LevelAudit > LevelError) records: blocking send bounded
-	// by ErrorTimeout, mirroring the async handler — try non-blocking first so
-	// the healthy path never allocates a timer, and respect ctx cancellation
-	// so a Close-in-progress cannot hold the caller for the full timeout.
+	// Error 与 Audit（LevelAudit > LevelError）记录：以
+	// ErrorTimeout 为上界的阻塞发送，与异步 handler 一致——先试非阻塞，
+	// 健康路径就永不分配 timer，并尊重 ctx 取消，
+	// 进行中的 Close 就不能把调用方拖满整个超时。
 	if level >= slog.LevelError {
 		select {
 		case h.buffer <- record:
@@ -452,15 +446,14 @@ func (h *Handler) processQueue() {
 }
 
 func (h *Handler) sendBatch(records []*core.SignalRecord) {
-	// Wire-schema gate: mbta-go's SendBatch returns as soon as the batch is on
-	// the wire, so a batch the server will reject is invisible unless we
-	// pre-validate. The recordToSignal pre-filter keeps the common budgets
-	// satisfied; this probe drops anything that still violates the schema
-	// (e.g. nil records) instead of poisoning the whole batch — the server
-	// rejects atomically, so one bad record would silently lose them all.
+	// wire-schema 门禁：mbta-go 的 SendBatch 在批次上线后即返回，
+	// 不预校验就看不到将被服务端拒绝的批次。
+	// recordToSignal 预过滤已满足常见预算；此探测把仍违反
+	// schema 的记录（如 nil 记录）剔除，而不是毒化整个批次——
+	// 服务端原子性拒绝，一条坏记录会静默丢掉全部。
 	resource := core.Resource{
-		// mbta-go v0.6.0 removed the per-call tag/source parameters:
-		// the metadata now lives in the batch resource attributes.
+		// mbta-go v0.6.0 移除了按调用传递 tag/source 参数：
+		// 元数据现在放在批次 resource 属性中。
 		Attributes: map[string]any{
 			"host.name": h.hostname,
 			"service":   h.cfg.Tag,
@@ -506,19 +499,19 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 	for attempt := range h.cfg.MaxRetries {
 		seq, err := h.client.SendBatch(h.ctx, batch)
 		if err == nil {
-			// Success here only means "written to the wire". Remember the
-			// batch size so handleResult can count the records back out when
-			// the server's terminal RESULT reports rejected/released, and
-			// register the seq as pending so Close can wait for the terminal
-			// RESULT before tearing the connection down.
+			// 此处的成功只代表“已写上线”。记下
+			// 批次大小，handleResult 便能在服务端终态
+			// RESULT 报告 rejected/released 时把记录数计回，
+			// 并把 seq 登记为 pending，Close 便能在拆除连接前
+			// 等待终态 RESULT。
 			h.trackBatchSize(seq, len(valid))
 			h.pendingResults.Store(seq, struct{}{})
 			return
 		}
 
-		// Gate on the context, not the closing flag: during Close's final
-		// flush the ctx is live and retries must proceed, while cancel()
-		// (which happens strictly after the drain finished) must abort them.
+		// 以 context 而非 closing 标志门控：Close 最终
+		// 刷新期间 ctx 存活，重试必须继续；而 cancel()
+		//（严格发生在排空结束之后）必须中止它们。
 		if h.ctx.Err() != nil {
 			h.dropped.Add(int64(len(valid)))
 			if h.shouldReportDrop() {
@@ -530,9 +523,9 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 		h.reportErr("send_batch", fmt.Errorf("attempt %d/%d: %w", attempt+1, h.cfg.MaxRetries, err))
 
 		if attempt < h.cfg.MaxRetries-1 {
-			// Config.Reconnect: re-dial when the session dropped out of
-			// READY. mbta-go never reconnects on its own — without this the
-			// handler kept failing every batch until process restart.
+			// Config.Reconnect：会话脱离 READY 时重新
+			// 拨号。mbta-go 从不自行重连——没有它，
+			// handler 会持续失败每个批次直到进程重启。
 			if h.reconnectEnabled() && h.client.State() != stateReady {
 				h.tryReconnect()
 			}
@@ -554,7 +547,7 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 	}
 }
 
-// trackBatchSize records how many records a successfully written batch carried.
+// trackBatchSize 记录一个成功写上线的批次携带的记录数。
 func (h *Handler) trackBatchSize(seq uint64, n int) {
 	if seq == 0 || n <= 0 {
 		return
@@ -562,7 +555,7 @@ func (h *Handler) trackBatchSize(seq uint64, n int) {
 	h.batchSizes.Store(seq, n)
 }
 
-// pendingCount reports how many wire-written seqs still await a RESULT.
+// pendingCount 报告已写上线、仍在等待 RESULT 的 seq 数。
 func (h *Handler) pendingCount() int {
 	n := 0
 	h.pendingResults.Range(func(_, _ any) bool {
@@ -572,13 +565,13 @@ func (h *Handler) pendingCount() int {
 	return n
 }
 
-// waitResults blocks up to window for every wire-written seq to receive its
-// RESULT before Close sends the CLOSE frame. Control and data streams carry
-// no cross-stream ordering: without this wait the server can process CLOSE
-// and tear the connection down before the final data-stream BATCH is read,
-// silently dropping the last buffer's worth of records. Bounded by window
-// (reuses CloseTimeout as the budget); a lost RESULT (connection died) times
-// out and proceeds — the drop is already counted by the result-timeout path.
+// waitResults 最多阻塞 window，等所有已写上线的 seq 收到
+// RESULT 后 Close 才发送 CLOSE 帧。控制流与数据流
+// 没有跨流顺序：不等待的话服务端可能先处理 CLOSE
+// 并在最后一个数据流 BATCH 被读取前拆除连接，
+// 静默丢弃最后一批缓冲记录。以 window 为上界
+// （复用 CloseTimeout 作为预算）；丢失的 RESULT（连接已死）超时后
+// 继续执行——丢弃已由 result 超时路径计数。
 func (h *Handler) waitResults(window time.Duration) {
 	if h.pendingCount() == 0 {
 		return
@@ -594,8 +587,8 @@ func (h *Handler) waitResults(window time.Duration) {
 	}
 }
 
-// takeBatchSize removes and returns the record count tracked for seq (0 when
-// unknown, e.g. a notification for a batch this handler did not write).
+// takeBatchSize 取出并返回 seq 对应的跟踪记录数（未知时为 0，
+// 例如非本 handler 写入的批次的通知）。
 func (h *Handler) takeBatchSize(seq uint64) int {
 	v, ok := h.batchSizes.LoadAndDelete(seq)
 	if !ok {
@@ -605,27 +598,27 @@ func (h *Handler) takeBatchSize(seq uint64) int {
 	return n
 }
 
-// handleResult is the internal RESULT callback registered on the client's
-// single slot at construction. It wraps the user's Config.OnResult: before
-// delegating, it folds server-side rejections/releases into Dropped with a
-// rate-limited report — without this, a batch that passed SendBatch's
-// fire-and-forget return would vanish silently.
+// handleResult 是构造时注册在客户端
+// 唯一槽位上的内部 RESULT 回调。它包装用户的 Config.OnResult：
+// 委托之前，先把服务端的拒绝/释放折算进 Dropped 并做限频
+// 上报——没有它，通过了 SendBatch fire-and-forget
+// 返回的批次会无声消失。
 //
-// Runs on mbta-go's serial result worker (panic-safe there), never on the log
-// hot path.
+// 运行在 mbta-go 的串行 result worker 上（在那里是 panic 安全的），
+// 绝不在日志热路径上。
 func (h *Handler) handleResult(seq uint64, level string, code uint32, correlation string) {
-	// Any RESULT (terminal or intermediate) proves the server saw the batch:
-	// release the seq from Close's wait set before counting drops.
+	// 任何 RESULT（终态或中间态）都证明服务端看到了该批次：
+	// 先从 Close 的等待集合中释放 seq，再计数丢弃。
 	h.pendingResults.Delete(seq)
 	n := h.takeBatchSize(seq)
 	switch level {
 	case resultLevelRejected, resultLevelReleased, resultLevelTimeout:
-		// Terminal loss the retry loop cannot see (SendBatch already
-		// returned nil). "timeout" is mbta-go's synthetic released: the
-		// in-flight slot expired with no terminal, and we never re-send at
-		// the result layer, so the batch is unrecoverable either way.
+		// 重试循环看不到的终态损失（SendBatch 已
+		// 返回 nil）。"timeout" 是 mbta-go 合成的 released：
+		// 在途槽位到期且无终态，而我们在 result
+		// 层从不重发，两种情况下批次都不可挽回。
 	default:
-		n = 0 // accepted / durable / unknown level: not a drop
+		n = 0 // accepted / durable / 未知级别：不是丢弃
 	}
 	if n > 0 {
 		h.dropped.Add(int64(n))
@@ -642,12 +635,12 @@ func (h *Handler) reconnectEnabled() bool {
 	return h.cfg.Reconnect != nil && *h.cfg.Reconnect
 }
 
-// tryReconnect re-dials the forwarder with a bounded context. Failures are
-// reported and swallowed — the retry loop decides whether to keep going.
-// connectMu.TryLock skips the re-dial while another Connect is in flight:
-// the in-flight attempt either reaches READY (nothing to do) or fails, and
-// the next retry pass re-fires. A concurrent second Connect would trigger
-// mbta-go binding's double-connect convergence and close the live session.
+// tryReconnect 以有界 context 重新拨号 forwarder。失败
+// 上报后吞掉——由重试循环决定是否继续。
+// 另一个 Connect 在飞时 connectMu.TryLock 会跳过重拨：
+// 在途尝试要么到达 READY（无事可做）要么失败，
+// 下一轮重试再触发。并发的第二个 Connect 会触发
+// mbta-go 绑定层的双连接收敛，关闭活跃会话。
 func (h *Handler) tryReconnect() {
 	if h.ctx.Err() != nil {
 		return
@@ -663,33 +656,33 @@ func (h *Handler) tryReconnect() {
 	}
 }
 
-// attrStats reports what recordToSignal's wire-schema pre-filter did to a
-// record's attributes. The consuming side validates SignalBatch atomically
-// (core.SignalBatch.Validate; enforced by the forwarder's sink — the mbta-go
-// server itself only checks the batch envelope at ingress), so one
-// out-of-budget record would get the whole batch rejected there — the
-// pre-filter keeps every record within the server's budgets up front and
-// reports what it had to cut.
+// attrStats 报告 recordToSignal 的 wire-schema 预过滤对记录
+// 属性做了什么。消费侧对 SignalBatch 做原子校验
+// （core.SignalBatch.Validate；由 forwarder 的 sink 强制——mbta-go
+// 服务端自身仅在入口检查批次信封），因此一条
+// 超预算记录会让整个批次在那里被拒——
+// 预过滤提前让每条记录都在服务端预算内，
+// 并报告不得不裁掉的内容。
 type attrStats struct {
-	// droppedAttrs counts leaf entries skipped because the record already
-	// carried core.MaxSignalAttrs entries (mbta-go's per-record cap).
+	// droppedAttrs 统计因记录已有 core.MaxSignalAttrs 条
+	//（mbta-go 的单记录上限）而被跳过的叶子条目数。
 	droppedAttrs int
-	// truncatedKeys counts keys shortened to core.MaxSignalAttrKeyLen
-	// (truncated at a UTF-8 rune boundary, mirroring attrutil).
+	// truncatedKeys 统计被截短到 core.MaxSignalAttrKeyLen
+	//（在 UTF-8 rune 边界截断，与 attrutil 一致）的键数。
 	truncatedKeys int
-	// sanitizedKeys counts keys whose strict control characters (mirroring
-	// mbta-go's hasStrictControlChars: < 0x20 or 0x7f) were replaced with '_'.
+	// sanitizedKeys 统计严格控制字符（与 mbta-go 的
+	// hasStrictControlChars 一致：< 0x20 或 0x7f）被替换为 '_' 的键数。
 	sanitizedKeys int
 }
 
-// any reports whether the pre-filter had to intervene.
+// any 报告预过滤是否进行了干预。
 func (s attrStats) any() bool {
 	return s.droppedAttrs > 0 || s.truncatedKeys > 0 || s.sanitizedKeys > 0
 }
 
-// reportAttrStats surfaces pre-filter interventions at most once per second
-// (the shared shouldReportDrop gate) so an attribute flood cannot amplify
-// into an error-handler invocation per record.
+// reportAttrStats 每秒至多暴露一次预过滤干预
+// （共享 shouldReportDrop 门控），属性洪水才不会被放大成
+// 每条记录一次错误处理器调用。
 func (h *Handler) reportAttrStats(stats attrStats) {
 	if !stats.any() {
 		return
@@ -700,13 +693,13 @@ func (h *Handler) reportAttrStats(stats attrStats) {
 	}
 }
 
-// recordToSignal converts a slog.Record into a core.SignalRecord.
+// recordToSignal 将 slog.Record 转换为 core.SignalRecord。
 //
-// Groups are flattened into dot-joined keys ("request.method" instead of a
-// nested map): mbta-go's proto codec has no map representation for attribute
-// values and falls back to fmt.Sprintf("%v"), which renders nested maps as
-// unstable internal representations. Leaf values keep attrValue's scalar
-// conversion (LogValuer resolution, depth cap marker).
+// 组被展平为点号连接的键（"request.method" 而非
+// 嵌套 map）：mbta-go 的 proto 编解码器对属性值没有 map 表示，
+// 会退化为 fmt.Sprintf("%v")，把嵌套 map 渲染成
+// 不稳定的内部表示。叶子值保留 attrValue 的标量
+// 转换（LogValuer 解析、深度上限标记）。
 func recordToSignal(r slog.Record) (*core.SignalRecord, attrStats) {
 	attrs := make(map[string]any)
 	var stats attrStats
@@ -720,10 +713,10 @@ func recordToSignal(r slog.Record) (*core.SignalRecord, attrStats) {
 		severityText = "AUDIT"
 	}
 
-	// Never panic on the log hot path. uuid.NewV7 can only fail if the system
-	// PRNG is unavailable; in that case fall back to a deterministic,
-	// collision-resistant ID derived from the record timestamp rather than
-	// crashing the caller's slog.Info call.
+	// 日志热路径绝不 panic。uuid.NewV7 只有在系统
+	// PRNG 不可用时才会失败；此时回退为从记录时间戳派生的确定性、
+	// 抗碰撞 ID，而不是让调用方的 slog.Info
+	// 崩溃。
 	eventID := newEventID(r.Time.UnixNano())
 
 	return &core.SignalRecord{
@@ -732,20 +725,20 @@ func recordToSignal(r slog.Record) (*core.SignalRecord, attrStats) {
 		TimeUnixNs:     r.Time.UnixNano(),
 		ObservedTimeNs: time.Now().UnixNano(),
 		SeverityText:   severityText,
-		SeverityNumber: severityNumber(r.Level),
+		SeverityNumber: mebsuta.SeverityNumber(r.Level),
 		Body:           r.Message,
 		Attributes:     attrs,
 	}, stats
 }
 
-// flattenAttr walks attr into out with dot-joined group keys, mirroring
-// attrutil's flattening shape (empty keys skipped so no "prefix." junk is
-// produced, entries capped at core.MaxSignalAttrs) while keeping attrValue's
-// scalar conversion for leaf values.
+// flattenAttr 以点号连接的组键把 attr 展平进 out，形状与
+// attrutil 的展平一致（跳过空键以免产生 "prefix." 垃圾键，
+// 条数以 core.MaxSignalAttrs 为上限），叶子值保留
+// attrValue 的标量转换。
 //
-// slog contract: handlers must resolve LogValuer values before conversion.
-// Unresolved values would leak their backing structs into the encoder, which
-// renders them via fmt as internal Go representations (or pointer addresses).
+// slog 契约：handler 必须在转换前解析 LogValuer 值。
+// 未解析的值会把底层结构体泄漏进编码器，
+// 经 fmt 渲染成 Go 内部表示（或指针地址）。
 func flattenAttr(out map[string]any, prefix string, attr slog.Attr, depth int, stats *attrStats) {
 	key := attr.Key
 	if prefix != "" {
@@ -754,16 +747,16 @@ func flattenAttr(out map[string]any, prefix string, attr slog.Attr, depth int, s
 	v := attr.Value.Resolve()
 	if v.Kind() == slog.KindGroup {
 		if depth >= maxAttrDepth {
-			// Same marker the old attrValue used for over-deep values, so
-			// downstream can distinguish "nesting exceeded the cap" from an
-			// absent value.
+			// 与旧 attrValue 对超深值使用的标记相同，
+			// 下游可区分“嵌套超限”与
+			// 缺值。
 			setAttrLeaf(out, key, "<max-depth>", stats)
 			return
 		}
 		for _, a := range v.Group() {
 			if a.Key == "" {
-				// Skip before concatenation so an empty child key under a
-				// group cannot yield a trailing-dot key like "prefix.".
+				// 拼接前跳过，组下的空子键才不会产生
+				// "prefix." 这类尾点键。
 				continue
 			}
 			flattenAttr(out, key, a, depth+1, stats)
@@ -773,14 +766,14 @@ func flattenAttr(out map[string]any, prefix string, attr slog.Attr, depth int, s
 	setAttrLeaf(out, key, attrValue(v), stats)
 }
 
-// attrValue converts an already-resolved, non-group slog.Value to its scalar
-// Go value (the leaf conversion previously inlined in attrValue).
+// attrValue 将已解析、非组的 slog.Value 转换为其标量
+// Go 值（原先内联在 attrValue 中的叶子转换）。
 func attrValue(v slog.Value) any {
 	return v.Any()
 }
 
-// setAttrLeaf inserts a converted leaf value under key, enforcing the server's
-// attribute budgets (entry count, key length, strict control characters).
+// setAttrLeaf 在 key 下插入转换后的叶子值，强制执行服务端的
+// 属性预算（条数、键长、严格控制字符）。
 func setAttrLeaf(out map[string]any, key string, val any, stats *attrStats) {
 	if key == "" {
 		return
@@ -792,10 +785,10 @@ func setAttrLeaf(out map[string]any, key string, val any, stats *attrStats) {
 	out[sanitizeAttrKey(key, stats)] = val
 }
 
-// sanitizeAttrKey brings one attribute key inside mbta-go's schema: strict
-// control characters replaced with '_' (preserving the key's information
-// instead of dropping it), then length-truncated to core.MaxSignalAttrKeyLen
-// at a valid UTF-8 rune boundary.
+// sanitizeAttrKey 把一个属性键修整进 mbta-go 的 schema：严格
+// 控制字符替换为 '_'（保留键的信息而非丢弃），
+// 再在合法 UTF-8 rune 边界截断到 core.MaxSignalAttrKeyLen
+// 长度内。
 func sanitizeAttrKey(key string, stats *attrStats) string {
 	if strings.ContainsFunc(key, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		key = strings.Map(func(r rune) rune {
@@ -813,8 +806,8 @@ func sanitizeAttrKey(key string, stats *attrStats) string {
 	return key
 }
 
-// truncateValidUTF8 cuts s to at most maxLen bytes without splitting a
-// multi-byte rune (same algorithm as attrutil's unexported helper).
+// truncateValidUTF8 将 s 截到至多 maxLen 字节且不拆散
+// 多字节 rune（算法与 attrutil 的未导出辅助函数相同）。
 func truncateValidUTF8(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -825,27 +818,9 @@ func truncateValidUTF8(s string, maxLen int) string {
 	return s[:maxLen]
 }
 
-// severityNumber maps slog levels onto the OTel-style numeric severity scale
-// so downstream consumers filtering on SeverityNumber (not text) work; it was
-// previously always 0 regardless of level.
-func severityNumber(level slog.Level) int {
-	switch {
-	case level >= mebsuta.LevelAudit:
-		return 21 // FATAL band; LevelAudit sits above Error
-	case level >= slog.LevelError:
-		return 17
-	case level >= slog.LevelWarn:
-		return 13
-	case level >= slog.LevelInfo:
-		return 9
-	default:
-		return 5 // DEBUG band
-	}
-}
-
-// sanitizeHostname reduces the hostname (static or system) to the
-// [a-zA-Z0-9.-] alphabet so it cannot carry control characters or other
-// injection into the resource attributes.
+// sanitizeHostname 将主机名（静态或系统）规约到
+// [a-zA-Z0-9.-] 字符集，使其不能把控制字符或其他
+// 注入带进 resource 属性。
 func sanitizeHostname(static string) string {
 	if static == "" {
 		static, _ = os.Hostname()
@@ -866,26 +841,26 @@ func sanitizeHostname(static string) string {
 	return b.String()
 }
 
-// newEventID returns a UUIDv7 string, falling back to a timestamp-derived ID
-// when UUID generation fails so the log path can never panic.
+// newEventID 返回 UUIDv7 字符串，UUID 生成失败时回退为
+// 时间戳派生的 ID，日志路径因此绝不 panic。
 func newEventID(fallbackSeed int64) string {
 	if id, err := uuid.NewV7(); err == nil {
 		return id.String()
 	}
-	// Fallback: deterministic, monotonic, non-zero. Collisions are practically
-	// impossible for fallback-only operation under PRNG failure.
+	// 兜底：确定性、单调、非零。仅 PRNG 故障时运行的兜底路径
+	// 在实际中不可能发生碰撞。
 	//
-	// Layout follows UUIDv7: 8-4-4-4-12 hex. Group 3 is "7" + 12 bits (version
-	// 7). Group 4 is the RFC 4122 variant field: the high nibble is 0x8|2bits
-	// (so it starts with 8/9/a/b) packed with 12 bits of data into exactly 4
-	// hex chars. The previous "%x%04x" form emitted a variable-width variant
-	// nibble followed by 4 fixed chars, producing a 5-char group and a
-	// 37-char (non-UUID) string.
+	// 布局遵循 UUIDv7：8-4-4-4-12 十六进制。第 3 组是 "7" + 12 位（版本
+	// 7）。第 4 组是 RFC 4122 variant 字段：高半字节是 0x8|2 位
+	//（因此以 8/9/a/b 开头），与 12 位数据打包成恰好 4 个
+	// 十六进制字符。此前的 "%x%04x" 形式会产生可变宽度的 variant
+	// 半字节加 4 个固定字符，形成 5 字符组与
+	// 37 字符（非 UUID）字符串。
 	seed := uint64(fallbackSeed)
 	return fmt.Sprintf("00000000-0000-7%03x-%04x-%012x",
-		(seed>>40)&0xfff,           // group 3: 12 bits after the version nibble
-		0x8000|((seed>>24)&0x0fff), // group 4: variant nibble (8) + 12 data bits
-		seed&0xffffffffffff)        // group 5: 48 bits
+		(seed>>40)&0xfff,           // 第 3 组：版本半字节后的 12 位
+		0x8000|((seed>>24)&0x0fff), // 第 4 组：variant 半字节（8）+ 12 位数据
+		seed&0xffffffffffff)        // 第 5 组：48 位
 }
 
 var (
@@ -894,10 +869,10 @@ var (
 	_ mebsuta.SelfBufferedHandler = (*Handler)(nil)
 )
 
-// UseMBTA is a convenience function that creates an MBTA handler and returns
-// a mebsuta.HandlerOption for use with mebsuta.New().
+// UseMBTA 是便捷函数，创建 MBTA handler 并返回
+// 可用于 mebsuta.New() 的 mebsuta.HandlerOption。
 //
-// Usage:
+// 用法：
 //
 //	logger, _ := mebsuta.New(
 //	    mebsuta.UseStdout(mebsuta.StdoutConfig{}),

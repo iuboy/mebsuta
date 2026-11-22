@@ -1,13 +1,13 @@
-// database: batch-write logs to a PostgreSQL or openGauss database
+// database: 日志批量写入 PostgreSQL 或 openGauss 数据库
 //
-// Note: SQLite is NOT a supported driver for database.Config (Validate only
-// accepts "postgres" and "opengauss"); the sqlite GORM driver in this
-// repository exists solely as a test dependency for the database package.
-// This example targets PostgreSQL — start a throwaway server with:
+// 注意：SQLite 不是 database.Config 支持的驱动（Validate 只接受
+// "postgres" 与 "opengauss"）；本仓库中的 sqlite GORM 驱动仅作为
+// database 包的测试依赖存在。
+// 本示例面向 PostgreSQL——用以下命令启动一个一次性服务器：
 //
 //	docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=dev postgres:17
 //
-// and point MEBSUTA_DATABASE_DSN at it (see below).
+// 再把 MEBSUTA_DATABASE_DSN 指向它（见下文）。
 package main
 
 import (
@@ -20,8 +20,7 @@ import (
 )
 
 func main() {
-	// The DSN is read from the environment so credentials stay out of the
-	// source tree. Example:
+	// DSN 从环境变量读取，凭证因此不落入源码树。示例：
 	//	MEBSUTA_DATABASE_DSN='postgres://postgres:dev@localhost:5432/postgres?sslmode=disable'
 	dsn := os.Getenv("MEBSUTA_DATABASE_DSN")
 	if dsn == "" {
@@ -47,18 +46,18 @@ func main() {
 		mebsuta.WithHandler(dbH),
 	)
 	if err != nil {
-		// H6: close the handler for cleanup, but panic with the actual error —
-		// the original `panic(dbH.Close())` discarded err and could even
-		// panic(nil) when Close succeeded.
+		// H6：关闭 handler 做清理，但用真正的 err panic——
+		// 原来的 `panic(dbH.Close())` 丢弃了 err，Close 成功时甚至
+		// 会 panic(nil)。
 		_ = dbH.Close()
 		panic(err)
 	}
 	slog.SetDefault(logger)
 	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
-	// Config.Sanitize returns a copy with the DSN's credentials redacted —
-	// safe to log; printing cfg itself would go through the same redaction
-	// via its String method, but the sanitized copy makes the intent explicit.
+	// Config.Sanitize 返回 DSN 凭证已脱敏的副本——可安全记录日志；
+	// 直接打印 cfg 本身也会经其 String 方法走同样的脱敏流程，
+	// 但脱敏副本让意图更明确。
 	slog.Info("logging to both stdout and database", "config", cfg.Sanitize(), "source", "example")
 	slog.Error("error also persisted", "code", 500)
 }

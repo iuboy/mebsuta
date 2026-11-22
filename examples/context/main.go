@@ -1,4 +1,4 @@
-// context: extract fields from context.Context into log records
+// context: 从 context.Context 提取字段写入日志记录
 package main
 
 import (

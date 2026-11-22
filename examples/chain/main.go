@@ -1,4 +1,4 @@
-// chain: full production handler chain — file + stdout with sampling and async
+// chain: 完整生产级 handler 链——文件 + stdout，附带采样与异步
 package main
 
 import (

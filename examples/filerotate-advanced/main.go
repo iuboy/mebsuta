@@ -1,4 +1,4 @@
-// filerotate-advanced: compression, time rotation, file mode, error callback
+// filerotate-advanced: 压缩、时间轮转、文件权限、错误回调
 package main
 
 import (
@@ -23,7 +23,7 @@ func main() {
 			MaxSizeMB:      1,
 			MaxBackups:     5,
 			MaxAgeDays:     30,
-			Compress:       mebsuta.BoolPtr(true),
+			Compress:       mebsuta.Ptr(true),
 			RotateInterval: 24 * time.Hour,
 			FileMode:       0644,
 			OnError: func(err error) {

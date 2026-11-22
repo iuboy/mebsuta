@@ -1,4 +1,4 @@
-// init: one-line logger initialization with mebsuta.Init
+// init: 用 mebsuta.Init 一行完成 logger 初始化
 package main
 
 import (
@@ -24,7 +24,7 @@ func main() {
 	}
 	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
 
-	// Init sets the global default, so slog and convenience functions work.
+	// Init 会设置全局默认 logger，slog 与便捷函数因此都可用。
 	slog.Info("using Init", "auto", "set default")
 
 	mebsuta.Info("convenience function", "level", "info")

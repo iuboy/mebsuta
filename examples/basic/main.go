@@ -1,4 +1,4 @@
-// basic: minimal zero-config stdout JSON logging
+// basic: 最小化零配置的 stdout JSON 日志
 package main
 
 import (

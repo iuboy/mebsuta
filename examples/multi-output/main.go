@@ -1,4 +1,4 @@
-// multi-output: different log levels per output destination
+// multi-output: 每个输出目的地使用不同的日志级别
 package main
 
 import (

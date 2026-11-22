@@ -12,18 +12,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iuboy/mebsuta/attrutil"
+	"github.com/iuboy/mebsuta/internal/attrutil"
+	"github.com/iuboy/mebsuta/internal/textutil"
 )
 
-// attrMapPool recycles map[string]any across Handle calls to reduce GC pressure.
+// attrMapPool 在多次 Handle 调用间回收 map[string]any，降低 GC 压力。
 var attrMapPool = sync.Pool{
 	New: func() any { return make(map[string]any, 16) },
 }
 
-// jsonEncoder bundles a buffer with the encoder bound to it. Pooling the pair
-// keeps encode+newline outside the handler mutex (parallel marshal, serialized
-// write only) while still avoiding the per-record Marshal allocation and the
-// append(data, '\n') reallocation — json.Encoder appends the newline natively.
+// jsonEncoder 把缓冲区与绑定其上的编码器捆绑在一起。对这一对做池化，
+// 既让编码+换行发生在 handler 互斥锁之外（并行序列化、仅串行写入），
+// 又避免了每条记录一次 Marshal 分配和 append(data, '\n') 的扩容
+// ——json.Encoder 原生追加换行。
 type jsonEncoder struct {
 	buf *bytes.Buffer
 	enc *json.Encoder
@@ -54,8 +55,8 @@ func putAttrMap(m map[string]any) {
 	attrMapPool.Put(m)
 }
 
-// contractJSONHandler produces stable-contract JSON output: {"time","level","message","attributes"}.
-// It is used instead of slog.JSONHandler to enforce the output schema and handle NaN/Inf floats.
+// contractJSONHandler 产出稳定契约的 JSON 输出：{"time","level","message","attributes"}。
+// 用它替代 slog.JSONHandler，以强制输出 schema 并处理 NaN/Inf 浮点。
 type contractJSONHandler struct {
 	mu    *sync.Mutex
 	w     io.Writer
@@ -64,7 +65,7 @@ type contractJSONHandler struct {
 	loc   *time.Location // 日志时间展示时区，nil 时用 UTC
 }
 
-// jsonEntry is the JSON output structure for log records.
+// jsonEntry 是日志记录的 JSON 输出结构。
 type jsonEntry struct {
 	Time       string         `json:"time"`
 	Level      string         `json:"level"`
@@ -76,8 +77,8 @@ type jsonEntry struct {
 	Attributes map[string]any `json:"attributes"`
 }
 
-// newContractJSONHandler returns a slog.Handler that writes stable-contract JSON to w.
-// loc controls the timezone of the "time" field; nil defaults to UTC.
+// newContractJSONHandler 返回向 w 写稳定契约 JSON 的 slog.Handler。
+// loc 控制 "time" 字段的时区；nil 默认 UTC。
 func newContractJSONHandler(w io.Writer, loc *time.Location) slog.Handler {
 	return &contractJSONHandler{w: w, mu: &sync.Mutex{}, loc: loc}
 }
@@ -94,33 +95,22 @@ func (h *contractJSONHandler) timezone() *time.Location {
 	return h.loc
 }
 
-// promoteStringField lifts attributes[key] (string) into dst on the first
-// call that finds a matching type; later calls for an already-claimed field
-// are no-ops, which is how the preset value stays authoritative over a
-// colliding AUDIT record attr. The value is removed from attributes once
-// promoted; a type mismatch leaves it in place (kept as evidence).
-func promoteStringField(attributes map[string]any, key string, claimed *bool, dst *string) {
+// promoteField 在 key 尚未被认领且 attributes[key] 恰为类型 T 时取出
+// 该值并从 map 移除；此后对已认领字段的调用都是 no-op，预设值正是
+// 这样在与 AUDIT 记录属性冲突时保持权威。类型不匹配则原位保留
+// （留作证据）。返回 ok=false 表示本次没有可提升的值。string 与
+// *bool 两个目标形态由同一泛型实现（后者经 &v 装箱）。
+func promoteField[T any](attributes map[string]any, key string, claimed *bool) (T, bool) {
+	var zero T
 	if *claimed {
-		return
+		return zero, false
 	}
-	if v, ok := attributes[key].(string); ok {
-		*dst = v
+	v, ok := attributes[key].(T)
+	if ok {
 		*claimed = true
 		delete(attributes, key)
 	}
-}
-
-// promoteBoolField is promoteStringField for bool values, targeting *dst.
-func promoteBoolField(attributes map[string]any, key string, claimed *bool, dst **bool) {
-	if *claimed {
-		return
-	}
-	if v, ok := attributes[key].(bool); ok {
-		b := v
-		*dst = &b
-		*claimed = true
-		delete(attributes, key)
-	}
+	return v, ok
 }
 
 func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
@@ -129,16 +119,14 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 
 	eventType, actor, success := "", "", (*bool)(nil)
 
-	// Promote the audit contract fields from PRESET attrs (set via WithAttrs
-	// at logger construction) for every record, and additionally from record
-	// attrs for AUDIT-level records. The level is the trust anchor: a record
-	// only ever reaches AUDIT severity through an audit call site
-	// (audit.AuditEvent & friends), so its record attrs are trusted to carry
-	// event_type/actor/success. Non-AUDIT records keep record-level keys
-	// inside "attributes": letting per-call attrs promote on ordinary log
-	// sites would let any INFO line override the trusted actor/event_type/
-	// success — audit forgery by key collision. On conflict the preset value
-	// wins; the colliding record value stays inside attributes as evidence.
+	// 对每条记录都从预设属性（logger 构造时经 WithAttrs 设置）提升审计
+	// 契约字段；AUDIT 级别记录额外从记录属性提升。级别是信任锚：记录
+	// 只会经审计调用点（audit.AuditEvent 等）达到 AUDIT 严重级，因此其
+	// 记录属性可信地携带 event_type/actor/success。非 AUDIT 记录的记录
+	// 级键保留在 "attributes" 内：若允许普通日志点上的逐调用属性提升，
+	// 任何一行 INFO 都能覆盖可信的 actor/event_type/success——借键冲
+	// 突伪造审计。冲突时预设值胜出；冲突的记录值留在 attributes 内作
+	// 为证据。
 	truncated := false
 	for _, attr := range h.attrs {
 		if attrutil.FlattenAttrMarked(attributes, "", attr, attrutil.NaNSafe) {
@@ -146,13 +134,19 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		}
 	}
 	var etClaimed, acClaimed, scClaimed bool
-	promoteStringField(attributes, "event_type", &etClaimed, &eventType)
-	promoteStringField(attributes, "actor", &acClaimed, &actor)
-	promoteBoolField(attributes, "success", &scClaimed, &success)
+	if v, ok := promoteField[string](attributes, "event_type", &etClaimed); ok {
+		eventType = v
+	}
+	if v, ok := promoteField[string](attributes, "actor", &acClaimed); ok {
+		actor = v
+	}
+	if v, ok := promoteField[bool](attributes, "success", &scClaimed); ok {
+		success = &v
+	}
 
-	// Record attrs land in attributes; AUDIT-level records may promote from
-	// there (below). On non-AUDIT records colliding keys overwrite the
-	// attribute map entry but can never reach the promoted top-level fields.
+	// 记录属性落入 attributes；AUDIT 级别记录可随后从中提升。非 AUDIT
+	// 记录上冲突的键会覆盖属性 map 条目，但永远到不了被提升的顶层
+	// 字段。
 	r.Attrs(func(attr slog.Attr) bool {
 		if attrutil.FlattenAttrMarked(attributes, h.group, attr, attrutil.NaNSafe) {
 			truncated = true
@@ -160,11 +154,17 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		return true
 	})
 	if r.Level == LevelAudit {
-		// Claimed fields are skipped: the preset value stays authoritative
-		// and the colliding record value remains inside attributes.
-		promoteStringField(attributes, "event_type", &etClaimed, &eventType)
-		promoteStringField(attributes, "actor", &acClaimed, &actor)
-		promoteBoolField(attributes, "success", &scClaimed, &success)
+		// 已认领的字段被跳过：预设值保持权威，冲突的记录值留在
+		// attributes 内。
+		if v, ok := promoteField[string](attributes, "event_type", &etClaimed); ok {
+			eventType = v
+		}
+		if v, ok := promoteField[string](attributes, "actor", &acClaimed); ok {
+			actor = v
+		}
+		if v, ok := promoteField[bool](attributes, "success", &scClaimed); ok {
+			success = &v
+		}
 	}
 
 	level := r.Level.String()
@@ -172,11 +172,10 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		level = "AUDIT"
 	}
 
-	// Reserved omission marker (mirrors the syslog handler's _truncated
-	// PARAM-NAME): some attr was dropped by the count/depth caps or a key was
-	// clipped to the length cap, so attributes is incomplete. A user attr
-	// literally named _truncated is overwritten when truncation occurred —
-	// the marker wins so consumers can trust it as a completeness signal.
+	// 保留的省略标记（与 syslog handler 的 _truncated PARAM-NAME 对应）：
+	// 某属性被数量/深度上限丢弃或某键被长度上限截断，attributes 因此不
+	// 完整。发生截断时，用户恰好命名为 _truncated 的属性会被覆盖
+	// ——标记胜出，消费方才能信任它作为完整性信号。
 	if truncated {
 		attributes["_truncated"] = true
 	}
@@ -204,14 +203,13 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	defer putJSONEncoder(je)
 
 	if err := je.enc.Encode(entry); err != nil {
-		// NaNSafe only sanitizes TOP-LEVEL floats; a NaN/chan/func hidden
-		// inside a nested map or struct still fails encoding here. Returning
-		// the error would silently discard the whole record (slog.Logger
-		// ignores Handle errors) — instead, degrade to a fallback record so
-		// the audit trail keeps a trace of what was lost and why.
+		// NaNSafe 只净化顶层浮点；藏在嵌套 map 或结构体中的
+		// NaN/chan/func 仍会在此让编码失败。返回错误会静默丢弃整条
+		// 记录（slog.Logger 忽略 Handle 错误）——改为降级为回退记录，
+		// 让审计痕迹保留丢失内容及其原因的痕迹。
 		je.buf.Reset()
 		if encErr := je.enc.Encode(h.fallbackEntry(r, level, err)); encErr != nil {
-			return err // genuinely unreachable: all fallback values are strings
+			return err // 真正不可达：所有回退值都是字符串
 		}
 	}
 
@@ -221,15 +219,14 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	return err
 }
 
-// fallbackEntry builds the minimal ERROR record describing a marshal failure.
-// It must never use the pooled attributes map (already returned to the pool
-// by the caller's defer) and must never fail to encode: every value below is
-// a plain string.
+// fallbackEntry 构建描述序列化失败的最小 ERROR 记录。
+// 它绝不能使用池化的 attributes map（已被调用方的 defer 归还池中），
+// 也绝不能编码失败：下面每个值都是纯字符串。
 func (h *contractJSONHandler) fallbackEntry(r slog.Record, level string, cause error) *jsonEntry {
-	msg := r.Message
-	if len(msg) > 1024 {
-		msg = msg[:1024] + "..."
-	}
+	// UTF-8 安全截断:裸 msg[:1024] 会切开多字节 rune,残缺字节经
+	// encoding/json 变成 U+FFFD。textutil 与 database/syslog 共用同一
+	// 截断口径(含 "..." 标记,总长不超预算)。
+	msg := textutil.TruncateUTF8(r.Message, 1024)
 	return &jsonEntry{
 		Time:    r.Time.In(h.timezone()).Format(time.RFC3339Nano),
 		Level:   "ERROR",
@@ -262,8 +259,8 @@ func (h *contractJSONHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 }
 
 func (h *contractJSONHandler) WithGroup(name string) slog.Handler {
-	// slog: WithGroup("") is a no-op — the previous code reset an existing
-	// group to empty, releasing already-grouped attrs to the root namespace.
+	// slog：WithGroup("") 是 no-op——旧代码会把已有 group 重置为空，
+	// 把已分组的属性放回根命名空间。
 	if name == "" {
 		return h
 	}
@@ -280,7 +277,7 @@ func (h *contractJSONHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// prefixAttr prepends group to the attr's key if both are non-empty.
+// prefixAttr 在 group 与属性键都非空时，向键前加上 group 前缀。
 func prefixAttr(group string, attr slog.Attr) slog.Attr {
 	if group == "" || attr.Key == "" {
 		return attr

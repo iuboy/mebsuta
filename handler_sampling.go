@@ -8,24 +8,23 @@ import (
 	"time"
 )
 
-// samplingState tracks per-window counters for sampling decisions using atomic operations.
-// Eliminates the need for a background goroutine by checking window expiry lazily in Handle.
+// samplingState 用原子操作跟踪每个窗口的采样计数。通过在 Handle 中
+// 惰性检查窗口过期，免除了后台 goroutine。
 type samplingState struct {
 	count       atomic.Int64
-	windowEnd   atomic.Int64 // unix nano timestamp of current window end
-	windowNanos int64        // window duration in nanoseconds (immutable after init)
+	windowEnd   atomic.Int64 // 当前窗口结束的 unix 纳秒时间戳
+	windowNanos int64        // 窗口时长（纳秒；初始化后不可变）
 }
 
-// SamplingHandler is a slog.Handler decorator that samples log records within a time window.
-// Error and above are always recorded. The first Initial records per window pass through; thereafter 1 in Thereafter is kept.
+// SamplingHandler 是在时间窗口内采样日志记录的 slog.Handler 装饰器。
+// Error 及以上总是记录。每窗口前 Initial 条放行；其后每 Thereafter 条
+// 保留 1 条。
 //
-// The sampling budget is shared across every logger derived from the same
-// sampling chain (WithAttrs/WithGroup clones reuse one counter). A high-
-// volume component can therefore consume the budget and suppress other
-// components' sub-Error logs in the same window — that is inherent to the
-// sampling semantics. Error and Audit records are exempt from sampling in
-// Handle and always pass; Enabled stays honest about the inner chain's own
-// level filter (see Enabled).
+// 采样预算由同一采样链派生的所有 logger 共享（WithAttrs/WithGroup
+// 克隆复用一个计数器）。因此高流量组件可耗尽预算并压制其他组件在
+// 同一窗口内低于 Error 的日志——这是采样语义固有的。Error 与 Audit
+// 记录在 Handle 中免于采样、总是放行；Enabled 则如实反映内层链自身
+// 的级别过滤（见 Enabled）。
 type SamplingHandler struct {
 	handlerCore
 	inner slog.Handler
@@ -33,13 +32,13 @@ type SamplingHandler struct {
 	state *samplingState
 }
 
-// WithSampling wraps inner in a SamplingHandler that drops log records according to the given SamplingConfig.
+// WithSampling 把 inner 包进 SamplingHandler，按给定 SamplingConfig 丢弃日志记录。
 func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	if !cfg.Enabled || inner == nil {
 		return inner
 	}
-	// Validate always succeeds for SamplingConfig (it only applies defaults,
-	// never returns errors), so we can safely ignore the error return.
+	// Validate 对 SamplingConfig 总是成功（只应用默认值，从不返回
+	// 错误），因此可以安全忽略错误返回值。
 	cfg, _ = cfg.Validate()
 
 	s := &samplingState{
@@ -55,54 +54,50 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	}
 }
 
-// Enabled implements slog.Handler.
+// Enabled 实现 slog.Handler。
 //
-// Enabled delegates unconditionally to the inner chain: the Error/Audit
-// exemption is a SAMPLING exemption (Handle below always passes those
-// records through the sampler), not a level-filter bypass. Reporting true
-// for every Error record here would let plain Error traffic reach an
-// audit-only inner sink (Level = LevelAudit) and would defeat a dynamic
-// LevelVar tightened at runtime.
+// Enabled 无条件委托给内层链：Error/Audit 的豁免是采样豁免（下面
+// 的 Handle 总是让这些记录穿过采样器），不是级别过滤旁路。若在这里
+// 对每条 Error 记录都返回 true，普通 Error 流量将涌入仅审计的内层
+// 汇（Level = LevelAudit），也会让运行时收紧的动态 LevelVar 失效。
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-// Handle implements slog.Handler.
+// Handle 实现 slog.Handler。
 func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
-	// Error and Audit (LevelAudit > LevelError) records are never sampled.
+	// Error 与 Audit（LevelAudit > LevelError）记录永不被采样。
 	if r.Level >= slog.LevelError {
 		return h.inner.Handle(ctx, r)
 	}
 
-	// Check if window has expired and reset if needed.
+	// 检查窗口是否过期，需要时重置。
 	now := time.Now().UnixNano()
 	windowEnd := h.state.windowEnd.Load()
 	if now >= windowEnd {
-		// CAS ensures only one goroutine advances the window and resets the counter.
+		// CAS 保证只有一个 goroutine 推进窗口并重置计数器。
 		newEnd := now + h.state.windowNanos
 		if h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
 			h.state.count.Store(0)
 		} else {
-			// CAS lost: another goroutine advanced the window. If extreme clock
-			// skew caused the new window end to also be in the past, try again.
-			// This is best-effort — during clock anomalies it's safer to let all
-			// records through than to silently drop them.
+			// CAS 落败：另一 goroutine 已推进窗口。若极端时钟偏移导致
+			// 新窗口终点也已成为过去，再试一次。这是尽力而为——时钟
+			// 异常期间放行全部记录比静默丢弃更安全。
 			advanced := h.state.windowEnd.Load()
 			if now >= advanced {
 				retryEnd := now + h.state.windowNanos
 				h.state.windowEnd.CompareAndSwap(advanced, retryEnd)
 			}
 		}
-		// Re-read count after potential reset: if we lost the CAS race, the
-		// winner already reset the counter. Our Add(1) returns the post-increment
-		// value, which will be ≤ concurrent goroutines that missed CAS, well
-		// within the Initial budget.
+		// 在可能的重置后重新读计数：若 CAS 竞争落败，胜者已重置计数器。
+		// 我们的 Add(1) 返回自增后的值，会 ≤ 错过 CAS 的并发 goroutine
+		// 数，远在 Initial 预算之内。
 		count := h.state.count.Add(1)
 		if count <= int64(h.cfg.Initial) {
 			return h.inner.Handle(ctx, r)
 		}
-		// Apply Thereafter consistently with the steady-state path so records
-		// during the window-reset transition are sampled the same way.
+		// 与稳态路径一致地应用 Thereafter，使窗口重置过渡期间的记录
+		// 得到同样的采样。
 		if (count-int64(h.cfg.Initial))%int64(h.cfg.Thereafter) == 0 {
 			return h.inner.Handle(ctx, r)
 		}
@@ -119,7 +114,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-// WithAttrs implements slog.Handler.
+// WithAttrs 实现 slog.Handler。
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
 		handlerCore: newHandlerCore(),
@@ -129,7 +124,7 @@ func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup implements slog.Handler.
+// WithGroup 实现 slog.Handler。
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
 		handlerCore: newHandlerCore(),
@@ -139,8 +134,8 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	}
 }
 
-// Close implements io.Closer.
-// No-op: no background goroutine to stop (window reset is done lazily in Handle).
+// Close 实现 io.Closer。
+// no-op：没有需要停止的后台 goroutine（窗口重置在 Handle 中惰性完成）。
 func (h *SamplingHandler) Close() error {
 	return nil
 }

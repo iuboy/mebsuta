@@ -21,16 +21,20 @@ JSON 契约使用一个稳定的 envelope：
 
 `Required`
 
-机器可读契约仅在 major version 时可变更。包括 JSON 字段名、级别顺序、数据库列名和 syslog JSON payload 格式。
+机器可读契约在此列出（JSON 字段名、级别顺序、数据库列名和 syslog JSON
+payload 格式）。自 2026-11-08 世系重置起，本项目默认允许破坏性变更、无兼
+容承诺（见 VERSIONING.md 与 AGENTS.md）；下列"major version"分类的语义相应
+调整为：这些条目属于**契约面**，任何触碰都必须在 CHANGELOG 对应小节逐条
+列明，供消费方（mebsuta-forwarder database source、审计工具等）同步修正。
 
-`Allowed without a major version`
+`Allowed without listing`
 
 - 添加可选的顶层字段
 - 添加可选的 attributes
 - 添加新的 `event_type` 值
 - 添加新的 handler 配置选项（带保留行为的默认值）
 
-`Requires a major version`
+`Contract surface — CHANGELOG 必须逐条列出`
 
 - 删除或重命名必选 JSON 字段
 - 在顶层 JSON 和 `attributes` 之间移动字段
@@ -216,6 +220,11 @@ Rotation:
 
 ## Syslog Handler
 
+> **维护模式（0.1.0-7 起）**：syslog 为第二支持——维持可用、维持测试、不
+> 再投入新特性。第一支持的网络输出为 OTLP（`mebsuta/otlp` +
+> `mebsuta/telemetry`）、数据库落库（含事务一致双写）与 MBTA 通道；本地
+> 输出（stdout/file）层级不变。存量部署不受影响。
+
 `Required`
 
 消息必须：
@@ -257,6 +266,42 @@ Database handler 必须：
 - 包含特殊字符的表名必须被 `Validate()` 拒绝
 - `Close()` 后，所有在 `Close()` 前提交的记录必须存在于数据库（前提：数据库可达。若数据库不可达且 flush 重试耗尽，记录通过 ErrorHandler 报告丢失）
 - `Close()` 后，第二次 `Close()` 返回 nil
+
+### OTel 对齐 schema 契约（0.1.0-5 起）
+
+日志表列集以 `database.LogsTableDDL` 为单一事实源；外部消费方
+（mebsuta-forwarder 的 database source、合规审计工具）按此对齐：
+
+| 列 | 语义 |
+|----|------|
+| `id` | ULID 记录身份：幂等去重键 + 单调游标（`ORDER BY id` 增量消费） |
+| `time` / `observed_time` | 事件时间（slog Record.Time）/ 入库时间 |
+| `level` / `severity_number` | 严重性文本 / OTel 数值严重性（`mebsuta.SeverityNumber`，LevelAudit→21） |
+| `msg` / `fields` | 记录体 / 展平属性文档（jsonb） |
+| `trace_id` / `span_id` | 发射上下文的追踪关联（hex；span 外为空串） |
+| `service_name` | 资源标识（`Config.ServiceName`） |
+| `relayed_at` | 事务性双写投递标记：NULL=pending，非空=已投递 |
+| `record_hash` / `signature` / `sign_algo` | 防篡改签名（签名覆盖 time/level/msg/fields 的规范形；`id`、`observed_time`、`severity_number`、`trace_id`、`span_id`、`service_name`、`relayed_at` 属路由/关联元数据，**不在**签名面内——`relayed_at` 必须可变以支持重投） |
+
+### 事务性双写语义（ConsistencyConfig）
+
+`Required`
+
+- **非 2PC 边界（明示）**：OTLP 端点不参与分布式事务。保证是"DB 为事
+  实源的事务性 outbox"：行与投递标记同库同事务路径；OTLP 侧"同步优先 +
+  异步对账"的最终不丢；投递 at-least-once，消费方按 `id` 幂等去重。
+- 默认关闭（`Enabled=false`）：行为与纯 sink 完全一致，`relayed_at` 恒
+  NULL，无扫描器。
+- `Enabled=true` 时必须配置 `RelayTo`（`Validate` 拒绝缺失）。
+- DB 事务失败 ⇒ 记录不落库且不投递（DB 是闸门，不产生单侧记录）。
+- 提交成功、中继或标记失败 ⇒ 行保持 pending，由后台扫描器（默认 30s，
+  可关）或外部消费方对账补投。
+
+**Pass/fail criteria:**
+- 同步模式：flush 提交后同一批次完成投递并标记
+- 吞吐模式（`SyncRelay=false`）：仅按扫描周期/显式 `scanOnce` 投递
+- `Close()` 停止扫描器且不与 `wg.Wait()` 死锁（扫描器经 `scanStop` 退出，
+  关停前执行一次有界清扫）
 
 ## Sampling
 
