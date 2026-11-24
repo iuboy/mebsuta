@@ -42,11 +42,9 @@ type Config struct {
 	Token    string // 可选：认证 token
 
 	// TLS 设置
-	CAFile             string
-	CertFile           string
-	KeyFile            string
-	ServerName         string
-	InsecureSkipVerify bool
+	// TLS 设置(nil = 不经 TLS 直连;字段见 mebsuta.TLSConfig)。五散
+	// 字段 0.1.0-30 起收敛为一个共享形态。
+	TLS *mebsuta.TLSConfig
 
 	// 行为
 	Level        slog.Leveler  // 日志级别过滤。默认 slog.LevelInfo。

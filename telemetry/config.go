@@ -34,10 +34,8 @@ package telemetry
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -103,17 +101,10 @@ type Config struct {
 	// Database 为 traces 与 metrics 选择数据库后端（部署模式 B）。
 	// 与 Endpoint 同时设置即双写。nil → 仅 OTLP。见 DatabaseConfig。
 	Database *DatabaseConfig
-	// TLSCAFile 是用于校验 OTLP collector 的 PEM CA 文件（私有 CA 的
-	// https 部署——wasat 的单二进制自签形态）。"" → 系统信任池。
-	// 对齐 mbta 的凭据面。
-	TLSCAFile string
-	// TLSCertFile / TLSKeyFile 提供客户端身份（mTLS——在接收方校验
-	// 客户端证书时生效；两者必须同时设置，不能只设其一）。
-	TLSCertFile string
-	TLSKeyFile  string
-	// TLSServerName 在端点主机名与证书 SAN 不一致时，覆盖证书校验
-	// 所用的服务器名称。
-	TLSServerName string
+	// TLS 启用 TLS(nil = 端点 scheme 决定;字段见 mebsuta.TLSConfig)。
+	// 四件套(TLSCAFile/TLSCertFile/TLSKeyFile/TLSServerName)0.1.0-30 起
+	// 收敛为共享形态,InsecureSkipVerify 为新增能力。
+	TLS *mebsuta.TLSConfig
 	// Signals 选择启动哪些 provider。0 → All（零值 Config 打开全部
 	// 信号；要完全 no-op 请将 Endpoint 置为等价于 None 的 ""）。
 	Signals Signals
@@ -197,7 +188,7 @@ func (c Config) Validate() (Config, error) {
 
 // tlsActive 报告是否设置了任意 TLS 凭据字段。
 func (c Config) tlsActive() bool {
-	return c.TLSCAFile != "" || c.TLSCertFile != "" || c.TLSKeyFile != "" || c.TLSServerName != ""
+	return c.TLS != nil && c.TLS.Active()
 }
 
 // validateHeaders 校验 Headers(F4):非法头名到导出时才失败,违反
@@ -256,9 +247,12 @@ func (c Config) validateTLS() error {
 	if lower := strings.ToLower(c.Endpoint); strings.HasPrefix(lower, "http://") {
 		return &mebsuta.ConfigError{Field: "Endpoint", Msg: fmt.Sprintf("%q 显式 http:// 但配置了 TLS 凭据（去掉 TLS 字段或改用 https://）", c.Endpoint)}
 	}
-	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
-		return &mebsuta.ConfigError{Field: "TLSCertFile", Msg: "TLSCertFile 与 TLSKeyFile 必须成对设置"}
+	// 成对校验前置到 Validate(LoadTLSConfig 亦有同规则,供独立使用方
+	// 防御)——fail-fast 约定:半配置在构造期暴露,不等到导出期。
+	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {
+		return &mebsuta.ConfigError{Field: "TLS", Msg: "CertFile 与 KeyFile 必须成对设置"}
 	}
+
 	return nil
 }
 
@@ -269,27 +263,9 @@ func (c Config) buildTLS() (*tls.Config, error) {
 	if !c.tlsActive() {
 		return nil, nil
 	}
-	cfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		ServerName: c.TLSServerName,
-	}
-	if c.TLSCAFile != "" {
-		pem, err := os.ReadFile(c.TLSCAFile)
-		if err != nil {
-			return nil, fmt.Errorf("telemetry: read TLSCAFile: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("telemetry: TLSCAFile %s contains no valid PEM certificate", c.TLSCAFile)
-		}
-		cfg.RootCAs = pool
-	}
-	if c.TLSCertFile != "" {
-		pair, err := tls.LoadX509KeyPair(c.TLSCertFile, c.TLSKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("telemetry: load client keypair: %w", err)
-		}
-		cfg.Certificates = []tls.Certificate{pair}
+	cfg, err := mebsuta.LoadTLSConfig(*c.TLS)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: %w", err)
 	}
 	return cfg, nil
 }

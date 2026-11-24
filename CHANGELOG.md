@@ -12,6 +12,34 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-30] - 2026-11-24
+
+### Changed — 架构:TLS 共享结构收敛(阶段 7 第二项;审查 F5 一并完成)
+
+- 新增 `mebsuta.TLSConfig`(CAFile/CertFile/KeyFile/ServerName/
+  InsecureSkipVerify)与 `mebsuta.LoadTLSConfig`(成对校验、私有 CA、
+  MinVersion TLS 1.2)。syslog/telemetry/mbta 三种各自漂移的 TLS 形态
+  收敛为一个共享结构:
+  - **syslog**:`Secure bool`/`TLSSkipVerify bool` 两开关 →
+    `TLS *TLSConfig`(nil = 明文)。此前不支持私有 CA 与 mTLS;
+    **硬编码套件白名单删除**(F5)——Go 默认集是安全面且随版本演进,
+    白名单会让现代套件无法随升级启用。
+  - **telemetry**:`TLSCAFile/TLSCertFile/TLSKeyFile/TLSServerName`
+    四件套 → `TLS *TLSConfig`,并获得 `InsecureSkipVerify` 能力;
+    http://+TLS 冲突与 CertFile/KeyFile 成对规则保留于 Validate
+    (fail-fast)。
+  - **mbta**:`CAFile/CertFile/KeyFile/ServerName/InsecureSkipVerify`
+    五散字段 → `TLS *TLSConfig`。
+- InsecureSkipVerify 启用时的告警纪律(syslog/mbta)保留。
+
+### 破坏性变更
+
+- `syslog.Config`:`Secure`/`TLSSkipVerify` 字段删除,迁移为
+  `TLS: &mebsuta.TLSConfig{...}`(`Secure: true` → 非 nil TLS)。
+- `telemetry.Config`:四个 `TLSCertFile` 系字段删除,迁移为
+  `TLS: &mebsuta.TLSConfig{...}`。
+- `mbta.Config`:五个 TLS 散字段删除,迁移为 `TLS: &mebsuta.TLSConfig{...}`。
+
 ## [0.1.0-29] - 2026-11-24
 
 ### Changed — 架构 C1:遥测门面迁出根包,绑定 Telemetry 实例(阶段 7 第一项)

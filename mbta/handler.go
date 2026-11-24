@@ -122,7 +122,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 	// 传递完整的 TLS 凭据集。此前只转发 InsecureSkipVerify，
 	// CAFile/CertFile/KeyFile/ServerName 静默失效——
 	// mTLS / 自定义 CA / SNI 配置沦为 no-op。
-	if cfg.InsecureSkipVerify {
+	if cfg.TLS != nil && cfg.TLS.InsecureSkipVerify {
 		handlerkit.ReportError(mebsuta.DefaultErrorHandler(), &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 	}
 
@@ -165,12 +165,16 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 // v1Creds 汇总 Config 的 TLS 凭据集（mTLS / 自定义 CA / SNI 全量转发）。
 func (h *Handler) v1Creds() v1.ClientCredentials {
+	var c mebsuta.TLSConfig
+	if h.cfg.TLS != nil {
+		c = *h.cfg.TLS
+	}
 	return v1.ClientCredentials{
-		CAFile:             h.cfg.CAFile,
-		CertFile:           h.cfg.CertFile,
-		KeyFile:            h.cfg.KeyFile,
-		ServerName:         h.cfg.ServerName,
-		InsecureSkipVerify: h.cfg.InsecureSkipVerify,
+		CAFile:             c.CAFile,
+		CertFile:           c.CertFile,
+		KeyFile:            c.KeyFile,
+		ServerName:         c.ServerName,
+		InsecureSkipVerify: c.InsecureSkipVerify,
 	}
 }
 

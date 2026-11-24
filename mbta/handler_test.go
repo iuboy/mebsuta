@@ -347,14 +347,14 @@ func newLiveHandler(t *testing.T, sink *countingSink, mutate func(*Config)) *Han
 	t.Cleanup(stop)
 
 	cfg := Config{
-		Server:             addr,
-		AgentID:            "test-agent",
-		Token:              "test-token",
-		InsecureSkipVerify: true,
-		FlushPeriod:        60 * time.Second,
-		CloseTimeout:       2 * time.Second,
-		MaxRetries:         2,
-		RetryDelay:         100 * time.Millisecond,
+		Server:       addr,
+		AgentID:      "test-agent",
+		Token:        "test-token",
+		TLS:          &mebsuta.TLSConfig{InsecureSkipVerify: true},
+		FlushPeriod:  60 * time.Second,
+		CloseTimeout: 2 * time.Second,
+		MaxRetries:   2,
+		RetryDelay:   100 * time.Millisecond,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -519,14 +519,14 @@ func TestOnResultReceivesRejection(t *testing.T) {
 		sawCode  uint32
 	)
 	cfg := Config{
-		Server:             addr,
-		AgentID:            "test-agent",
-		Token:              "test-token",
-		InsecureSkipVerify: true,
-		FlushPeriod:        60 * time.Second,
-		CloseTimeout:       2 * time.Second,
-		MaxRetries:         2,
-		RetryDelay:         100 * time.Millisecond,
+		Server:       addr,
+		AgentID:      "test-agent",
+		Token:        "test-token",
+		TLS:          &mebsuta.TLSConfig{InsecureSkipVerify: true},
+		FlushPeriod:  60 * time.Second,
+		CloseTimeout: 2 * time.Second,
+		MaxRetries:   2,
+		RetryDelay:   100 * time.Millisecond,
 		OnResult: func(_ uint64, level string, code uint32, _ string) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -669,15 +669,15 @@ func TestHandler_CloseFlushesBuffer(t *testing.T) {
 	defer stop()
 
 	h, err := NewHandler(Config{
-		Server:             addr,
-		AgentID:            "test-agent",
-		Token:              "test-token",
-		InsecureSkipVerify: true,             // 自签名测试证书
-		FlushPeriod:        60 * time.Second, // 不会有自动刷新
-		BatchSize:          100,
-		CloseTimeout:       5 * time.Second,
-		MaxRetries:         2,
-		RetryDelay:         100 * time.Millisecond,
+		Server:       addr,
+		AgentID:      "test-agent",
+		Token:        "test-token",
+		TLS:          &mebsuta.TLSConfig{InsecureSkipVerify: true}, // 自签名测试证书
+		FlushPeriod:  60 * time.Second,                             // 不会有自动刷新
+		BatchSize:    100,
+		CloseTimeout: 5 * time.Second,
+		MaxRetries:   2,
+		RetryDelay:   100 * time.Millisecond,
 	})
 	if err != nil {
 		t.Skipf("in-process server setup failed: %v", err)

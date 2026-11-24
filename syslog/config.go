@@ -41,11 +41,14 @@ type Config struct {
 	Facility int          // syslog facility（0-23）。0 → DefaultFacility（1=user）。
 	// 关于 0 为何重映射为 1（user）而非保留为 0（kernel）——即 int 的
 	// Go 零值——见 DefaultFacility。
-	Reconnect     *bool         // 断连后自动重连。nil → true。
-	RetryDelay    time.Duration // 重连尝试间隔。0 → 500ms。
-	TLSSkipVerify bool          // 跳过 TLS 证书校验。
-	StaticHost    string        // 覆盖系统主机名。
-	Secure        bool          // 启用 TLS。
+	Reconnect  *bool         // 断连后自动重连。nil → true。
+	RetryDelay time.Duration // 重连尝试间隔。0 → 500ms。
+	// TLS 启用 TLS(nil = 明文)。非 nil 即启用:字段全零 = 系统信任池 +
+	// 主机名校验(最常见的"只想加密");私有 CA/mTLS/SNI 见
+	// mebsuta.TLSConfig。0.1.0-30 起取代 Secure/TLSSkipVerify 两开关
+	// (此前不支持私有 CA 与 mTLS,F5)。
+	TLS        *mebsuta.TLSConfig
+	StaticHost string // 覆盖系统主机名。
 	// RFC3164 使用 RFC3164 格式而非 RFC5424。默认 false = RFC5424
 	//（0.1.0-25 起反转：此前默认 RFC3164 是历史遗留——RFC3164 没有
 	// structured-data 字段，全部属性与审计契约字段被静默丢弃）。

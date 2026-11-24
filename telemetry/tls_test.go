@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"github.com/iuboy/mebsuta"
 	"math/big"
 	"net"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func TestStart_PrivateCAHTTPSCollector(t *testing.T) {
 		ServiceName: "tls-svc",
 		Endpoint:    srv.URL,
 		Signals:     Traces,
-		TLSCAFile:   filepath.Join(m.dir, "ca.pem"),
+		TLS:         &mebsuta.TLSConfig{CAFile: filepath.Join(m.dir, "ca.pem")},
 	}
 	_, err0 := cfg.Validate()
 	require.NoError(t, err0)
@@ -141,13 +142,15 @@ func TestStart_MTLSClientCert(t *testing.T) {
 
 	t.Run("with client identity", func(t *testing.T) {
 		tel, err := Start(context.Background(), Config{
-			ServiceName:   "mtls-svc",
-			Endpoint:      srv.URL,
-			Signals:       Traces,
-			TLSCAFile:     filepath.Join(m.dir, "ca.pem"),
-			TLSCertFile:   cliCert,
-			TLSKeyFile:    cliKey,
-			TLSServerName: "127.0.0.1",
+			ServiceName: "mtls-svc",
+			Endpoint:    srv.URL,
+			Signals:     Traces,
+			TLS: &mebsuta.TLSConfig{
+				CAFile:     filepath.Join(m.dir, "ca.pem"),
+				CertFile:   cliCert,
+				KeyFile:    cliKey,
+				ServerName: "127.0.0.1",
+			},
 		})
 		require.NoError(t, err)
 		_, span := tel.TracerProvider().Tracer("t").Start(context.Background(), "mtls")
@@ -162,7 +165,7 @@ func TestStart_MTLSClientCert(t *testing.T) {
 			ServiceName: "mtls-svc",
 			Endpoint:    srv.URL,
 			Signals:     Traces,
-			TLSCAFile:   filepath.Join(m.dir, "ca.pem"),
+			TLS:         &mebsuta.TLSConfig{CAFile: filepath.Join(m.dir, "ca.pem")},
 		})
 		require.NoError(t, err)
 		_, span := tel.TracerProvider().Tracer("t").Start(context.Background(), "mtls")
@@ -177,16 +180,15 @@ func TestValidate_TLSRules(t *testing.T) {
 	httpCfg := Config{
 		ServiceName: "s",
 		Endpoint:    "http://fwd:4318",
-		TLSCAFile:   "ca.pem",
+		TLS:         &mebsuta.TLSConfig{CAFile: "ca.pem"},
 	}
 	_, err := httpCfg.Validate()
 	require.ErrorContains(t, err, "http://")
 
 	halfCfg := Config{
-		ServiceName:   "s",
-		Endpoint:      "https://fwd:4318",
-		TLSCertFile:   "c.pem",
-		TLSServerName: "fwd",
+		ServiceName: "s",
+		Endpoint:    "https://fwd:4318",
+		TLS:         &mebsuta.TLSConfig{CertFile: "c.pem", ServerName: "fwd"},
 	}
 	_, err = halfCfg.Validate()
 	require.ErrorContains(t, err, "必须成对")
