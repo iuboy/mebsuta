@@ -26,3 +26,15 @@ func SeverityNumber(level slog.Level) int {
 		return 5
 	}
 }
+
+// LevelName 返回级别的规范文本名称。LevelAudit 渲染为 "AUDIT" 而非
+// slog 默认的数值形式 "ERROR+4"——此前 console(TextHandler)与 OTLP
+// severity text 各自内联处理或直接漏掉，审计记录在两类输出里被渲染
+// 成 "ERROR+4"。这是文本渲染的唯一规范映射（0.1.0-25 起），与
+// SeverityNumber 的数值映射并列。
+func LevelName(level slog.Level) string {
+	if level == LevelAudit {
+		return "AUDIT"
+	}
+	return level.String()
+}

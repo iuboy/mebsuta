@@ -855,3 +855,29 @@ func TestWriter_WriteErrorReported(t *testing.T) {
 	require.Contains(t, ops, "write", "write failure must reach OnError with Op=write")
 	require.Equal(t, int64(1), w.FailedWrites(), "failure counted once")
 }
+
+// TestCompressResidual_NewDoesNotBlock:残留待压缩备份超过并发上限时
+// New 不得阻塞(B22)——此前的信号量获取在 New 路径上等待槽位。
+func TestCompressResidual_NewDoesNotBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.log")
+	off := false
+	// 预置 8 个残留备份(上限 4):写入超过 4 个的旧式备份文件。
+	for i := range 8 {
+		name := fmt.Sprintf("%s.2026-01-01T00-00-%02d.000", path, i)
+		require.NoError(t, os.WriteFile(name, []byte("residual"), 0600))
+	}
+
+	done := make(chan *Writer, 1)
+	go func() {
+		w, err := New(Config{Path: path, Compress: &off})
+		require.NoError(t, err)
+		done <- w
+	}()
+	select {
+	case w := <-done:
+		require.NoError(t, w.Close())
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "New blocked on residual compression slots (B22)")
+	}
+}

@@ -158,3 +158,42 @@ func findAttr(attrs []*commonpb.KeyValue, key string) *commonpb.KeyValue {
 	}
 	return nil
 }
+
+// TestHandler_SeverityTextAudit:OTLP severity text 对 AUDIT 记录渲染
+// 规范文本 "AUDIT"(B7)而非 slog 数值形式 "ERROR+4";severity number
+// 走共享映射(21)。
+func TestHandler_SeverityTextAudit(t *testing.T) {
+	tel, r := startPipeline(t, telemetry.Logs)
+	defer r.Close()
+
+	logger := slog.New(NewHandler(tel.LoggerProvider(), Config{}))
+	logger.Log(context.Background(), mebsuta.LevelAudit, "audit via otlp")
+	require.NoError(t, tel.Shutdown(context.Background()))
+
+	records := r.LogRecords()
+	require.Len(t, records, 1)
+	require.Equal(t, "AUDIT", records[0].SeverityText, "severity text renders the named level")
+	require.Equal(t, logsv1.SeverityNumber(21), records[0].SeverityNumber, "audit maps to the fatal band")
+}
+
+// TestHandler_SetLevel:MinLevel 传入 *slog.LevelVar 后支持运行时热调
+// (B20)——此前固定 slog.Level 使 mebsuta.SetLevel 对本 handler 静默
+// 无效(applied=0 且 skipped 为空)。
+func TestHandler_SetLevel(t *testing.T) {
+	tel, r := startPipeline(t, telemetry.Logs)
+	defer r.Close()
+
+	lv := mebsuta.NewLevelVar(slog.LevelInfo)
+	logger := slog.New(NewHandler(tel.LoggerProvider(), Config{MinLevel: lv}))
+	logger.Debug("dropped at info")
+
+	h := logger.Handler().(*Handler)
+	require.True(t, h.SetLevel(slog.LevelWarn), "LevelVar-backed MinLevel is hot-adjustable")
+	logger.Info("dropped at warn")
+	logger.Warn("kept")
+	require.NoError(t, tel.Shutdown(context.Background()))
+
+	records := r.LogRecords()
+	require.Len(t, records, 1)
+	require.Equal(t, "kept", records[0].Body.GetStringValue())
+}

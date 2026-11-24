@@ -66,7 +66,7 @@ func TestIntegration_Syslog_RFC3164(t *testing.T) {
 		Address:    addr,
 		Tag:        "mebsuta-test",
 		Facility:   1, // Validate 把 0 重映射为 DefaultFacility(1):<14> = 1×8 + severity 6
-		RFC5424:    false,
+		RFC3164:    true,
 		RetryDelay: 200 * time.Millisecond,
 	})
 	require.NoError(t, err, "NewHandler")
@@ -85,11 +85,11 @@ func TestIntegration_Syslog_RFC5424(t *testing.T) {
 	addr, lines := captureSyslogTCP(t)
 
 	h, err := NewHandler(Config{
-		Network:    "tcp",
-		Address:    addr,
-		Tag:        "mebsuta-test",
-		Facility:   1, // <14> = 1×8 + severity 6(0 重映射为 DefaultFacility)
-		RFC5424:    true,
+		Network:  "tcp",
+		Address:  addr,
+		Tag:      "mebsuta-test",
+		Facility: 1, // <14> = 1×8 + severity 6(0 重映射为 DefaultFacility)
+
 		RetryDelay: 200 * time.Millisecond,
 	})
 	require.NoError(t, err, "NewHandler")
@@ -143,10 +143,10 @@ func TestIntegration_Syslog_AuditLevel(t *testing.T) {
 	addr, lines := captureSyslogTCP(t)
 
 	h, err := NewHandler(Config{
-		Network:    "tcp",
-		Address:    addr,
-		Tag:        "mebsuta-test",
-		RFC5424:    true,
+		Network: "tcp",
+		Address: addr,
+		Tag:     "mebsuta-test",
+
 		Facility:   1,
 		RetryDelay: 200 * time.Millisecond,
 	})

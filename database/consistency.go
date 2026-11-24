@@ -97,6 +97,10 @@ func (h *Handler) relayEmit(ctx context.Context, logger log.Logger, e dbLogEntry
 		rec.SetSeverityText(e.Level)
 	}
 	rec.SetBody(attribute.StringValue(e.Message))
+	// 携带存储行 id(B10):双写语义承诺"投递 at-least-once,消费方按
+	// id 幂等去重"——relay 记录此前不带 id,消费方无从去重,提交到
+	// 标记窗口的重复投递必然成双。
+	rec.AddAttributes(attribute.String("log.record.id", e.ID))
 	if len(e.Fields) > 0 {
 		rec.AddAttributes(jsonAttrs(e.Fields)...)
 	}

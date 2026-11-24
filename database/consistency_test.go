@@ -197,9 +197,13 @@ func TestConsistency_SyncRelayAfterFlush(t *testing.T) {
 		attrs = append(attrs, kv)
 		return true
 	})
-	require.Len(t, attrs, 1)
-	require.Equal(t, "k", string(attrs[0].Key))
-	require.Equal(t, "v", attrs[0].Value.AsString())
+	// B10:relay 记录携带存储行 id(log.record.id)供消费方幂等去重,
+	// 加上原始属性共 2 项。
+	require.Len(t, attrs, 2)
+	require.Equal(t, "log.record.id", string(attrs[0].Key))
+	require.NotEmpty(t, attrs[0].Value.AsString(), "storage row id present")
+	require.Equal(t, "k", string(attrs[1].Key))
+	require.Equal(t, "v", attrs[1].Value.AsString())
 
 	// 标记在同一轮被翻转。
 	require.Eventually(t, func() bool {

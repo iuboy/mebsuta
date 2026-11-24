@@ -765,10 +765,9 @@ func recordToSignal(r slog.Record) (*core.SignalRecord, attrStats) {
 		return true
 	})
 
-	severityText := r.Level.String()
-	if r.Level == mebsuta.LevelAudit {
-		severityText = "AUDIT"
-	}
+	// 规范文本映射唯一来源(B7):AUDIT 此前内联判断,现与根包 JSON/
+	// console/otlp/syslog 同源。
+	severityText := mebsuta.LevelName(r.Level)
 
 	// 日志热路径绝不 panic。uuid.NewV7 只有在系统
 	// PRNG 不可用时才会失败；此时回退为从记录时间戳派生的确定性、

@@ -34,7 +34,7 @@ func newStdoutHandlerWithWriter(w io.Writer, cfg StdoutConfig) (*StdoutHandler, 
 		handlerCore: newHandlerCore(),
 		cfg:         cfg,
 	}
-	h.inner = newInnerHandler(w, EncodingType(cfg.Format), timezoneReplaceAttr(cfg.Timezone), cfg.Timezone)
+	h.inner = newInnerHandler(w, EncodingType(cfg.Format), replaceAttr(cfg.Timezone), cfg.Timezone)
 	return h, nil
 }
 
@@ -94,16 +94,25 @@ var (
 	_ handlerUnwrapper = (*StdoutHandler)(nil)
 )
 
-// timezoneReplaceAttr 返回一个 ReplaceAttr 函数，把 slog 的 time 属性转到指定时区。
-// 用于 console/TextHandler 的时区展示。loc 为 nil 时用 UTC。
-func timezoneReplaceAttr(loc *time.Location) func([]string, slog.Attr) slog.Attr {
+// replaceAttr 返回 TextHandler 的 ReplaceAttr:time 属性转到指定时区,
+// level 属性映射为规范文本——AUDIT 此前渲染为 slog 数值形式
+// "ERROR+4"(B7)。用于 console 输出。loc 为 nil 时用 UTC。
+func replaceAttr(loc *time.Location) func([]string, slog.Attr) slog.Attr {
 	if loc == nil {
 		loc = time.UTC
 	}
 	return func(groups []string, a slog.Attr) slog.Attr {
-		if a.Key == slog.TimeKey && len(groups) == 0 {
+		if len(groups) != 0 {
+			return a
+		}
+		switch a.Key {
+		case slog.TimeKey:
 			if t, ok := a.Value.Any().(time.Time); ok {
 				return slog.Time(slog.TimeKey, t.In(loc))
+			}
+		case slog.LevelKey:
+			if lv, ok := a.Value.Any().(slog.Level); ok {
+				return slog.String(slog.LevelKey, LevelName(lv))
 			}
 		}
 		return a

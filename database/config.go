@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -189,16 +190,24 @@ func dsnHasTLS(dsn string) bool {
 }
 
 // Sanitize 返回 DSN 中类凭据片段已脱敏的配置副本，规则与
-// database 错误消息一致（见 dsnCredRe）。该副本可以安全嵌入
+// database 错误消息一致（见 redactCredentials 的三段式匹配）。该副本可以安全嵌入
 // 日志、错误文本与结构化输出；它不能用于连接——请把原始
 // Config 传给 NewHandler。与错误脱敏本身一样，这是尽力而为的
-// 文本改写而非 DSN 解析器：包含 '@' 的密码无法用正则从
-// 主机分隔符中剥离，只能部分覆盖。
+// 文本改写而非 DSN 解析器。
 func (c Config) Sanitize() Config {
 	if c.DSN != "" {
 		c.DSN = redactCredentials(c.DSN)
 	}
 	return c
+}
+
+// MarshalJSON 渲染脱敏副本(B19):json.Marshal(Config) 此前走默认
+// 反射序列化,原始 DSN 原样落进任何结构化输出——String/GoString 的
+// 脱敏挡不住这一条渲染路径。
+func (c Config) MarshalJSON() ([]byte, error) {
+	// 类型转换剥掉 MarshalJSON 方法,避免对 Sanitize() 的递归。
+	type plain Config
+	return json.Marshal(plain(c.Sanitize()))
 }
 
 // String 实现 fmt.Stringer，DSN 凭据已脱敏，因此

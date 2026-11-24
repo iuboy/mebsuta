@@ -2,6 +2,7 @@ package syslog
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -310,7 +311,7 @@ func newTestHandler(t *testing.T) *Handler {
 
 func TestFormatMessage_RFC3164(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = false
+	h.cfg.RFC3164 = true
 
 	entry := logEntry{
 		Time:    time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
@@ -318,15 +319,14 @@ func TestFormatMessage_RFC3164(t *testing.T) {
 		Message: "test message",
 	}
 	msg := h.formatMessage(entry)
-	require.Contains(t, msg, "<14>", "RFC3164 should contain priority")
+	require.Contains(t, msg, "<14>", "RFC3164 mode should contain priority")
 	require.Contains(t, msg, "testhost", "should contain hostname")
 	require.Contains(t, msg, "test message", "should contain message")
 	require.True(t, strings.HasSuffix(msg, "\n"), "should end with newline")
 }
 
-func TestFormatMessage_RFC5424(t *testing.T) {
+func TestFormatMessage_RFC5424Default(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	entry := logEntry{
 		Time:    time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
@@ -361,7 +361,6 @@ func TestFormatMessage_JSONInMessage(t *testing.T) {
 
 func TestFormatMessage_AuditLevel(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 	h.cfg.JSONInMessage = true
 
 	entry := logEntry{
@@ -382,7 +381,6 @@ func TestFormatMessage_Timezone(t *testing.T) {
 	}
 	h := newTestHandler(t)
 	h.location = loc
-	h.cfg.RFC5424 = true
 
 	entry := logEntry{
 		Time:    time.Date(2025, 1, 15, 2, 30, 0, 0, time.UTC),
@@ -783,7 +781,6 @@ func TestSafeSend_ErrorHandlerReentrantClose(t *testing.T) {
 
 func TestFormatStructuredMessage_LogValuerResolved(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	entry := logEntry{
 		Time:    time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC),
@@ -831,7 +828,6 @@ func (selfValuer) LogValue() slog.Value {
 // 多条这样的属性也不得把 SD-ELEMENT 推过总预算。
 func TestFormatStructuredMessage_SDBudgetAllQuotes(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	quoteValue := strings.Repeat(`"`, maxSDValueBytes)
 	entry := logEntry{
@@ -870,7 +866,6 @@ func TestFormatStructuredMessage_SDBudgetAllQuotes(t *testing.T) {
 // RFC5424 转义序列。
 func TestFormatStructuredMessage_TruncateEscapedValue(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	// 3 × maxSDValueBytes 的反斜杠保证截断点可以
 	// 落在 `\\` 对的两半之间。
@@ -1051,7 +1046,6 @@ func TestEscapeSDValue_ControlChars(t *testing.T) {
 // 渲染出的消息中唯一的换行必须是结尾的分帧 LF。
 func TestFormatStructuredMessage_NoFrameSplit(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	entry := logEntry{
 		Time:    time.Date(2026, 8, 22, 10, 0, 0, 123456789, time.UTC),
@@ -1075,7 +1069,6 @@ func TestFormatStructuredMessage_NoFrameSplit(t *testing.T) {
 // 严格的接收端会拒绝该帧。
 func TestFormatStructuredMessage_TimestampFractionDigits(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	entry := logEntry{
 		Time:    time.Date(2026, 8, 22, 10, 0, 0, 123456789, time.UTC), // 9 位纳秒
@@ -1098,7 +1091,6 @@ func TestFormatStructuredMessage_TimestampFractionDigits(t *testing.T) {
 // 长度与值大小上均有上限；超限参数汇总进一个标记参数。
 func TestFormatStructuredMessage_Limits(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 
 	var attrs []slog.Attr
 	for i := 0; i < maxSDParams+20; i++ {
@@ -1112,7 +1104,7 @@ func TestFormatStructuredMessage_Limits(t *testing.T) {
 
 	// 超大值必须被截断，而不是完整外发。
 	h2 := newTestHandler(t)
-	h2.cfg.RFC5424 = true
+	h2.cfg.RFC3164 = false
 	big := strings.Repeat("x", maxSDValueBytes+1000)
 	entry2 := logEntry{
 		Time: time.Now(), Level: slog.LevelInfo, Message: "m",
@@ -1152,7 +1144,6 @@ func TestWriteWithRetry_StopsAfterContextCancel(t *testing.T) {
 // 接收端会因重复拒绝整个帧。
 func TestFormatStructuredMessage_ParamNameDedup(t *testing.T) {
 	h := newTestHandler(t)
-	h.cfg.RFC5424 = true
 	entry := logEntry{
 		Time:    time.Now(),
 		Level:   slog.LevelInfo,
@@ -1192,4 +1183,47 @@ func TestWriteWithRetry_DisconnectedFailsFast(t *testing.T) {
 	require.Less(t, time.Since(start), 500*time.Millisecond,
 		"no connection must fail fast, not spin retries")
 	require.Equal(t, int64(1), h.Dropped(), "drop counted once")
+}
+
+// TestFormatStructuredMessage_LeadingBracketIsMSG:RFC5424 下 MSG 以 "["
+// 开头时必须前置 BOM——依 RFC 解析的接收端会把 "[" 当作额外的
+// STRUCTURED-DATA,调用方可控的消息借此伪造 SD 参数(B9)。
+func TestFormatStructuredMessage_LeadingBracketIsMSG(t *testing.T) {
+	h := &Handler{cfg: Config{Facility: 1}}
+	h.location = time.UTC
+
+	entry := logEntry{
+		Time:    time.Now(),
+		Level:   slog.LevelWarn,
+		Message: `[origin ip="9.9.9.9"] user logged in`,
+		Attrs:   []slog.Attr{slog.String("ip", "1.2.3.4")},
+	}
+	out := h.formatStructuredMessage(entry, entry.Time, 12, "host", 123)
+
+	// BOM 前导 + MSG 起始;真正的 SD 只有 mebsuta 一段。
+	require.Contains(t, out, "\uFEFF[origin", "MSG leading bracket must be BOM-escaped")
+	require.Equal(t, 1, strings.Count(out, "[mebsuta "), "no extra SD-ELEMENT may appear")
+	require.NotContains(t, out, `[origin ip="9.9.9.9"] [mebsuta`, "raw bracket prefix would parse as forged SD")
+}
+
+// TestTruncateJSON_EscapeSafe:JSON 截断不得产出非法输出(B17)——切口
+// 落在转义序列中间(悬空 `\` 或被切断的 `\uXXXX`)会与 "..." 后缀
+// 组成非法转义。
+func TestTruncateJSON_EscapeSafe(t *testing.T) {
+	payloads := []string{
+		`{"m":"` + strings.Repeat(`\u003c`, 500) + `"}`,   // \uXXXX 转义密集
+		`{"m":"` + strings.Repeat(`\`, 1000) + `"}`,       // 反斜杠密集
+		`{"m":"` + strings.Repeat(`\n`, 1000) + `"}`,      // \n 转义密集
+		`{"m":"` + strings.Repeat("😀", 500) + `"}`,        // 原生 4 字节 rune
+		`{"k":"` + strings.Repeat(`a\u003c`, 300) + `b"}`, // \u 前导切断
+		`{"m":"` + strings.Repeat("a", 2000) + `"}`,       // 纯文本基线
+	}
+	for i, s := range payloads {
+		for _, size := range []int{64, 128, 256, 512, 1024} {
+			out := truncateJSON(s, size)
+			require.True(t, json.Valid([]byte(out)),
+				"payload %d truncated to %d bytes is not valid JSON: %q", i, size, out)
+			require.LessOrEqual(t, len(out), size, "truncation budget respected")
+		}
+	}
 }

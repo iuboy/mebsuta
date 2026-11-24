@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -80,6 +81,38 @@ func (c *DatabaseConfig) openDatabase() (*gorm.DB, *sql.DB, error) {
 		return nil, nil, err
 	}
 	return gdb, sqlDB, nil
+}
+
+// String 实现 fmt.Stringer 并脱敏(B19):DatabaseConfig 此前没有任何
+// 渲染方法,%v / slog.Any 直接打印原始 DSN——外层 telemetry.Config 的
+// String/GoString 挡不住这一条渲染路径。DSN 整体掩码(与 render.go 的
+// dsnMask 同一口径:telemetry 从不需要从渲染字符串重新连接)。
+func (c DatabaseConfig) String() string {
+	return c.renderBody()
+}
+
+// GoString 实现 fmt.GoStringer,与 String 同样的脱敏,使 %#v 输出
+// (调试器、错误模板)也无法泄漏 DSN。
+func (c DatabaseConfig) GoString() string {
+	return "telemetry.DatabaseConfig{" + c.renderBody() + "}"
+}
+
+// MarshalJSON 渲染脱敏副本:json.Marshal 此前走默认反射序列化,
+// 原始 DSN 原样落进任何结构化输出。
+func (c DatabaseConfig) MarshalJSON() ([]byte, error) {
+	// 类型转换剥掉 MarshalJSON 方法,避免递归。
+	type plain DatabaseConfig
+	p := plain(c)
+	// 裸 ***(不带 dsnMask 的引号装饰):JSON 值自带引号,双层引号
+	// ("***")对消费方是噪声。
+	p.DSN = "***"
+	return json.Marshal(p)
+}
+
+func (c DatabaseConfig) renderBody() string {
+	return fmt.Sprintf("Driver:%s DSN:%s TracesTable:%q MetricsTable:%q EnsureSchema:%v MaxOpenConns:%d MaxIdleConns:%d MaxConnLifetime:%s",
+		c.Driver, dsnMask(c.DSN), c.TracesTable, c.MetricsTable,
+		c.EnsureSchema, c.MaxOpenConns, c.MaxIdleConns, c.MaxConnLifetime)
 }
 
 // spanFanout 导出到其下所有 span exporter；在 OTLP 端点与数据库后端

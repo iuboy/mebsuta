@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/iuboy/mebsuta"
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
@@ -46,16 +47,18 @@ type Config struct {
 	// LoggerName 是发出记录的 instrumentation scope 名称（在 OTLP 导出中
 	// 作为 scope 呈现，例如供下游按 logger 过滤）。"" → DefaultLoggerName。
 	LoggerName string
-	// MinLevel 是经管线发出的最低 slog 级别。0 → slog.LevelInfo，与其他
+	// MinLevel 是经管线发出的最低 slog 级别。nil → slog.LevelInfo，与其他
 	// 所有 mebsuta handler 的默认级别过滤一致；设为 slog.LevelDebug 可
-	// 全量发出并在上游做选择性丢弃（UseSampling、级别装饰器）。
-	MinLevel slog.Level
+	// 全量发出并在上游做选择性丢弃（UseSampling、级别装饰器）。传入
+	// *slog.LevelVar 即获得运行时热调能力（mebsuta.SetLevel 穿透，B20——
+	// 此前固定 slog.Level 使 SetLevel 对本 handler 静默无效）。
+	MinLevel slog.Leveler
 }
 
 // Handler 是把记录桥接到 OTel 日志管线的 slog.Handler。并发安全。
 type Handler struct {
 	logger log.Logger
-	min    slog.Level
+	min    handlerkit.LevelGate
 	// OTel log API 没有 logger 侧的 WithAttrs/WithGroup，因此预置属性与
 	// group 路径存在这里。预置属性在 WithAttrs 时固化其 group 前缀
 	// （按键名预拼接存储）；记录属性在发出时取 handler 当前的 group
@@ -76,13 +79,20 @@ func NewHandler(lp log.LoggerProvider, cfg Config) *Handler {
 	}
 	return &Handler{
 		logger: lp.Logger(name),
-		min:    cfg.MinLevel,
+		min:    handlerkit.NewLevelGate(cfg.MinLevel),
 	}
 }
 
 // Enabled 实现 slog.Handler。
 func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= h.min
+	return h.min.Enabled(level)
+}
+
+// SetLevel 运行时热调级别（B20）。仅当构造期 MinLevel 传入
+// *slog.LevelVar 时生效并返回 true；固定级别返回 false（进入
+// mebsuta.SetLevel 的 skipped 诚实面）。
+func (h *Handler) SetLevel(level slog.Level) bool {
+	return h.min.Set(level)
 }
 
 // Handle 实现 slog.Handler。
@@ -91,10 +101,10 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	rec.SetTimestamp(r.Time)
 	rec.SetObservedTimestamp(time.Now())
 	// SeverityNumber 采用共享的规范映射（频段基数 5/9/13/17，
-	// LevelAudit → 21）；SeverityText 保留 slog 的渲染，供下游做
-	// 基于文本的过滤。
+	// LevelAudit → 21）；SeverityText 采用共享的文本映射——AUDIT 此前
+	// 渲染为 slog 数值形式 "ERROR+4"（B7）。
 	rec.SetSeverity(log.Severity(mebsuta.SeverityNumber(r.Level)))
-	rec.SetSeverityText(r.Level.String())
+	rec.SetSeverityText(mebsuta.LevelName(r.Level))
 	rec.SetBody(attribute.StringValue(r.Message))
 	rec.AddAttributes(h.convert(r)...)
 	h.logger.Emit(ctx, rec)

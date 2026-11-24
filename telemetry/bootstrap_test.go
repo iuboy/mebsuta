@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"sync"
@@ -366,4 +368,22 @@ func TestStartAfterShutdown_NoOverwriteWarning(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Zero(t, overwrite, "generation rotation must not warn global-overwrite")
+}
+
+// TestDatabaseConfig_RenderingRedactsDSN:DatabaseConfig 的三种渲染路径
+// (%v String、%#v GoString、json.Marshal,B19)都不得泄露 DSN——此前
+// 该结构没有任何脱敏方法,外层 telemetry.Config 的渲染挡不住直接
+// 打印 DatabaseConfig。
+func TestDatabaseConfig_RenderingRedactsDSN(t *testing.T) {
+	cfg := DatabaseConfig{
+		Driver: "postgres",
+		DSN:    "postgres://app:S3cr3t@db/x",
+	}
+	require.NotContains(t, fmt.Sprintf("%v", cfg), "S3cr3t", "%v leaked the DSN")
+	require.NotContains(t, fmt.Sprintf("%+v", cfg), "S3cr3t", "%+v leaked the DSN")
+	require.NotContains(t, fmt.Sprintf("%#v", cfg), "S3cr3t", "%#v leaked the DSN")
+	b, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "S3cr3t", "json.Marshal leaked the DSN")
+	require.Contains(t, string(b), `"DSN":"***"`)
 }

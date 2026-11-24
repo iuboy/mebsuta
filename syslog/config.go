@@ -46,7 +46,10 @@ type Config struct {
 	TLSSkipVerify bool          // 跳过 TLS 证书校验。
 	StaticHost    string        // 覆盖系统主机名。
 	Secure        bool          // 启用 TLS。
-	RFC5424       bool          // 使用 RFC5424 格式而非 RFC3164。
+	// RFC3164 使用 RFC3164 格式而非 RFC5424。默认 false = RFC5424
+	//（0.1.0-25 起反转：此前默认 RFC3164 是历史遗留——RFC3164 没有
+	// structured-data 字段，全部属性与审计契约字段被静默丢弃）。
+	RFC3164       bool          // 使用 RFC3164 格式而非 RFC5424。
 	BufferSize    int           // 内部消息缓冲大小。0 → 1000。
 	TimeZone      string        // 时间戳时区。默认 "UTC"。
 	JSONInMessage bool          // 在 message 字段中包含 JSON 结构。

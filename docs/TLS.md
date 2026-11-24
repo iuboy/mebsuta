@@ -36,7 +36,6 @@ syslogH, err := syslog.NewHandler(syslog.Config{
     Facility:   1,
     Reconnect:  mebsuta.Ptr(true),
     RetryDelay: 500 * time.Millisecond,
-    RFC5424:    true,
 })
 ```
 
@@ -48,7 +47,7 @@ syslogH, err := syslog.NewHandler(syslog.Config{
 | `Facility` | int | `1` | Syslog facility |
 | `Reconnect` | `*bool` | `true` | 断线自动重连 |
 | `RetryDelay` | `time.Duration` | `500ms` | 重连间隔 |
-| `RFC5424` | bool | `false` | 使用 RFC5424 格式 |
+| `RFC3164` | bool | `false` | 使用 RFC3164 格式(默认 RFC5424) |
 
 标准端口：`514`（明文）、`601`（RFC5424 明文）、`6514`（TLS，推荐）。
 

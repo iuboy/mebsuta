@@ -12,6 +12,52 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-25] - 2026-11-24
+
+### Fixed — 全面审查第三批:审计语义 + 脱敏(审查报告 B6-B10/B17-B20/B22)
+
+- **审计字段**(B6):JSON 序列化失败的回退记录保留原级别与已提升的
+  `event_type`/`actor`/`success`——AUDIT 记录此前被降级为普通 ERROR
+  且丢掉审计契约字段,合规消费方会漏掉这次审计事件。
+- **AUDIT 文本渲染**(B7):新增 `LevelName` 作为唯一规范映射。console
+  (TextHandler)与 OTLP severity text 此前渲染 slog 数值形式
+  "ERROR+4";根包 JSON/syslog JSON/mbta 的内联判断统一收编。
+- **syslog 默认格式**(B8):`Config.RFC5424 bool` → `RFC3164 bool`,
+  默认 RFC5424——RFC3164 没有 structured-data 字段,全部属性与审计
+  契约字段被静默丢弃,不该是默认。
+- **syslog MSG 防伪造**(B9):RFC5424 下 MSG 以 "[" 开头时前置 BOM——
+  否则依 RFC 解析的接收端把消息开头的 `[...]` 当作额外
+  STRUCTURED-DATA,调用方可控的消息借此伪造 SD 参数。
+- **relay 记录携带 id**(B10):事务双写的 relay 记录新增
+  `log.record.id` 属性——"按 id 幂等去重"的承诺此前没有事实载体。
+- **syslog JSON 截断**(B17):切口落在转义序列中间(悬空反斜杠、被
+  切断的 `\uXXXX`)时回退至安全位置——此前可产出非法 JSON。
+- **DSN 脱敏**(B18):单正则改三段式解析(引号 keyword/裸词
+  keyword/URL userinfo + 兜底)——带空格的引号密码此前泄露后半段
+  (password='S3cr3t Pa55' 曾脱敏为 password=*** Pa55')。
+- **配置渲染脱敏**(B19):`database.Config.MarshalJSON` 与
+  `telemetry.DatabaseConfig` 的 String/GoString/MarshalJSON——
+  json.Marshal 与直接打印 DatabaseConfig 此前原样输出 DSN。
+- **otlp 级别热调**(B20):`Config.MinLevel` 改为 `slog.Leveler` 并实现
+  `SetLevel`——固定 `slog.Level` 使 `mebsuta.SetLevel` 对本 handler
+  静默无效(applied=0 且 skipped 为空)。
+- **filerotate**(B22):残留待压缩备份超过并发上限时 `New` 不再阻塞
+  ——投递到待压缩通道由固定 worker 消费,取代 New 路径上的槽位等待。
+- **集成测试环境门**:PostgreSQL/openGauss 集成测试在本机
+  (无对应 DSN 环境变量)得体 skip,不再以连接失败污染本地全量运行;
+  CI 的 postgres service 下照常执行。
+
+### 破坏性变更
+
+- `syslog.Config.RFC5424 bool` 更名 `RFC3164 bool` 且语义反转:默认
+  格式由 RFC3164 变为 RFC5424。原样传 `RFC5424: true` 的调用方改为
+  删除该字段(默认即 RFC5424);显式要 RFC3164 的传 `RFC3164: true`。
+- JSON 回退记录的 `level` 为原级别(此前恒为 "ERROR");AUDIT 回退
+  携带 `event_type`/`actor`/`success` 顶层字段。
+- relay 记录新增 `log.record.id` 属性(消费方属性集多一项)。
+- `otlp.Config.MinLevel` 类型 `slog.Level` → `slog.Leveler`
+  (现有 `slog.Level` 赋值仍然兼容)。
+
 ## [0.1.0-24] - 2026-11-24
 
 ### Fixed — 全面审查第二批:错误与丢失可见性 + 生命周期(审查报告 B1-B5/B11-B14/B16/B21/B23)

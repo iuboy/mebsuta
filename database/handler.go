@@ -9,7 +9,6 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -580,33 +579,33 @@ func closeSQLDB(gdb *gorm.DB) {
 	}
 }
 
-// dsnCredRe 匹配 DSN 派生错误消息中常见的凭据模式：
-// “user:pass@host” / “user:pass@tcp(host)” 的密码段，
-// 以及 key=value 形式的参数（password、passwd、sslpassword、pwd）。
+// 三段式 DSN 凭据脱敏(B18:解析式替代单正则——带空格的引号密码此前
+// 泄露后半段,password='S3cr3t Pa55' 曾脱敏为 password=*** Pa55'):
 //
-// 密码段模式为 :[^@/]*@——它允许密码内出现 ':'（此前的
-// :[^:@/]+@ 变体会泄漏内嵌 ':' 之后的全部内容），并在第一个
-// '@' 或 '/' 处停止。包含 '@' 的密码无法仅靠正则从
-// 主机分隔符中可靠剥离；此类 DSN 应由驱动侧解析。
-// 这是面向错误消息的尽力而为脱敏器，不是解析器。
-var dsnCredRe = regexp.MustCompile(`:[^@/]*@|(?:password|passwd|sslpassword|pwd)=[^&;\s]+`)
+//  1. 引号 keyword 形式:password='S3cr3t Pa55'——引号内可含空格/@,
+//     整段折叠;
+//  2. 裸词 keyword 形式:password=Secr3t(值到空白/&/; 为止);
+//  3. URL userinfo 形式:postgres://user:pass@host——pass 内的 @ 以
+//     percent-encoding 表示,首个 @ 终止 userinfo;
+//  4. 兜底:裸 user:pass@host 的密码段(:[^@/\s]*@,允许密码内 ':')。
+//
+// 顺序保证幂等:已脱敏的 password=*** / :***@ 不会被再次改写。这是
+// 面向错误消息的尽力而为脱敏器,不是解析器。
+var (
+	dsnQuotedCredRe = regexp.MustCompile(`(?i)\b(password|passwd|sslpassword|pwd)\s*=\s*('(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")`)
+	dsnBareCredRe   = regexp.MustCompile(`(?i)\b(password|passwd|sslpassword|pwd)\s*=\s*[^\s&;]+`)
+	dsnURLCredRe    = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://[^:/@\s]*):[^@\s]*@`)
+	dsnHostCredRe   = regexp.MustCompile(`:[^@/\s]*@`)
+)
 
 // redactCredentials 以对所有调用方（数据库错误与 Config 的
-// String/GoString/Sanitize 输出中渲染的 DSN）一致的规则，
+// String/GoString/Sanitize/MarshalJSON 输出中渲染的 DSN）一致的规则，
 // 移除 s 中类凭据子串。
 func redactCredentials(s string) string {
-	return dsnCredRe.ReplaceAllStringFunc(s, func(m string) string {
-		// “user:pass@” 形式——保留冒号分隔符形状。
-		if strings.HasSuffix(m, "@") {
-			return ":***@"
-		}
-		// “key=value” 形式——保留键，脱敏值。
-		eq := strings.IndexByte(m, '=')
-		if eq < 0 {
-			return "***"
-		}
-		return m[:eq+1] + "***"
-	})
+	s = dsnQuotedCredRe.ReplaceAllString(s, "$1=***")
+	s = dsnBareCredRe.ReplaceAllString(s, "$1=***")
+	s = dsnURLCredRe.ReplaceAllString(s, "$1:***@")
+	return dsnHostCredRe.ReplaceAllString(s, ":***@")
 }
 
 // sanitizeDBError 移除数据库错误消息中类凭据的子串。

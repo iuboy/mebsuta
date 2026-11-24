@@ -489,8 +489,36 @@ func TestContractJSONHandler_NestedUnserializableFallback(t *testing.T) {
 	require.Contains(t, out, "marshal failed", "expected fallback record")
 	var parsed map[string]any
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &parsed), "fallback output is not valid JSON: %s", out)
-	require.Equal(t, "ERROR", parsed["level"], "fallback level")
+	// B6:回退记录保留原级别(INFO 不再伪装 ERROR;AUDIT 同理保持
+	// AUDIT 并携带已提升的审计字段——见 AuditFallback 测试)。
+	require.Equal(t, "INFO", parsed["level"], "fallback keeps original level")
 	attrs := parsed["attributes"].(map[string]any)
 	require.Contains(t, attrs["original_message"].(string), "IMPORTANT audit message", "fallback lost original message")
 	require.NotNil(t, attrs["marshal_error"], "fallback missing marshal_error attribute")
+}
+
+// TestContractJSONHandler_AuditFallbackKeepsAuditFields:序列化失败的
+// 回退记录必须保留 AUDIT 级别与已提升的审计契约字段(B6)——此前
+// 回退把级别写死为 ERROR 且丢掉 event_type/actor/success,合规消费方
+// 会漏掉这次审计事件。
+func TestContractJSONHandler_AuditFallbackKeepsAuditFields(t *testing.T) {
+	h, buf := newJSONHandler(t)
+
+	r := slog.NewRecord(time.Now(), LevelAudit, "user login", 0)
+	r.AddAttrs(
+		slog.String("event_type", "login"),
+		slog.String("actor", "user:42"),
+		slog.Bool("success", true),
+		slog.Any("nested", map[string]any{"x": math.NaN()}), // 触发 marshal 失败
+	)
+	require.NoError(t, h.Handle(context.Background(), r), "Handle degrades to fallback instead")
+
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &parsed), "fallback is valid JSON")
+	require.Equal(t, "AUDIT", parsed["level"], "fallback keeps AUDIT level (not ERROR)")
+	require.Equal(t, "login", parsed["event_type"], "promoted event_type survives the fallback")
+	require.Equal(t, "user:42", parsed["actor"], "promoted actor survives the fallback")
+	require.Equal(t, true, parsed["success"], "promoted success survives the fallback")
+	attrs := parsed["attributes"].(map[string]any)
+	require.Contains(t, attrs["marshal_error"], "NaN", "marshal cause recorded")
 }

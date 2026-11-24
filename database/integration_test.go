@@ -54,6 +54,7 @@ func (jsonbRow) TableName() string { return "logs_jsonb_test" }
 // 浮点值，如 1e+21）在 PostgreSQL 的 jsonb 把数字字面量
 // 改写为纯小数后仍校验通过。
 func TestIntegrity_JsonbRoundTrip(t *testing.T) {
+	skipWithoutPostgres(t)
 	gdb, err := gorm.Open(postgres.Open(postgresDSN()), &gorm.Config{})
 	require.NoError(t, err)
 	sqlDB, _ := gdb.DB()
@@ -112,6 +113,16 @@ func TestIntegrity_JsonbRoundTrip(t *testing.T) {
 
 }
 
+// skipWithoutPostgres 使需要真实 PostgreSQL 的集成测试在本机
+// (无 MEBSUTA_POSTGRES_DSN、无 service)得体跳过——CI 的 integration
+// job 提供 postgres service,必跑。
+func skipWithoutPostgres(t *testing.T) {
+	t.Helper()
+	if os.Getenv("MEBSUTA_POSTGRES_DSN") == "" {
+		t.Skip("MEBSUTA_POSTGRES_DSN not set; requires a reachable PostgreSQL (CI provides one)")
+	}
+}
+
 func postgresDSN() string {
 	if dsn := os.Getenv("MEBSUTA_POSTGRES_DSN"); dsn != "" {
 		return dsn
@@ -121,6 +132,7 @@ func postgresDSN() string {
 
 func newPostgresHandler(t *testing.T) (*Handler, *gorm.DB) {
 	t.Helper()
+	skipWithoutPostgres(t)
 
 	table := "logs_pg_" + time.Now().Format("20060102150405")
 
@@ -256,6 +268,9 @@ func newOpenGaussHandler(t *testing.T) (*Handler, *gorm.DB) {
 }
 
 func TestIntegration_OpenGauss_WriteAndRead(t *testing.T) {
+	if os.Getenv("MEBSUTA_OPENGAUSS_DSN") == "" {
+		t.Skip("MEBSUTA_OPENGAUSS_DSN not set; no openGauss service in CI (decision 11)")
+	}
 	h, gdb := newOpenGaussHandler(t)
 
 	r := slog.NewRecord(time.Date(2026, 1, 15, 10, 30, 0, 0, time.UTC), slog.LevelInfo, "hello opengauss", 0)
@@ -280,6 +295,9 @@ func TestIntegration_OpenGauss_WriteAndRead(t *testing.T) {
 }
 
 func TestIntegration_OpenGauss_BatchWrite(t *testing.T) {
+	if os.Getenv("MEBSUTA_OPENGAUSS_DSN") == "" {
+		t.Skip("MEBSUTA_OPENGAUSS_DSN not set; no openGauss service in CI (decision 11)")
+	}
 	h, gdb := newOpenGaussHandler(t)
 
 	for i := range 25 {
@@ -300,6 +318,9 @@ func TestIntegration_OpenGauss_BatchWrite(t *testing.T) {
 }
 
 func TestIntegration_OpenGauss_AuditLevel(t *testing.T) {
+	if os.Getenv("MEBSUTA_OPENGAUSS_DSN") == "" {
+		t.Skip("MEBSUTA_OPENGAUSS_DSN not set; no openGauss service in CI (decision 11)")
+	}
 	h, gdb := newOpenGaussHandler(t)
 
 	r := slog.NewRecord(time.Now(), mebsuta.LevelAudit, "audit event", 0)

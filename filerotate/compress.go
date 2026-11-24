@@ -170,21 +170,26 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 		return
 	}
 
+	// B22:待压缩任务先投递到有界通道,再启动 maxConcurrent 个 worker
+	// 消费——New() 不得因残留备份超过并发上限而阻塞(此前的
+	// `sem <-` 在 New 路径上等待槽位,4 个以上残留备份曾卡住构造)。
+	// wg 注册先于 worker 启动,Close 的 Wait 跟踪全部 worker(M7 语义
+	// 保留:每个在途任务都被 Wait 覆盖)。
 	const maxConcurrent = 4
-	sem := make(chan struct{}, maxConcurrent)
+	jobs := make(chan string, len(toCompress))
 	for _, path := range toCompress {
-		// M7：先向 WaitGroup 注册，再获取信号量槽位。
-		// 之前的顺序（先 sem <- 再 wg.Add）留下了一个窗口：调用方
-		// 已持有槽位但 goroutine 尚未被跟踪——若 New() 在该间隙返回
-		// 且 Close() 随即执行，Wait 可能在压缩即将开始时观察到
-		// 零个 goroutine。先 Add 后获取保证每个
-		// 在途槽位都被 Wait 跟踪。
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(path string) {
+		jobs <- path
+	}
+	close(jobs)
+	wg.Add(maxConcurrent)
+	for range maxConcurrent {
+		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			compressFile(path, onError)
-		}(path)
+			// goroutine 归属:New() 启动,生命周期 = jobs 耗尽;
+			// Close() 经 wg.Wait 等待全部 worker 退出。
+			for path := range jobs {
+				compressFile(path, onError)
+			}
+		}()
 	}
 }

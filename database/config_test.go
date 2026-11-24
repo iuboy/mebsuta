@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"testing"
@@ -133,4 +134,35 @@ func TestConfig_StringSignerField(t *testing.T) {
 	cfg = cfgWith(func(c *Config) { c.IntegritySigner = mockSigner{} })
 	require.Contains(t, cfg.String(), "IntegritySigner:MOCK")
 	require.Contains(t, cfg.GoString(), "IntegritySigner:MOCK")
+}
+
+// TestSanitize_QuotedPasswordRedacted:解析式三段脱敏(B18)——带空格的
+// 引号密码此前泄露后半段(password='S3cr3t Pa55' 曾脱敏为
+// password=*** Pa55')。
+func TestSanitize_QuotedPasswordRedacted(t *testing.T) {
+	for _, dsn := range []string{
+		"host=db user=app password='S3cr3t Pa55' dbname=x", // 引号 + 空格
+		`host=db user=app password="S3cr3t Pa55" dbname=x`, // 双引号 + 空格
+		"host=db user=app password=Secr3t/2024 dbname=x",   // 裸词含 /
+		"postgres://app:Secr3t%2F2024@db/x",                // URL userinfo
+		"postgres://app:Secr3t@db/x",                       // URL 简单形式
+	} {
+		got := Config{Driver: "postgres", DSN: dsn, Table: "logs"}.Sanitize()
+		require.NotContains(t, got.DSN, "Secr3t", "dsn %q leaked the password", dsn)
+		require.Contains(t, got.DSN, "***", "dsn %q must show a redaction mark", dsn)
+	}
+	// 幂等:已脱敏输出再次脱敏不变。
+	once := Config{Driver: "postgres", DSN: "host=db password=Secr3t", Table: "logs"}.Sanitize()
+	require.Equal(t, once.DSN, once.Sanitize().DSN)
+}
+
+// TestConfig_MarshalJSONRedactsDSN:json.Marshal(Config) 必须输出脱敏
+// 形态(B19)——默认反射序列化此前原样输出 DSN,String/GoString 的
+// 脱敏挡不住这一条渲染路径。
+func TestConfig_MarshalJSONRedactsDSN(t *testing.T) {
+	c := Config{Driver: "postgres", DSN: "host=db user=app password=S3cr3t dbname=x", Table: "logs"}
+	b, err := json.Marshal(c)
+	require.NoError(t, err)
+	require.NotContains(t, string(b), "S3cr3t", "marshaled JSON leaked the DSN password")
+	require.Contains(t, string(b), `"DSN":"host=db user=app password=***`)
 }

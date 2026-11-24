@@ -645,10 +645,9 @@ func (h *Handler) formatJSONMessage(entry logEntry, ts time.Time, priority int, 
 	for _, attr := range entry.Attrs {
 		attrutil.FlattenAttr(attributes, "", attr, attrutil.NaNSafe)
 	}
-	level := entry.Level.String()
-	if entry.Level == mebsuta.LevelAudit {
-		level = "AUDIT"
-	}
+	// 规范文本映射唯一来源(B7):AUDIT 此前内联判断,现与根包 JSON/
+	// console/otlp/mbta 同源。
+	level := mebsuta.LevelName(entry.Level)
 	logData := map[string]any{
 		"time":       ts.Format(time.RFC3339Nano),
 		"level":      level,
@@ -679,7 +678,7 @@ func (h *Handler) formatJSONMessage(entry logEntry, ts time.Time, priority int, 
 		cleaned = truncateJSON(cleaned, maxMsgSize)
 	}
 
-	if h.cfg.RFC5424 {
+	if !h.cfg.RFC3164 {
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - - %s`,
 			priority, ts.Format(rfc5424TimeLayout), host, h.cfg.Tag, procid, cleaned) + "\n"
 	}
@@ -693,7 +692,7 @@ func (h *Handler) formatStructuredMessage(entry logEntry, ts time.Time, priority
 		msgContent = textutil.TruncateUTF8(msgContent, maxMsgSize)
 	}
 
-	if h.cfg.RFC5424 {
+	if !h.cfg.RFC3164 {
 		var sd strings.Builder
 		written, skipped := 0, 0
 		if len(entry.Attrs) == 0 {
@@ -753,6 +752,13 @@ func (h *Handler) formatStructuredMessage(entry logEntry, ts time.Time, priority
 		}
 		sdStr := sd.String()
 
+		// RFC5424 §6.4:MSG 以 "[" 开头时,依 RFC 解析的接收端会把它
+		// 当作额外的 STRUCTURED-DATA——调用方可控的消息借此伪造 SD
+		// 参数(B9)。前置 BOM 使 MSG 明确始于 MSG 部分(RFC 允许 BOM
+		// 作为 MSG 前导,符合规范的接收端剥离它)。
+		if strings.HasPrefix(msgContent, "[") {
+			msgContent = "\uFEFF" + msgContent
+		}
 		return fmt.Sprintf(`<%d>1 %s %s %s %d - %s %s`,
 			priority, ts.Format(rfc5424TimeLayout), host, h.cfg.Tag, procid, sdStr, msgContent) + "\n"
 	}
@@ -1026,6 +1032,12 @@ func truncateJSON(s string, maxBytes int) string {
 			preciseBudget = 0
 		}
 		truncated = s[:textutil.RuneBoundary(s, preciseBudget)]
+		// B17:切口落在转义序列中间(悬空 `\` 或被切断的 `\uXXXX`)
+		// 会与 "..." 后缀组成非法 JSON——回退切口至安全位置后再走
+		// 状态机。RuneBoundary 只保证 rune 边界,不保证转义完整。
+		if _, isStr := walkJSON(truncated); isStr {
+			truncated = trimBrokenEscapeTail(truncated)
+		}
 		stack, inStr = walkJSON(truncated)
 
 		newSuffixLen := 3
@@ -1091,3 +1103,48 @@ var (
 	_ io.Closer                   = (*Handler)(nil)
 	_ mebsuta.SelfBufferedHandler = (*Handler)(nil)
 )
+
+// trimBrokenEscapeTail 把落在转义序列中间的切口回退到安全位置(B17)。
+// 调用方应仅在切口位于字符串内部时调用(结构位置的切口没有转义状态)。
+func trimBrokenEscapeTail(s string) string {
+	for len(s) > 0 {
+		// 字符串内部任何尾部反斜杠都会把后缀的首字节(闭引号或 "...")
+		// 当作被转义字符——引号闭不上,串永不结束。全部回退。
+		bs := 0
+		for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
+			bs++
+		}
+		if bs > 0 {
+			s = s[:len(s)-bs]
+			continue
+		}
+		// 被切断的 \uXXXX:尾部 `u` 前是未转义的 `\`(其前反斜杠数为
+		// 奇数,即它是转义开始)且其后 hex 不足 4 位——回退到该 `\`
+		// 之前。`\\u` 的 u 是字面量,不触发。
+		if idx := strings.LastIndex(s, "u"); idx >= 1 && s[idx-1] == '\\' {
+			prefix := 0
+			for i := idx - 1; i >= 0 && s[i] == '\\'; i-- {
+				prefix++
+			}
+			if prefix%2 == 1 {
+				rest := s[idx+1:]
+				if len(rest) < 4 && allHex(rest) {
+					return s[:idx-1]
+				}
+			}
+		}
+		return s
+	}
+	return s
+}
+
+// allHex 报告 s 是否全为十六进制位(空串视为真——切口恰在 \u 之后
+// 同样是被切断的转义)。
+func allHex(s string) bool {
+	for _, c := range s {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", c) {
+			return false
+		}
+	}
+	return true
+}

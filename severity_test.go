@@ -32,3 +32,16 @@ func TestSeverityNumber(t *testing.T) {
 		require.Equal(t, tc.want, got, "SeverityNumber(%v)", tc.level)
 	}
 }
+
+// TestLevelName:文本渲染的唯一规范映射(B7)——AUDIT 渲染为 "AUDIT"
+// 而非 slog 数值形式 "ERROR+4"(此前 console 与 OTLP severity text
+// 各自内联处理或漏掉)。
+func TestLevelName(t *testing.T) {
+	require.Equal(t, "AUDIT", LevelName(LevelAudit))
+	require.Equal(t, "ERROR", LevelName(slog.LevelError))
+	require.Equal(t, "WARN", LevelName(slog.LevelWarn))
+	require.Equal(t, "INFO", LevelName(slog.LevelInfo))
+	require.Equal(t, "DEBUG", LevelName(slog.LevelDebug))
+	// 其他自定义级别维持 slog 数值渲染(只有 AUDIT 是契约级名称)。
+	require.Equal(t, "ERROR+2", LevelName(slog.LevelError+2))
+}

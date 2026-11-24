@@ -167,10 +167,9 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		}
 	}
 
-	level := r.Level.String()
-	if r.Level == LevelAudit {
-		level = "AUDIT"
-	}
+	// 规范文本名称唯一映射(B7):AUDIT 此前在内联判断里渲染,现统一走
+	// LevelName,与 console/syslog/mbta/otlp 同源。
+	level := LevelName(r.Level)
 
 	// 保留的省略标记（与 syslog handler 的 _truncated PARAM-NAME 对应）：
 	// 某属性被数量/深度上限丢弃或某键被长度上限截断，attributes 因此不
@@ -208,7 +207,10 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		// 记录（slog.Logger 忽略 Handle 错误）——改为降级为回退记录，
 		// 让审计痕迹保留丢失内容及其原因的痕迹。
 		je.buf.Reset()
-		if encErr := je.enc.Encode(h.fallbackEntry(r, level, err)); encErr != nil {
+		// 回退记录携带原级别与已提升的审计契约字段(B6):AUDIT 记录
+		// 序列化失败时此前被降级为普通 ERROR 且丢掉 event_type/actor/
+		// success——合规消费方会漏掉这次审计事件。
+		if encErr := je.enc.Encode(h.fallbackEntry(r, level, eventType, actor, success, err)); encErr != nil {
 			return err // 真正不可达：所有回退值都是字符串
 		}
 	}
@@ -219,18 +221,22 @@ func (h *contractJSONHandler) Handle(_ context.Context, r slog.Record) error {
 	return err
 }
 
-// fallbackEntry 构建描述序列化失败的最小 ERROR 记录。
-// 它绝不能使用池化的 attributes map（已被调用方的 defer 归还池中），
-// 也绝不能编码失败：下面每个值都是纯字符串。
-func (h *contractJSONHandler) fallbackEntry(r slog.Record, level string, cause error) *jsonEntry {
+// fallbackEntry 构建描述序列化失败的最小记录。它保留原级别与已提升
+// 的审计契约字段(B6)——AUDIT 记录不得因序列化失败被降级为普通
+// ERROR。它绝不能使用池化的 attributes map（已被调用方的 defer 归还
+// 池中），也绝不能编码失败：下面每个值都是纯字符串。
+func (h *contractJSONHandler) fallbackEntry(r slog.Record, level, eventType, actor string, success *bool, cause error) *jsonEntry {
 	// UTF-8 安全截断:裸 msg[:1024] 会切开多字节 rune,残缺字节经
 	// encoding/json 变成 U+FFFD。textutil 与 database/syslog 共用同一
 	// 截断口径(含 "..." 标记,总长不超预算)。
 	msg := textutil.TruncateUTF8(r.Message, 1024)
 	return &jsonEntry{
-		Time:    r.Time.In(h.timezone()).Format(time.RFC3339Nano),
-		Level:   "ERROR",
-		Message: "mebsuta: log record marshal failed; original message truncated below",
+		Time:      r.Time.In(h.timezone()).Format(time.RFC3339Nano),
+		Level:     level,
+		EventType: eventType,
+		Message:   "mebsuta: log record marshal failed; original message truncated below",
+		Actor:     actor,
+		Success:   success,
 		Attributes: map[string]any{
 			"original_level":   level,
 			"original_message": msg,
