@@ -173,6 +173,9 @@ func (c Config) Validate() (Config, error) {
 	if err := c.validateTLS(); err != nil {
 		return Config{}, err
 	}
+	if err := c.validateHeaders(); err != nil {
+		return Config{}, err
+	}
 	// 仅 -1 表示 NeverSample；(0, 1] 为比例；(-1, 0) 开区间无语义，拒绝。
 	if (c.SamplingRate < -1) || (c.SamplingRate > 1) || (c.SamplingRate < 0 && c.SamplingRate > -1) {
 		return Config{}, &mebsuta.ConfigError{Field: "SamplingRate", Msg: fmt.Sprintf("%v 超出合法域 {-1} ∪ [0, 1]（-1 = NeverSample）", c.SamplingRate)}
@@ -195,6 +198,53 @@ func (c Config) Validate() (Config, error) {
 // tlsActive 报告是否设置了任意 TLS 凭据字段。
 func (c Config) tlsActive() bool {
 	return c.TLSCAFile != "" || c.TLSCertFile != "" || c.TLSKeyFile != "" || c.TLSServerName != ""
+}
+
+// validateHeaders 校验 Headers(F4):非法头名到导出时才失败,违反
+// fail-fast——键必须为合法 RFC 7230 token;携带认证头(Authorization/
+// Proxy-Authorization/未加密敏感性)且端点为明文(http:// 或裸
+// host:port)时拒绝——凭据随明文线路发送。
+func (c Config) validateHeaders() error {
+	plaintext := false
+	if c.Endpoint != "" {
+		lower := strings.ToLower(c.Endpoint)
+		switch {
+		case strings.HasPrefix(lower, "https://"):
+		case strings.HasPrefix(lower, "http://"):
+			plaintext = true
+		default:
+			plaintext = true // 裸 host:port:LAN 明文默认
+		}
+	}
+	for k, v := range c.Headers {
+		if !validHeaderFieldName(k) {
+			return &mebsuta.ConfigError{Field: "Headers", Msg: fmt.Sprintf("非法头名 %q（必须为 RFC 7230 token）", k)}
+		}
+		lower := strings.ToLower(k)
+		if plaintext && (lower == "authorization" || lower == "proxy-authorization") {
+			return &mebsuta.ConfigError{Field: "Headers", Msg: fmt.Sprintf("认证头 %q 随明文端点 %q 发送——改用 https:// 或去掉该头", k, c.Endpoint)}
+		}
+		if v == "" {
+			return &mebsuta.ConfigError{Field: "Headers", Msg: fmt.Sprintf("头 %q 的值为空(空值头无意义,疑似漏配)", k)}
+		}
+	}
+	return nil
+}
+
+// validHeaderFieldName 报告 s 是否为合法 RFC 7230 token 头名。
+func validHeaderFieldName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validateTLS 校验 TLS 字段交叉规则：显式 http:// 端点与 TLS 凭据自相

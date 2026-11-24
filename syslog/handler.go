@@ -956,7 +956,11 @@ func sanitizeSDName(key string) string {
 
 func safeMessageForLog(msg string) string {
 	cleaned := strings.Map(func(r rune) rune {
-		if r >= 0 && r <= 31 {
+		// C0 控制字符之外,U+2028/2029(行分隔/段落分隔)、NEL(U+0085)
+		// 也是可感知的行终止——依赖它们的接收端会把一条 MSG 拆成
+		// 多行,伪造帧(F3);DEL(0x7f)同为不可打印控制面,一并清洗。
+		switch {
+		case r >= 0 && r <= 31, r == 0x7f, r == 0x85, r == 0x2028, r == 0x2029:
 			return ' '
 		}
 		return r

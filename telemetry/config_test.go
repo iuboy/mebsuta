@@ -101,3 +101,22 @@ func TestConfig_RenderRedactsSecrets(t *testing.T) {
 	}
 	require.Equal(t, cfg.String(), cfg.String(), "渲染必须确定（日志稳定）")
 }
+
+// TestValidateHeaders:头名必须为 RFC 7230 token;认证头随明文端点
+// 发送被拒绝(F4)——此前非法头名到导出时才失败,认证凭据随明文线路
+// 静默外发。
+func TestValidateHeaders(t *testing.T) {
+	for name, cfg := range map[string]Config{
+		"bad header name":     {ServiceName: "s", Endpoint: "http://fwd:4318", Headers: map[string]string{"Bad Header": "v"}},
+		"auth over plaintext": {ServiceName: "s", Endpoint: "http://fwd:4318", Headers: map[string]string{"Authorization": "Bearer t"}},
+		"auth over bare host": {ServiceName: "s", Endpoint: "fwd:4318", Headers: map[string]string{"authorization": "Bearer t"}},
+		"empty header value":  {ServiceName: "s", Endpoint: "http://fwd:4318", Headers: map[string]string{"X-Token": ""}},
+	} {
+		_, err := cfg.Validate()
+		require.Error(t, err, "%s must be rejected", name)
+	}
+	// https + 认证头合法。
+	ok := Config{ServiceName: "s", Endpoint: "https://fwd:4318", Headers: map[string]string{"Authorization": "Bearer t"}}
+	_, err := ok.Validate()
+	require.NoError(t, err, "auth over https is legitimate")
+}

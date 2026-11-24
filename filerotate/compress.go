@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,23 +14,25 @@ import (
 // cleanupTemp 关闭 dst（若非 nil）并删除 tmpPath，任何失败都会上报。
 // 它集中处理 compressFile 的错误路径清理，避免清理错误
 // 被（errcheck）静默丢弃，同时不影响上报原始失败。
-func cleanupTemp(dst io.Closer, tmpPath string, onError func(error)) {
+func cleanupTemp(root *os.Root, dst io.Closer, tmpPath string, onError func(error)) {
 	if dst != nil {
 		if err := dst.Close(); err != nil {
 			reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("close temp on cleanup: %w", err)})
 		}
 	}
-	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+	if err := root.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("remove temp %s on cleanup: %w", tmpPath, err)})
 	}
 }
 
-// compressFile 通过临时文件 + 原子重命名将文件压缩为 .gz。
-func compressFile(path string, onError func(error)) {
+// compressFile 通过临时文件 + 原子重命名将文件压缩为 .gz。全部路径
+// 操作经 root(F1):压缩源不再跟随符号链接——此前 os.Open 会跟随,
+// 与主文件(O_NOFOLLOW)与临时文件(O_EXCL)的防护不对称。
+func compressFile(root *os.Root, path string, onError func(error)) {
 	gzPath := path + ".gz"
 	tmpPath := gzPath + ".tmp"
 
-	src, err := os.Open(path)
+	src, err := root.Open(path)
 	if err != nil {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("open %s: %w", path, err)})
 		return
@@ -44,7 +47,7 @@ func compressFile(path string, onError func(error)) {
 	// O_TRUNC，监听轮转时机的攻击者可以事先放置指向受害文件的
 	// <backup>.gz.tmp 符号链接，使其先被截断、后被 gzip
 	// 字节覆盖。
-	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	dst, err := root.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("create temp: %w", err)})
 		return
@@ -70,7 +73,7 @@ func compressFile(path string, onError func(error)) {
 		// 真正原因且已上报——此处再报刷新错误只会
 		// 在同一失败路径上制造噪音。
 		_ = gw.Close()
-		cleanupTemp(dst, tmpPath, onError)
+		cleanupTemp(root, dst, tmpPath, onError)
 		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("compress data: %w", err)})
 		return
@@ -78,7 +81,7 @@ func compressFile(path string, onError func(error)) {
 
 	// gw.Close() 刷新 gzip 尾部；它不会关闭 dst。
 	if err := gw.Close(); err != nil {
-		cleanupTemp(dst, tmpPath, onError)
+		cleanupTemp(root, dst, tmpPath, onError)
 		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("flush: %w", err)})
 		return
@@ -86,15 +89,15 @@ func compressFile(path string, onError func(error)) {
 
 	// 重命名前先关闭 dst——在 Windows 上重命名打开中的文件会失败。
 	if err := dst.Close(); err != nil {
-		cleanupTemp(nil, tmpPath, onError) // dst 已关闭
+		cleanupTemp(root, nil, tmpPath, onError) // dst 已关闭
 		dstClosed = true
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("close temp: %w", err)})
 		return
 	}
 	dstClosed = true
 
-	if err := os.Rename(tmpPath, gzPath); err != nil {
-		cleanupTemp(nil, tmpPath, onError)
+	if err := root.Rename(tmpPath, gzPath); err != nil {
+		cleanupTemp(root, nil, tmpPath, onError)
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("rename: %w", err)})
 		return
 	}
@@ -102,25 +105,26 @@ func compressFile(path string, onError func(error)) {
 	// 压缩成功后删除原始未压缩文件。
 	// 若删除失败，.gz 与原文件会并存——应删除 .gz
 	//（而不是改回去），以免用 gzip 字节破坏原始日志。
-	if err := os.Remove(path); err != nil {
+	if err := root.Remove(path); err != nil {
 		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("remove original %s: %w", path, err)})
 		// 尽力而为：删除 .gz，让 compressResidual 在下次
 		// 启动时重试。绝不将 .gz 改名回 path（那会用 gzip
 		// 二进制数据覆盖原始未压缩日志）。
-		if rerr := os.Remove(gzPath); rerr != nil {
+		if rerr := root.Remove(gzPath); rerr != nil {
 			reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("cleanup orphaned .gz %s: %w", gzPath, rerr)})
 		}
 	}
 }
 
-// compressResidual 检测并压缩上次崩溃遗留的未压缩轮转文件。
-func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError func(error)) {
-	dir := filepath.Dir(logPath)
+// compressResidual 检测并压缩上次崩溃遗留的未压缩轮转文件。全部
+// 路径操作经 root(F1)。任务投递到有界通道由固定 worker 消费——
+// New 不得因残留备份超过并发上限而阻塞(B22)。
+func compressResidual(root *os.Root, logPath string, compress bool, wg *sync.WaitGroup, onError func(error)) {
 	base := filepath.Base(logPath)
 
-	entries, err := os.ReadDir(dir)
+	entries, err := fs.ReadDir(root.FS(), ".")
 	if err != nil {
-		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("readdir %s: %w", dir, err)})
+		reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("readdir log root: %w", err)})
 		return
 	}
 
@@ -138,7 +142,7 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 			if !isBackupName(base, strings.TrimSuffix(name, ".tmp")) {
 				continue
 			}
-			if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
 				reportError(onError, &Error{Op: "compress", Err: fmt.Errorf("remove stale temp %s: %w", name, err)})
 			}
 			continue
@@ -156,7 +160,7 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 		}
 
 		if compress {
-			fullPath := filepath.Join(dir, name)
+			fullPath := name
 			// 若 .gz 已存在则跳过——避免重复 New 调用
 			//（如崩溃重启后）造成重复压缩。
 			if _, err := os.Stat(fullPath + ".gz"); err == nil {
@@ -188,7 +192,7 @@ func compressResidual(logPath string, compress bool, wg *sync.WaitGroup, onError
 			// goroutine 归属:New() 启动,生命周期 = jobs 耗尽;
 			// Close() 经 wg.Wait 等待全部 worker 退出。
 			for path := range jobs {
-				compressFile(path, onError)
+				compressFile(root, path, onError)
 			}
 		}()
 	}

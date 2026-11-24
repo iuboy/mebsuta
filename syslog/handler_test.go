@@ -1227,3 +1227,17 @@ func TestTruncateJSON_EscapeSafe(t *testing.T) {
 		}
 	}
 }
+
+// TestSafeMessageForLog_UnicodeLineBreaks:U+2028/U+2029/NEL(U+0085)与
+// DEL 也是可感知的行终止(F3)——依赖它们的接收端会把一条 MSG 拆成多行,
+// 伪造帧。
+func TestSafeMessageForLog_UnicodeLineBreaks(t *testing.T) {
+	in := "line1\u2028<134>1 forged\u2029line" + string(rune(0x85)) + "more\x7ftail"
+	out := safeMessageForLog(in)
+	require.NotContains(t, out, "\u2028", "LINE SEPARATOR must be sanitized")
+	require.NotContains(t, out, "\u2029", "PARAGRAPH SEPARATOR must be sanitized")
+	require.NotContains(t, out, string(rune(0x85)), "NEL must be sanitized")
+	require.NotContains(t, out, "\x7f", "DEL must be sanitized")
+	require.Equal(t, "line1 <134>1 forged line more tail", out,
+		"every感知行终止与 DEL 落成单空格,消息成为单行")
+}

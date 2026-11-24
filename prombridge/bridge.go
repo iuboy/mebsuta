@@ -20,6 +20,7 @@ package prombridge
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,8 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
 // DefaultPollInterval 是未设置 WithInterval 时的采集节奏。
@@ -46,6 +49,8 @@ type Bridge struct {
 	wg        sync.WaitGroup
 	closed    atomic.Bool
 	errorHPtr atomic.Pointer[mebsuta.ErrorHandler]
+	// reportGate 限频错误上报:每秒至多一次(F6)。
+	reportGate handlerkit.RateGate
 
 	mu       sync.Mutex
 	last     map[string]float64 // counter 指纹 → 上次累计值
@@ -246,7 +251,22 @@ func (b *Bridge) Skipped() map[string]int {
 }
 
 func (b *Bridge) report(err error) {
-	if fn := b.errorHPtr.Load(); fn != nil {
-		(*fn)(&mebsuta.HandlerError{Component: "prombridge", Operation: "poll", Err: err})
+	fn := b.errorHPtr.Load()
+	if fn == nil {
+		return
 	}
+	// 限频 + panic 恢复(F6):轮询 goroutine 里的用户回调若 panic 会
+	// 杀死进程(MetricsHandler.metricsSafe 同款遏制);失败风暴不得
+	// 1:1 放大为回调调用。
+	if !b.reportGate.Allow() {
+		return
+	}
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				fmt.Fprintf(os.Stderr, "prombridge: error handler panic recovered: %v\n", p)
+			}
+		}()
+		(*fn)(&mebsuta.HandlerError{Component: "prombridge", Operation: "poll", Err: err})
+	}()
 }

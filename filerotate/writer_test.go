@@ -308,11 +308,14 @@ func TestCompressResidual(t *testing.T) {
 	manual := logPath + ".2020-manual"
 	require.NoError(t, os.WriteFile(manual, []byte("manually archived\n"), 0644))
 
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err, "open log root")
 	var wg sync.WaitGroup
-	compressResidual(logPath, true, &wg, nil)
+	compressResidual(root, filepath.Base(logPath), true, &wg, nil)
 	wg.Wait()
+	require.NoError(t, root.Close())
 
-	_, err := os.Stat(tmpFile)
+	_, err = os.Stat(tmpFile)
 	require.Error(t, err, ".tmp file should be cleaned up")
 
 	_, err = os.Stat(backup1 + ".gz")
@@ -330,6 +333,15 @@ func TestCompressResidual(t *testing.T) {
 // compressFile 直接测试
 // =============================================================================
 
+// testRoot 打开 dir 的 os.Root,失败即终止(测试目录必可打开)。
+func testRoot(t *testing.T, dir string) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
 func TestCompressFile(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "source.txt")
@@ -338,7 +350,7 @@ func TestCompressFile(t *testing.T) {
 	content := strings.Repeat("log line\n", 1000)
 	require.NoError(t, os.WriteFile(src, []byte(content), 0644))
 
-	compressFile(src, nil)
+	compressFile(testRoot(t, dir), filepath.Base(src), nil)
 
 	_, err := os.Stat(gzPath)
 	require.NoError(t, err, "compressed file should exist")
@@ -355,7 +367,7 @@ func TestCompressFile_NilOnError(t *testing.T) {
 	src := filepath.Join(dir, "source.txt")
 	require.NoError(t, os.WriteFile(src, []byte("test log data\n"), 0644))
 
-	compressFile(src, nil)
+	compressFile(testRoot(t, dir), filepath.Base(src), nil)
 
 	_, err := os.Stat(src + ".gz")
 	require.NoError(t, err, "compression should succeed even with nil OnError")
@@ -686,9 +698,6 @@ func TestIsBackupName(t *testing.T) {
 // 回归测试：当日志路径是符号链接时（正是攻击者在轮转重命名窗口
 // 埋下的状态），打开必须失败。
 func TestOpenAppend_RefusesSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("O_NOFOLLOW is Unix-only; inode check remains on Windows")
-	}
 	dir := t.TempDir()
 	victim := filepath.Join(dir, "victim.txt")
 	require.NoError(t, os.WriteFile(victim, []byte("do not touch\n"), 0600))
@@ -696,8 +705,12 @@ func TestOpenAppend_RefusesSymlink(t *testing.T) {
 	if err := os.Symlink(victim, link); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
+	// os.Root 在全部支持平台(含 Windows,go1.25+)拒绝符号链接组件,
+	// 不再按平台跳过(F1)。
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err, "open log root")
 
-	f, _, err := openAppend(link, 0600)
+	f, _, err := openAppend(root, "app.log", 0600)
 	if err == nil {
 		// 反正马上要判定失败；fd 随之销毁
 		_ = f.Close()
@@ -782,7 +795,7 @@ func TestCompressFile_TmpIsExclusive(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	compressFile(src, func(error) {})
+	compressFile(testRoot(t, dir), filepath.Base(src), func(error) {})
 
 	data, err := os.ReadFile(victim)
 	require.NoError(t, err)
@@ -880,4 +893,21 @@ func TestCompressResidual_NewDoesNotBlock(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		require.FailNow(t, "New blocked on residual compression slots (B22)")
 	}
+}
+
+// TestOpenAppend_NarrowsExistingMode:已存在文件的权限宽于配置时收敛
+// 到配置值(F2)——0600 的承诺此前只对新建文件生效。
+func TestOpenAppend_NarrowsExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	require.NoError(t, err)
+	defer func() { _ = root.Close() }()
+
+	require.NoError(t, root.Chmod(".", 0o755)) // TempDir 本身 0700,放行 root 操作
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app.log"), []byte("x"), 0644))
+
+	f, fi, err := openAppend(root, "app.log", 0600)
+	require.NoError(t, err)
+	defer func() { _ = f.Close() }()
+	require.Equal(t, os.FileMode(0600), fi.Mode().Perm(), "existing mode narrowed to configured mode")
 }

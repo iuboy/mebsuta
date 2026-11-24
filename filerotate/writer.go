@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +48,10 @@ type Writer struct {
 	// 锁保护该切片，保证先解锁再上报的模式无数据竞争。
 	errMu               sync.Mutex
 	pendingRotateErrors []error
+	// root 是日志目录的 os.Root(F1):全部路径操作(打开/改名/删除/
+	// 读取)经它收敛——任何中间组件或最终组件为符号链接的访问都被
+	// 内核拒绝,取代手写的 O_NOFOLLOW 常量与打开后 inode 比较。
+	root *os.Root
 	// writeFailed 统计写入失败次数（B1）：同步链路上 slog 会丢弃
 	// Handle 的返回错误，磁盘满/IO 错误必须在此可见。FileHandler
 	// 经 Dropped() 转发，MetricsHandler 的丢弃探针得以覆盖。
@@ -81,13 +86,23 @@ func New(cfg Config) (*Writer, error) {
 		return nil, err
 	}
 
-	f, fi, err := openAppend(cfg.Path, cfg.FileMode)
+	root, err := os.OpenRoot(filepath.Dir(cfg.Path))
+	if err != nil {
+		return nil, fmt.Errorf("open log root %s: %w", filepath.Dir(cfg.Path), err)
+	}
+
+	f, fi, err := openAppend(root, filepath.Base(cfg.Path), cfg.FileMode)
+	if err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open log file: %w", err)
 	}
 
 	w := &Writer{
 		file:        f,
+		root:        root,
 		maxBytes:    int64(cfg.MaxSizeMB) * mib,
 		rotatedAt:   time.Now(),
 		cfg:         cfg,
@@ -102,7 +117,8 @@ func New(cfg Config) (*Writer, error) {
 	}
 	w.onError.Store(&errorFunc{fn: onErrorFn})
 
-	compressResidual(cfg.Path, cfg.compress(), &w.compressWg, w.loadOnError())
+	// F1:残留压缩经同一 root(相对名),New 不阻塞(B22)。
+	compressResidual(root, filepath.Base(cfg.Path), cfg.compress(), &w.compressWg, w.loadOnError())
 
 	return w, nil
 }
@@ -199,6 +215,12 @@ func (w *Writer) Close() error {
 		closeErr = w.file.Close()
 		w.file = nil
 	}
+	// root 在全部压缩 goroutine(compressWg.Wait)结束后归还:在途
+	// 压缩的打开/改名都依赖它。
+	if w.root != nil {
+		_ = w.root.Close()
+		w.root = nil
+	}
 	w.mu.Unlock()
 
 	// M4 契约：在 w.mu 之外上报待处理的轮转错误。Write
@@ -268,17 +290,17 @@ func (w *Writer) rotateLocked() {
 	w.file = nil
 
 	backup := w.backupNameLocked()
-	if err := os.Rename(w.cfg.Path, backup); err != nil {
+	if err := w.root.Rename(filepath.Base(w.cfg.Path), backup); err != nil {
 		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("rename for rotation: %w", err)})
 		w.addRotateErrors(errs...)
 		w.recoverOpen(w.cfg.Path)
 		return
 	}
 
-	f, _, err := openAppend(w.cfg.Path, w.cfg.FileMode)
+	f, _, err := openAppend(w.root, filepath.Base(w.cfg.Path), w.cfg.FileMode)
 	if err != nil {
 		errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("create new log file: %w", err)})
-		if renameBackErr := os.Rename(backup, w.cfg.Path); renameBackErr != nil {
+		if renameBackErr := w.root.Rename(backup, filepath.Base(w.cfg.Path)); renameBackErr != nil {
 			errs = append(errs, &Error{Op: "rotate", Err: fmt.Errorf("rename backup back failed: %w", renameBackErr)})
 		}
 		w.addRotateErrors(errs...)
@@ -312,7 +334,7 @@ func (w *Writer) rotateLocked() {
 		go func() {
 			defer w.compressWg.Done()
 			defer func() { <-w.compressSem }()
-			compressFile(backup, w.loadOnError())
+			compressFile(w.root, backup, w.loadOnError())
 			w.compressMu.Lock()
 			delete(w.compressing, backup)
 			w.compressMu.Unlock()
@@ -356,7 +378,7 @@ func (w *Writer) addRotateErrors(errs ...error) {
 // 重复轮转循环。错误收集进 pendingRotateErrors，由
 // reportRotateErrors() 在锁外清空（M4）。
 func (w *Writer) recoverOpen(path string) {
-	f, fi, err := openAppend(path, w.cfg.FileMode)
+	f, fi, err := openAppend(w.root, filepath.Base(path), w.cfg.FileMode)
 	if err != nil {
 		w.addRotateErrors(&Error{Op: "rotate", Err: fmt.Errorf("recover open failed: %w", err)})
 		w.closed.Store(true)
@@ -371,11 +393,12 @@ func (w *Writer) recoverOpen(path string) {
 // 用一次 ReadDir 调用 + 内存集合，避免最多 maxRotationSuffixSeq 次 Stat 系统调用。
 func (w *Writer) backupNameLocked() string {
 	ts := time.Now().Format("2006-01-02T15-04-05.000")
-	name := w.cfg.Path + "." + ts
+	// 相对名(F1):root 内操作一律相对目录,绝对路径会以
+	// "path escapes from parent" 被拒绝。
+	name := filepath.Base(w.cfg.Path) + "." + ts
 
-	// 仅一次 ReadDir 获取日志目录下全部现存文件。
-	dir := filepath.Dir(w.cfg.Path)
-	entries, err := os.ReadDir(dir)
+	// 仅一次 ReadDir 获取日志目录下全部现存文件(经 root)。
+	entries, err := rootReadDir(w.root)
 	if err != nil {
 		// 兜底：读不了目录，直接使用该名称。
 		return name
@@ -394,10 +417,10 @@ func (w *Writer) backupNameLocked() string {
 	for i := 1; i < maxRotationSuffixSeq; i++ {
 		candidate := fmt.Sprintf("%s.%d", base, i)
 		if _, found := existing[candidate]; !found {
-			return filepath.Join(dir, candidate)
+			return candidate
 		}
 	}
-	return w.cfg.Path + "." + fmt.Sprintf("%d", time.Now().UnixNano())
+	return base + "." + fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
 // cleanupBackupsLocked 删除超出 MaxBackups 或 MaxAgeDays 的旧备份文件。
@@ -408,12 +431,11 @@ func (w *Writer) cleanupBackupsLocked() {
 		return
 	}
 
-	dir := filepath.Dir(cfg.Path)
 	base := filepath.Base(cfg.Path)
 
-	entries, err := os.ReadDir(dir)
+	entries, err := rootReadDir(w.root)
 	if err != nil {
-		w.addRotateErrors(&Error{Op: "cleanup", Err: fmt.Errorf("readdir %s: %w", dir, err)})
+		w.addRotateErrors(&Error{Op: "cleanup", Err: fmt.Errorf("readdir log root: %w", err)})
 		return
 	}
 
@@ -473,26 +495,24 @@ func (w *Writer) cleanupBackupsLocked() {
 	// reportRotateErrors 在锁外清空），以遵守 w.mu 上的 M4
 	// 不可重入契约。
 	for _, b := range backups[len(keep):] {
-		path := filepath.Join(dir, b.name)
 		// H2：跳过仍在压缩中的备份；压缩 goroutine
 		// 完成后会移除跟踪条目，之后的清理
 		// 会将其回收。
-		if _, busy := inFlight[path]; busy {
+		if _, busy := inFlight[b.name]; busy {
 			continue
 		}
-		if err := os.Remove(path); err != nil {
-			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove old backup %s: %w", path, err))
+		if err := w.root.Remove(b.name); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("remove old backup %s: %w", b.name, err))
 		}
 	}
 	if !cutoff.IsZero() {
 		for _, b := range keep {
 			if b.modTime.Before(cutoff) {
-				path := filepath.Join(dir, b.name)
-				if _, busy := inFlight[path]; busy {
+				if _, busy := inFlight[b.name]; busy {
 					continue
 				}
-				if err := os.Remove(path); err != nil {
-					cleanupErrs = append(cleanupErrs, fmt.Errorf("remove expired backup %s: %w", path, err))
+				if err := w.root.Remove(b.name); err != nil {
+					cleanupErrs = append(cleanupErrs, fmt.Errorf("remove expired backup %s: %w", b.name, err))
 				}
 			}
 		}
@@ -567,23 +587,24 @@ func checkNotSymlink(path string) error {
 	return nil
 }
 
-// openAppend 以创建+追加模式打开 path，用两层防护
-// 抵御符号链接替换（TOCTOU）：
+// openAppend 以创建+追加模式打开 root 内的 name（相对名）。
+// os.Root 语义自带两道防护（F1，取代手写的 O_NOFOLLOW 常量与
+// 打开后 inode 比较——二者只护最终组件，os.Root 连中间组件一起
+// 拒绝）：最终或中间组件为符号链接的打开直接报错，覆盖轮转期间
+// os.Rename 让路径短暂不存在、预埋符号链接本会被 O_CREATE 跟随的
+// 窗口。
 //
-//  1. O_NOFOLLOW（Unix）：open 自身拒绝符号链接的最终组件——
-//     包括轮转期间的关键窗口，此时 os.Rename 让路径
-//     短暂不存在，预先埋好的符号链接本会被 O_CREATE
-//     跟随。这补上了 inode 检查覆盖不到的情形：Lstat 时
-//     路径尚不存在，就没有打开前的 inode 可供
-//     比较。
-//  2. inode 比较：若打开前文件已存在，打开的
-//     描述符的 inode 必须与打开前 Lstat 的一致。在 Windows 上
-//     （没有 O_NOFOLLOW）这是已存在文件的唯一防线。
-func openAppend(path string, mode os.FileMode) (*os.File, os.FileInfo, error) {
-	lstat, lerr := os.Lstat(path)
-	preExist := lerr == nil
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|openNoFollow, mode)
+// F2：已存在文件的权限宽于 mode 时收敛到 mode——0600 的承诺此前
+// 只对新建文件生效。
+func openAppend(root *os.Root, name string, mode os.FileMode) (*os.File, os.FileInfo, error) {
+	if lstat, err := root.Lstat(name); err == nil {
+		if lstat.Mode().Perm()&^mode != 0 {
+			if err := root.Chmod(name, mode); err != nil {
+				return nil, nil, fmt.Errorf("narrow existing log file mode to %o: %w", mode, err)
+			}
+		}
+	}
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mode)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -592,9 +613,11 @@ func openAppend(path string, mode os.FileMode) (*os.File, os.FileInfo, error) {
 		_ = f.Close()
 		return nil, nil, err
 	}
-	if preExist && !os.SameFile(lstat, fi) {
-		_ = f.Close()
-		return nil, nil, fmt.Errorf("log file %s was replaced between stat and open (possible symlink substitution)", path)
-	}
 	return f, fi, nil
+}
+
+// rootReadDir 经 os.Root 列目录(os.Root 无 ReadDir 方法,经其 fs.FS
+// 视图;F1:中间组件不可逃逸 root)。
+func rootReadDir(root *os.Root) ([]fs.DirEntry, error) {
+	return fs.ReadDir(root.FS(), ".")
 }
