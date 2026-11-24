@@ -12,6 +12,29 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-27] - 2026-11-24
+
+### Changed — metrics 收敛 + Handler 通用契约(阶段 5 收尾)
+
+- **metrics 包收敛**:`metrics.Metrics` 裁剪为 `mebsuta.HandlerMetrics`
+  的唯一实现(`ObserveHandle`/`IncError`/`IncDroppedN` 三指标)——包内
+  其余 13 个 mutator(批量写入、缓冲区、连接池、goroutine 等)在仓库
+  与示例中零调用,属于从未接线的死指标面,导出无人调用的计数器只会
+  让 Prometheus 里常年是一排 0。`mebsuta_log_writes_total`、
+  `mebsuta_batch_*`、`mebsuta_buffer_*`、`mebsuta_active_*` 指标随
+  之移除。
+- **Handler 通用契约**(C3):SPEC 新增「Handler 通用契约」一节(丢弃
+  可见/失败可感知/panic 遏制/Close 有界幂等/关闭后写入/配置
+  fail-fast 六条);`mebsutatest` 新增 `AssertCloseIdempotent`
+  (第二次 Close 必须 nil,首次 error 透传)与
+  `AssertDroppedContract`(丢弃必须计数)断言助手。
+
+### 破坏性变更
+
+- `metrics.Metrics` 移除 13 个无调用的 mutator
+  (`IncLogWrite`/`IncBatchWrite`/`SetBufferUsage` 等)及对应指标。
+  仅使用 `NewMetrics` + `mebsuta.UseMetrics` 的调用方不受影响。
+
 ## [0.1.0-26] - 2026-11-24
 
 ### Changed — 契约统一与并行机制收敛(阶段 5;破坏性最大的一版)

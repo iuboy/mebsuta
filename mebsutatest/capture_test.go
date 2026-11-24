@@ -135,3 +135,14 @@ func TestCaptureHandler_RecordFields(t *testing.T) {
 	require.Len(t, rec.Attrs, 1)
 	require.Equal(t, "code", rec.Attrs[0].Key)
 }
+
+// TestAssertCloseIdempotent:Close 契约助手——首次 error 透传(由调用方
+// 裁决),第二次必须 nil。
+func TestAssertCloseIdempotent(t *testing.T) {
+	good := nopCloser{}
+	require.NoError(t, AssertCloseIdempotent(t, good), "clean closer: first close returns nil")
+}
+
+type nopCloser struct{}
+
+func (nopCloser) Close() error { return nil }

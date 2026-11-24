@@ -1,6 +1,7 @@
 package mebsutatest
 
 import (
+	"io"
 	"log/slog"
 	"testing"
 	"time"
@@ -79,5 +80,26 @@ func AssertMessage(t testing.TB, h *CaptureHandler, index int, msg string) {
 	}
 	if records[index].Message != msg {
 		t.Fatalf("record[%d]: expected message %q, got %q", index, msg, records[index].Message)
+	}
+}
+
+// AssertCloseIdempotent 断言 handler 的 Close 契约(Handler 通用契约
+// 第 4 条):第二次 Close 必须返回 nil。首次 Close 的 error 原样透传,
+// 是否可接受由调用方裁决(排空超时等场景首关可失败)。
+func AssertCloseIdempotent(t testing.TB, h io.Closer) error {
+	t.Helper()
+	first := h.Close()
+	if err := h.Close(); err != nil {
+		t.Errorf("second Close = %v, want nil (idempotent)", err)
+	}
+	return first
+}
+
+// AssertDroppedContract 断言丢弃契约(Handler 通用契约第 1 条):
+// 触发丢弃后 Dropped() 必须递增。before 由调用方在触发前读取。
+func AssertDroppedContract(t testing.TB, before, after int64) {
+	t.Helper()
+	if after <= before {
+		t.Errorf("Dropped() = %d, want > %d (drops must be counted)", after, before)
 	}
 }

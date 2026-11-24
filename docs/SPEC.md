@@ -387,6 +387,23 @@ Multi-output handler 必须：
 - `Enabled` 按记录的可能目的地判定:显式标记平面的视图由该平面链
   判定;其余视图由默认链判定。
 
+## Handler 通用契约
+
+所有内置 handler 与装饰器共同遵守（0.1.0-26 起，`mebsutatest` 提供断言助手）：
+
+1. **丢弃可见**：每条被丢弃的记录计入该 handler 的 `Dropped()`；`mebsuta.Dropped(handler)` 对 handler 图求和。
+2. **失败可感知**：每个内部失败携带原因经 ErrorHandler 上报，限频每秒至多一次；不静默。
+3. **panic 遏制**：用户回调（ErrorHandler、HandlerMetrics、ContextExtractor）与内层 handler 的 panic 不越出库边界。
+4. **Close 有界且幂等**：Close 返回时，此前接受的记录要么送达、要么计入 `Dropped()` 并上报；第二次 Close 返回 nil。
+5. **关闭后写入**：`Handle` 返回 error 并计入 `Dropped()`。
+6. **配置 fail-fast**：越界配置以 `*ConfigError` 拒绝，不静默钳制。
+
+**Pass/fail criteria:**
+- 关闭后 `Handle` 返回非 nil error 且 `Dropped()` 递增
+- 第二次 `Close()` 返回 nil
+- 越界 `BufferSize` 等以 `*ConfigError` 拒绝
+- `mebsuta.Dropped(handler)` 等于图内各 handler `Dropped()` 之和
+
 ## Handler Chain Composition
 
 `Required`
