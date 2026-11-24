@@ -1,0 +1,67 @@
+name: Go Checks
+
+# 可复用的 Go 检查集（workflow_call）：单元测试（race）、vet、gofmt、
+# staticcheck、govulncheck 与集成测试（database 走 Postgres service；
+# syslog 集成测试自带本地 TCP listener，无需外部服务）。
+# ci.yml 与 dev.yml 经 uses 调用本文件，避免三份近似的 job 复制。
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go test -race -count=1 ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -s -l .)"
+      # staticcheck 版本钉 2026.2.2（与 scripts/test.sh 一致）。旧钉版
+      # v0.7.0 无法解析新 Go 工具链的 export data（internal error）。
+      - run: go install honnef.co/go/tools/cmd/staticcheck@2026.2.2 && staticcheck ./...
+
+  go-vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: logs
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd=pg_isready
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Run integration tests
+        env:
+          MEBSUTA_POSTGRES_DSN: "host=127.0.0.1 port=5432 user=test password=test dbname=logs sslmode=disable"
+        run: go test -race -count=1 -tags=integration ./database/... ./syslog/...

@@ -13,9 +13,11 @@
 
 ## 设施级包变量（无业务语义，不构成 API 面）
 
-`sync.Pool` ×6（JSON 编码/属性映射/handler core）、`handlerSeq`、
-`DefaultErrorHandler`（带锁可替换）、metric 门面 instrument 缓存
-（sync.Map，按名——见 STYLE.md 安全纪律）、`defaultIDGen`（ULID）。
+`sync.Pool` ×4（JSON 编码/属性映射/database fields/syslog builder）、
+`handlerSeq`、`DefaultErrorHandler`（带锁可替换）、`defaultIDGen`（ULID）。
+metric 门面不自建 instrument 缓存（0.1.0-22 起每次经 `otel.Meter` 解析）：
+门面缓存会绑死创建时的 provider，代次轮换后旧名字写进已 Shutdown 的旧
+provider——otel 全局是唯一事实源，SDK meter 自身按名缓存 instrument。
 
 ## 已知局限（知情记录）
 

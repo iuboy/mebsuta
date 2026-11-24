@@ -24,6 +24,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // Telemetry 持有已启动信号的 OTel SDK provider 及其生命周期。近似零值
@@ -292,17 +293,21 @@ func (b otelHandlerBridge) Handle(err error) {
 	b.fn(&mebsuta.HandlerError{Component: "telemetry", Operation: "otel", Err: err})
 }
 
-// sampler 把已校验的采样比例映射为 SDK sampler。比例为 1（填充后的默认值）
-// 时短路到 AlwaysSample，让常见的全采样配置免去每个 span 上的比例簿记；
-// -1 直通 NeverSample（接入方三态采样器的 never 档）；其余走比例采样。
+// sampler 把已校验的采样比例映射为 SDK sampler。比例与 -1 两支外，
+// 一律包 ParentBased：入站 traceparent 的采样标志必须被服从——裸
+// 采样器无视父 span，跨服务采样率不一致时产生孤儿子 span（父未
+// 采样、子记录）或断链（父已采样、子丢弃）。比例 1（填充后的默认
+// 值）走 ParentBased(AlwaysSample)，全采样但仍跟随父标志；-1 直通
+// 绝对 NeverSample（接入方三态采样器的 never 档，语义是绝不记录，
+// 不随父标志放行）；其余走比例采样。
 func sampler(rate float64) sdktrace.Sampler {
 	switch {
 	case rate >= 1:
-		return sdktrace.AlwaysSample()
+		return sdktrace.ParentBased(sdktrace.AlwaysSample())
 	case rate < 0:
 		return sdktrace.NeverSample()
 	default:
-		return sdktrace.TraceIDRatioBased(rate)
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(rate))
 	}
 }
 
@@ -317,7 +322,7 @@ func (t *Telemetry) Enabled() bool {
 // Traces 信号时返回 no-op provider。永不为 nil。
 func (t *Telemetry) TracerProvider() trace.TracerProvider {
 	if t == nil || t.tp == nil {
-		return trace.NewNoopTracerProvider()
+		return tracenoop.NewTracerProvider()
 	}
 	return t.tp
 }

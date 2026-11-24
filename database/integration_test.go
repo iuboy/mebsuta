@@ -321,3 +321,31 @@ func TestIntegration_OpenGauss_AuditLevel(t *testing.T) {
 	require.NoError(t, json.Unmarshal(entries[0].Fields, &fields))
 	require.Equal(t, "delete", fields["event_type"])
 }
+
+// TestEnsureTables_Postgres:EnsureTables 必须能在真实 PostgreSQL 上
+// 幂等建表(0.1.0-22 回归:metrics DDL 渲染曾带 fmt 残留,真实库上
+// 必然执行失败)。
+func TestEnsureTables_Postgres(t *testing.T) {
+	dsn := os.Getenv("MEBSUTA_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("MEBSUTA_POSTGRES_DSN not set")
+	}
+	db, err := openGormDB("postgres", dsn)
+	require.NoError(t, err)
+
+	spanTable, metricTable := "mebsuta_ensure_spans", "mebsuta_ensure_metrics"
+	t.Cleanup(func() {
+		_ = db.Exec("DROP TABLE IF EXISTS " + spanTable).Error
+		_ = db.Exec("DROP TABLE IF EXISTS " + metricTable).Error
+	})
+
+	require.NoError(t, EnsureTables(db, spanTable, metricTable))
+	// 幂等:重复执行(CREATE TABLE IF NOT EXISTS)不得报错。
+	require.NoError(t, EnsureTables(db, spanTable, metricTable))
+
+	for _, table := range []string{spanTable, metricTable} {
+		var n int64
+		require.NoError(t, db.Raw("SELECT count(*) FROM information_schema.tables WHERE table_name = ?", table).Scan(&n).Error)
+		require.Equal(t, int64(1), n, "table %s exists", table)
+	}
+}

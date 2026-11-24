@@ -53,6 +53,37 @@ func findDroppedCounter(h slog.Handler) DroppedCounter {
 	return dc
 }
 
+// dropTracker 跨 WithAttrs/WithGroup 克隆共享丢弃记账：counter 惰性
+// 解析内层链的 DroppedCounter（探测遍历经统一 walk），last 是已上报
+// 的累计丢弃数。克隆若各自持 last，每个派生 logger 的首次 Handle
+// 都会把内层累计丢弃数整体重报一遍——按请求派生 logger
+// （With/WithGroup）正是丢弃洪峰的高发场景，重复上报会在洪峰期把
+// 指标放大数倍。
+type dropTracker struct {
+	counter atomic.Value // DroppedCounter 或 droppedNone；惰性解析
+	last    atomic.Int64
+}
+
+// resolve 返回内层链的 DroppedCounter（不存在时为 droppedNone 哨兵），
+// 每个 tracker 实例至多执行一次探测遍历。并发首次解析经
+// CompareAndSwap 收敛：落败者读到的与胜者存入的是同一次确定性
+// walk 的结果。
+func (t *dropTracker) resolve(inner slog.Handler) DroppedCounter {
+	if v := t.counter.Load(); v != nil {
+		return v.(DroppedCounter)
+	}
+	var dc DroppedCounter
+	if found := findDroppedCounter(inner); found != nil {
+		dc = found
+	} else {
+		dc = droppedNone{}
+	}
+	if t.counter.CompareAndSwap(nil, dc) {
+		return dc
+	}
+	return t.counter.Load().(DroppedCounter)
+}
+
 // MetricsHandler 是一个 slog.Handler 装饰器，经 HandlerMetrics 接口
 // 记录写入延迟与错误计数。
 //
@@ -64,8 +95,7 @@ type MetricsHandler struct {
 	inner        slog.Handler
 	metrics      HandlerMetrics
 	handlerName  string
-	dropCounter  atomic.Value // DroppedCounter 或 droppedNone；惰性解析
-	lastDropped  atomic.Int64
+	drops        *dropTracker          // 克隆间共享丢弃记账
 	errorHandler *handlerkit.ErrorSlot // 克隆间共享
 }
 
@@ -78,6 +108,7 @@ func WithMetrics(inner slog.Handler, m HandlerMetrics, handlerName string) slog.
 		inner:        inner,
 		metrics:      m,
 		handlerName:  handlerName,
+		drops:        &dropTracker{},
 		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler),
 	}
 }
@@ -103,24 +134,14 @@ func (h *MetricsHandler) metricsSafe(op string, fn func()) {
 
 // reportDropped 呈现内层链的丢弃记录增量。
 func (h *MetricsHandler) reportDropped() {
-	var dc DroppedCounter
-	if v := h.dropCounter.Load(); v != nil {
-		dc = v.(DroppedCounter)
-	} else {
-		if found := findDroppedCounter(h.inner); found != nil {
-			dc = found
-		} else {
-			dc = droppedNone{}
-		}
-		h.dropCounter.Store(dc)
-	}
+	dc := h.drops.resolve(h.inner)
 	cur := dc.Dropped()
 	for {
-		last := h.lastDropped.Load()
+		last := h.drops.last.Load()
 		if cur <= last {
 			return
 		}
-		if h.lastDropped.CompareAndSwap(last, cur) {
+		if h.drops.last.CompareAndSwap(last, cur) {
 			delta := cur - last
 			h.metricsSafe("dropped", func() { h.metrics.IncDroppedN(h.handlerName, delta) })
 			return
@@ -147,6 +168,7 @@ func (h *MetricsHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 		inner:        h.inner.WithAttrs(attrs),
 		metrics:      h.metrics,
 		handlerName:  h.handlerName,
+		drops:        h.drops,
 		errorHandler: h.errorHandler,
 	}
 }
@@ -157,6 +179,7 @@ func (h *MetricsHandler) WithGroup(name string) slog.Handler {
 		inner:        h.inner.WithGroup(name),
 		metrics:      h.metrics,
 		handlerName:  h.handlerName,
+		drops:        h.drops,
 		errorHandler: h.errorHandler,
 	}
 }

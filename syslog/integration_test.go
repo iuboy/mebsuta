@@ -65,6 +65,7 @@ func TestIntegration_Syslog_RFC3164(t *testing.T) {
 		Network:    "tcp",
 		Address:    addr,
 		Tag:        "mebsuta-test",
+		Facility:   1, // Validate 把 0 重映射为 DefaultFacility(1):<14> = 1×8 + severity 6
 		RFC5424:    false,
 		RetryDelay: 200 * time.Millisecond,
 	})
@@ -75,7 +76,7 @@ func TestIntegration_Syslog_RFC3164(t *testing.T) {
 	require.NoError(t, h.Handle(context.Background(), r), "Handle")
 
 	line := recvLine(t, lines, 5*time.Second)
-	require.Contains(t, line, "<6>", "should contain priority")
+	require.Contains(t, line, "<14>", "should contain priority (facility 1 + INFO severity 6)")
 	require.Contains(t, line, "mebsuta-test", "should contain tag")
 	require.Contains(t, line, "rfc3164-test-msg", "should contain message")
 }
@@ -87,6 +88,7 @@ func TestIntegration_Syslog_RFC5424(t *testing.T) {
 		Network:    "tcp",
 		Address:    addr,
 		Tag:        "mebsuta-test",
+		Facility:   1, // <14> = 1×8 + severity 6(0 重映射为 DefaultFacility)
 		RFC5424:    true,
 		RetryDelay: 200 * time.Millisecond,
 	})
@@ -98,7 +100,7 @@ func TestIntegration_Syslog_RFC5424(t *testing.T) {
 	require.NoError(t, h.Handle(context.Background(), r), "Handle")
 
 	line := recvLine(t, lines, 5*time.Second)
-	require.Contains(t, line, "<6>1 ", "should contain RFC5424 header")
+	require.Contains(t, line, "<14>1 ", "should contain RFC5424 header")
 	require.Contains(t, line, "mebsuta-test", "should contain tag")
 	require.Contains(t, line, "rfc5424-test-msg", "should contain message")
 	require.Contains(t, line, `request_id="req-123"`, "should contain structured data")

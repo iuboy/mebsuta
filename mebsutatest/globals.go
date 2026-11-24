@@ -5,7 +5,7 @@ import (
 	lognoop "go.opentelemetry.io/otel/log/noop"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // ResetOTelGlobals 把 otel 全局复位为 no-op 默认（tracer/meter/logger
@@ -20,7 +20,7 @@ import (
 // 到 mebsuta.DefaultErrorHandler（stderr），与 otel 缺省行为等价，复位
 // 无观测收益。
 func ResetOTelGlobals() {
-	otel.SetTracerProvider(trace.NewNoopTracerProvider())
+	otel.SetTracerProvider(tracenoop.NewTracerProvider())
 	otel.SetMeterProvider(metricnoop.NewMeterProvider())
 	otel.SetLoggerProvider(lognoop.NewLoggerProvider())
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())

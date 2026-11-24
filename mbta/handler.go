@@ -53,12 +53,25 @@ const (
 	defaultFlushTimeout = 5 * time.Second
 )
 
+// connState 是一条已建立的连接：client 与其拨号 context 的取消函数
+// 成对持有、成对替换（原子指针）。拨号 context 独立派生自 handler
+// 生命周期 ctx——quic-go 从拨号 context 派生连接 context（conn.run
+// 监视其 Done），连接存活期间不得取消；替换或关闭该连接时调用
+// cancel 拆除底层传输。mbta-go 的 Client 是一次性实例：会话断开后
+// 处于关闭态，同一实例再调 Connect 恒报 "single-use; create a new
+// instance"——重连必须 Dial 新实例整体换入，这正是 conn 以原子指针
+// 持有的原因（tryReconnect 换入、sendBatch/Close 无锁读取）。
+type connState struct {
+	client *mbtago.Client
+	cancel context.CancelFunc
+}
+
 // Handler 通过 MBTA 协议将日志记录外发到 mebsuta-forwarder。
 // 它实现 slog.Handler、io.Closer 与 mebsuta.SelfBufferedHandler。
 type Handler struct {
-	level  handlerkit.LevelGate
-	cfg    Config
-	client *mbtago.Client
+	level handlerkit.LevelGate
+	cfg   Config
+	conn  atomic.Pointer[connState]
 	// connectMu 串行化 Connect 尝试。mbta-go 的绑定层在单用途
 	// 客户端上收敛并发 Connect 的方式是关闭胜者的
 	// 连接（应用错误 0x1 "conn closed"）——初始连接仍在途时
@@ -106,82 +119,93 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	bufferSize := min(cfg.BufferSize, maxBufferSize)
 
-	// 拨号：一步完成创建客户端 + 连接。持有 connectMu 与
-	// tryReconnect 的串行化配合（同一时刻至多一个 Connect 在飞）。
-	connectMu := &sync.Mutex{}
-	connectMu.Lock()
-
 	// 传递完整的 TLS 凭据集。此前只转发 InsecureSkipVerify，
 	// CAFile/CertFile/KeyFile/ServerName 静默失效——
 	// mTLS / 自定义 CA / SNI 配置沦为 no-op。
-	creds := v1.ClientCredentials{
-		CAFile:             cfg.CAFile,
-		CertFile:           cfg.CertFile,
-		KeyFile:            cfg.KeyFile,
-		ServerName:         cfg.ServerName,
-		InsecureSkipVerify: cfg.InsecureSkipVerify,
-	}
 	if cfg.InsecureSkipVerify {
 		handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 	}
 
-	// 拨号 ctx 必须是 handler 生命周期的 ctx：quic-go 从拨号
-	// context 派生连接的 context（conn.run 监视 ctx.Done），
-	// 因此取消（或超时）拨号 context 会关闭已建立的
-	// 连接。connectTimeout 在此仅限制拨号等待；
-	// 超时时我们取消基础 ctx 以中止在途拨号。
-	type dialResult struct {
-		client *mbtago.Client
-		err    error
-	}
-	dialCh := make(chan dialResult, 1)
-	go func() {
-		c, derr := mbtago.Dial(ctx, cfg.Server, cfg.AgentID, cfg.Token, mbtago.Version1,
-			mbtago.WithV1Credentials(creds),
-		)
-		dialCh <- dialResult{c, derr}
-	}()
-	var client *mbtago.Client
-	var dialErr error
-	select {
-	case r := <-dialCh:
-		client, dialErr = r.client, r.err
-	case <-time.After(connectTimeout):
-		cancel() // 中止在途拨号
-		dialErr = fmt.Errorf("dial timed out after %v", connectTimeout)
-	}
-	if dialErr != nil {
-		connectMu.Unlock() // Dial 失败：释放串行锁，让调用方重试路径可再连
-		cancel()
-		return nil, fmt.Errorf("mebsuta/mbta: %w", dialErr)
-	}
-	connectMu.Unlock() // 连接成功：锁只护「同一时刻至多一个 Connect 在飞」
-
 	h := &Handler{
 		level:     handlerkit.NewLevelGate(cfg.Level),
 		cfg:       cfg,
-		client:    client,
-		connectMu: connectMu,
+		connectMu: &sync.Mutex{},
 		buffer:    make(chan *core.SignalRecord, bufferSize),
 		flushCh:   make(chan chan struct{}),
 		ctx:       ctx,
 		cancel:    cancel,
 		hostname:  hostname,
 	}
-
 	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+
+	// 拨号：一步完成创建客户端 + 连接。持有 connectMu 与
+	// tryReconnect 的串行化配合（同一时刻至多一个 Connect 在飞）。
+	h.connectMu.Lock()
+	conn, dialErr := h.dial()
+	if dialErr != nil {
+		h.connectMu.Unlock() // Dial 失败：释放串行锁，让调用方重试路径可再连
+		cancel()
+		return nil, fmt.Errorf("mebsuta/mbta: %w", dialErr)
+	}
+	h.connectMu.Unlock() // 连接成功：锁只护「同一时刻至多一个 Connect 在飞」
 
 	// 在客户端唯一的 RESULT 槽位上注册内部结果处理器。
 	// 它包装 cfg.OnResult（用户观察 RESULT 的唯一受支持方式
 	//——槽位归属裁定见 Config.OnResult），并对服务端拒绝做丢弃
 	// 记账，堵上“SendBatch 返回 nil 但服务端拒绝该批次”的
 	// 盲区。
-	h.client.SetResultHandler(h.handleResult)
+	conn.client.SetResultHandler(h.handleResult)
+	h.conn.Store(conn)
 
 	h.wg.Add(1)
 	go h.processQueue()
 
 	return h, nil
+}
+
+// v1Creds 汇总 Config 的 TLS 凭据集（mTLS / 自定义 CA / SNI 全量转发）。
+func (h *Handler) v1Creds() v1.ClientCredentials {
+	return v1.ClientCredentials{
+		CAFile:             h.cfg.CAFile,
+		CertFile:           h.cfg.CertFile,
+		KeyFile:            h.cfg.KeyFile,
+		ServerName:         h.cfg.ServerName,
+		InsecureSkipVerify: h.cfg.InsecureSkipVerify,
+	}
+}
+
+// dial 建立一条新连接（mbtago.Dial 完成 HELLO 握手后返回）。拨号在
+// 独立 goroutine 中等待，上界 connectTimeout：拨号 context 经
+// WithCancel(h.ctx) 独立派生（连接存活期间保持存活，取消 h.ctx 即
+// 沿父子关系拆除连接），connectTimeout 仅限制拨号等待——超时取消
+// 拨号 context 中止在途连接。成功时取消函数随 connState 返回，由
+// 替换/关闭方负责调用。调用方必须持有 connectMu（NewHandler 与
+// tryReconnect 串行化，同一时刻至多一个 Connect 在飞）。
+func (h *Handler) dial() (*connState, error) {
+	dialCtx, cancel := context.WithCancel(h.ctx)
+	type dialResult struct {
+		client *mbtago.Client
+		err    error
+	}
+	dialCh := make(chan dialResult, 1)
+	go func() {
+		c, derr := mbtago.Dial(dialCtx, h.cfg.Server, h.cfg.AgentID, h.cfg.Token, mbtago.Version1,
+			mbtago.WithV1Credentials(h.v1Creds()),
+			mbtago.WithDrainTimeout(h.cfg.CloseTimeout),
+		)
+		dialCh <- dialResult{c, derr}
+	}()
+	select {
+	case r := <-dialCh:
+		if r.err != nil {
+			cancel()
+			return nil, r.err
+		}
+		return &connState{client: r.client, cancel: cancel}, nil
+	case <-time.After(connectTimeout):
+		cancel() // 中止在途拨号
+		return nil, fmt.Errorf("dial timed out after %v", connectTimeout)
+	}
 }
 
 // Enabled 实现 slog.Handler。
@@ -252,10 +276,10 @@ func (h *Handler) Close() error {
 	// waitResults）：排空的 SendBatch 只代表“已上线”。
 	h.waitResults(h.cfg.CloseTimeout)
 
-	h.cancel()
+	h.cancel() // 沿拨号 context 的父子关系拆除当前连接
 
-	if h.client != nil {
-		return h.closeClientBounded()
+	if conn := h.conn.Load(); conn != nil {
+		return h.closeClientBounded(conn.client)
 	}
 	return nil
 }
@@ -264,9 +288,9 @@ func (h *Handler) Close() error {
 // 完成优雅关闭。客户端内部排空即使无事可做也可能阻塞 30 秒；
 // 无界的 Close 会拖住关闭流程，直到编排器
 // SIGKILL 进程（排空同样会丢失）。
-func (h *Handler) closeClientBounded() error {
+func (h *Handler) closeClientBounded(client *mbtago.Client) error {
 	done := make(chan error, 1)
-	go func() { done <- h.client.Close() }()
+	go func() { done <- client.Close() }()
 	select {
 	case err := <-done:
 		return err
@@ -497,7 +521,12 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 	}
 
 	for attempt := range h.cfg.MaxRetries {
-		seq, err := h.client.SendBatch(h.ctx, batch)
+		// 每次尝试都取当前连接：重连成功后下一轮重试即换用新 client。
+		cur := h.conn.Load()
+		if cur == nil {
+			return
+		}
+		seq, err := cur.client.SendBatch(h.ctx, batch)
 		if err == nil {
 			// 此处的成功只代表“已写上线”。记下
 			// 批次大小，handleResult 便能在服务端终态
@@ -526,7 +555,8 @@ func (h *Handler) sendBatch(records []*core.SignalRecord) {
 			// Config.Reconnect：会话脱离 READY 时重新
 			// 拨号。mbta-go 从不自行重连——没有它，
 			// handler 会持续失败每个批次直到进程重启。
-			if h.reconnectEnabled() && h.client.State() != stateReady {
+			// 状态取自刚刚失败的 client（cur）。
+			if h.reconnectEnabled() && cur.client.State() != stateReady {
 				h.tryReconnect()
 			}
 			select {
@@ -635,24 +665,48 @@ func (h *Handler) reconnectEnabled() bool {
 	return h.cfg.Reconnect != nil && *h.cfg.Reconnect
 }
 
-// tryReconnect 以有界 context 重新拨号 forwarder。失败
-// 上报后吞掉——由重试循环决定是否继续。
-// 另一个 Connect 在飞时 connectMu.TryLock 会跳过重拨：
-// 在途尝试要么到达 READY（无事可做）要么失败，
-// 下一轮重试再触发。并发的第二个 Connect 会触发
+// tryReconnect 重新拨号并整体替换失效连接。mbta-go 的 Client 是
+// 一次性实例：会话断开后处于关闭态，同一实例再调 Connect 恒报
+// "single-use; create a new instance"——对旧实例重连永远不会成功
+// （断线后每个批次都失败直到进程重启，0.1.0-22 修复），必须 Dial
+// 新实例换入。成功后旧连接被拆除并有界关闭（retireConn）。失败
+// 上报后吞掉——由重试循环决定是否继续。另一个拨号在飞时
+// connectMu.TryLock 会跳过：在途尝试要么到达 READY（无事可做）
+// 要么失败，下一轮重试再触发。并发的第二个 Connect 会触发
 // mbta-go 绑定层的双连接收敛，关闭活跃会话。
 func (h *Handler) tryReconnect() {
-	if h.ctx.Err() != nil {
+	if h.ctx.Err() != nil || h.closing.Load() {
 		return
 	}
 	if !h.connectMu.TryLock() {
 		return
 	}
 	defer h.connectMu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), connectTimeout)
-	defer cancel()
-	if err := h.client.Connect(ctx); err != nil {
+
+	conn, err := h.dial()
+	if err != nil {
 		h.reportErr("reconnect", fmt.Errorf("reconnect failed: %w", err))
+		return
+	}
+	conn.client.SetResultHandler(h.handleResult)
+	if old := h.conn.Swap(conn); old != nil {
+		h.retireConn(old)
+	}
+}
+
+// retireConn 拆除并关闭被替换的旧连接：先取消其拨号 context
+// （沿父子关系拆传输），再有界等待优雅关闭。超时则放弃等待——
+// 底层关闭在后台继续，不拖住重连路径。
+func (h *Handler) retireConn(old *connState) {
+	old.cancel()
+	done := make(chan error, 1)
+	go func() { done <- old.client.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			h.reportErr("reconnect", fmt.Errorf("close replaced client: %w", err))
+		}
+	case <-time.After(h.cfg.CloseTimeout):
 	}
 }
 

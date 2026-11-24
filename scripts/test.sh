@@ -51,7 +51,7 @@ run_staticcheck() {
     print_info "运行 staticcheck..."
     if ! command -v staticcheck &> /dev/null; then
         print_info "staticcheck 未安装，正在安装..."
-        if ! (cd "$ROOT_DIR" && go install honnef.co/go/tools/cmd/staticcheck@v0.7.0); then
+        if ! (cd "$ROOT_DIR" && go install honnef.co/go/tools/cmd/staticcheck@2026.2.2); then
             print_error "staticcheck 安装失败，跳过静态检查"
             return 0
         fi
@@ -157,7 +157,7 @@ main() {
             # shouldn't block developers from seeing coverage metrics.
             run_coverage
             cleanup
-            ;;)
+            ;;
         unit)
             run_unit_tests
             ;;

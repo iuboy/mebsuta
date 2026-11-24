@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -307,10 +309,7 @@ func metricRows(m sdkmetricdata.Metrics, svc string) []MetricRow {
 		if a.Len() == 0 {
 			return nil
 		}
-		kvs := make([]attribute.KeyValue, 0, a.Len())
-		for _, kv := range a.ToSlice() {
-			kvs = append(kvs, kv)
-		}
+		kvs := a.ToSlice()
 		return attrsJSON(kvs)
 	}
 	switch data := m.Data.(type) {
@@ -413,13 +412,33 @@ func attrsJSON(kvs []attribute.KeyValue) json.RawMessage {
 	}
 	m := make(map[string]any, len(kvs))
 	for _, kv := range kvs {
-		m[string(kv.Key)] = kv.Value.Emit()
+		m[string(kv.Key)] = exportAttrValue(kv.Value)
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
 		return nil
 	}
 	return data
+}
+
+// exportAttrValue 把 otel 属性值转换为 jsonb 可直接存储的原生 JSON
+// 类型。此前经 deprecated 的 Emit()——一切值都落成字符串，数值与
+// 布尔在 jsonb 消费方的类型匹配查询里查不到。NaN/Inf 不是合法
+// JSON，转字符串保留信息；[]byte 以 UTF-8 字符串存储（与 slog 管线
+// 的字节处理一致）。其余类型（string/int64/bool/切片等）是 JSON
+// 原生形态，原样通过。
+func exportAttrValue(v attribute.Value) any {
+	switch av := v.AsInterface().(type) {
+	case float64:
+		if math.IsNaN(av) || math.IsInf(av, 0) {
+			return strconv.FormatFloat(av, 'g', -1, 64)
+		}
+		return av
+	case []byte:
+		return string(av)
+	default:
+		return av
+	}
 }
 
 // resourceServiceName 从 OTel resource 提取 service.name；
@@ -465,6 +484,22 @@ func AutoMigrateTables(db *gorm.DB, spanTable, metricTable string) error {
 	return nil
 }
 
+// renderDDL 以 table 填充 DDL 模板的全部 %s 槽位。槽位数按模板
+// 计数、不由调用方传参：SpansTableDDL 与 MetricsTableDDL 的槽位数
+// 不同（7 与 5），此前的固定 7 参数让 metrics 表渲染出 %!(EXTRA…)
+// 并在真实 PostgreSQL/openGauss 上必然执行失败。
+func renderDDL(ddl, table string) (string, error) {
+	n := strings.Count(ddl, "%s")
+	if n == 0 {
+		return "", fmt.Errorf("ddl template has no %%s placeholders")
+	}
+	args := make([]any, n)
+	for i := range args {
+		args[i] = table
+	}
+	return fmt.Sprintf(ddl, args...), nil
+}
+
 // EnsureTables 用参考 DDL 在表缺失时创建 span/metric 表。
 // 表名必须已校验（Validate /
 // NewSpanExporter 语义）。面向 telemetry database
@@ -484,9 +519,12 @@ func EnsureTables(db *gorm.DB, spanTable, metricTable string) error {
 		{MetricsTableDDL, metricTable},
 	}
 	for _, s := range stmts {
-		// DDL 模板自带索引语句，含多个
-		// %s 槽位用于（已校验的）表名。
-		sqlText := fmt.Sprintf(s.ddl, s.table, s.table, s.table, s.table, s.table, s.table, s.table)
+		// DDL 模板自带索引语句，含多个 %s 槽位用于（已校验的）
+		// 表名；槽位数由 renderDDL 按模板填充。
+		sqlText, err := renderDDL(s.ddl, s.table)
+		if err != nil {
+			return fmt.Errorf("database: ensure table %s: %w", s.table, err)
+		}
 		if err := db.Exec(sqlText).Error; err != nil {
 			return fmt.Errorf("database: ensure table %s: %s", s.table, sanitizeDBError(err))
 		}

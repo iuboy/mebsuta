@@ -195,3 +195,29 @@ func TestSafeMulti_ErrorHandlerAtomic(t *testing.T) {
 	defer mu.Unlock()
 	require.GreaterOrEqual(t, reports, 5, "post-storm panics must reach the freshly installed handler")
 }
+
+// TestMetricsHandler_ClonesShareDropBaseline:丢弃记账必须跨
+// WithAttrs/WithGroup 克隆共享。此前每个克隆的 lastDropped 从 0
+// 起算,首次 Handle 把内层累计丢弃数整体重报一遍——真实丢 25 条、
+// 根 + 2 克隆共报 75(0.1.0-22 修复)。
+func TestMetricsHandler_ClonesShareDropBaseline(t *testing.T) {
+	m := &recordingMetrics{}
+	sink := &jumpDropHandler{}
+	h := WithMetrics(sink, m, "test")
+
+	// 根视图先解析 counter 并建立基线(此时 Dropped()=0)。
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "prime", 0))
+
+	// 内层丢弃 25 条;根 + 2 个克隆各自 Handle。
+	sink.dropped.Store(25)
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "root", 0))
+	cloned := slog.New(h).With("k", "v").Handler()
+	_ = cloned.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "clone", 0))
+	grouped := slog.New(h).WithGroup("g").Handler()
+	_ = grouped.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "group", 0))
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	require.Equal(t, int64(25), m.dropped,
+		"cumulative drops must be reported once across root + clones, got %d", m.dropped)
+}

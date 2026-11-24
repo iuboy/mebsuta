@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"testing"
 	"time"
 
@@ -162,4 +163,47 @@ func TestMetricExporter_RoundTrip(t *testing.T) {
 	require.Equal(t, int64(3), *byKind["histogram"][0].Count)
 	require.Equal(t, 12.5, *byKind["histogram"][0].Sum)
 	require.Nil(t, byKind["histogram"][0].Value)
+}
+
+// TestTableDDLs_RenderClean:三份参考 DDL(日志/span/metric)必须能以
+// renderDDL 干净渲染。MetricsTableDDL(5 个 %s 槽位)与 SpansTableDDL
+// (7 个)不同,EnsureTables 此前的固定 7 参数让 metrics 表渲染出
+// fmt 残留并在真实 PostgreSQL 上必然失败(0.1.0-22 修复)。
+func TestTableDDLs_RenderClean(t *testing.T) {
+	for name, ddl := range map[string]string{
+		"LogsTableDDL":    LogsTableDDL,
+		"SpansTableDDL":   SpansTableDDL,
+		"MetricsTableDDL": MetricsTableDDL,
+	} {
+		out, err := renderDDL(ddl, "mebsuta_ddl_probe")
+		require.NoError(t, err, name)
+		require.NotContains(t, out, "%!", "%s: fmt directive left in rendered DDL", name)
+		require.NotContains(t, out, "%s", "%s: unfilled placeholder in rendered DDL", name)
+		require.Contains(t, out, "mebsuta_ddl_probe", "%s: table name not substituted", name)
+	}
+}
+
+// TestAttrsJSON_TypedValues:otel 属性必须以原生 JSON 类型落库——
+// 此前经 deprecated 的 Emit() 一切值都落成字符串,jsonb 消费方的
+// 数值/布尔匹配查询查不到(0.1.0-23 修复)。NaN/Inf 不是合法 JSON,
+// 转字符串保留信息。
+func TestAttrsJSON_TypedValues(t *testing.T) {
+	raw := attrsJSON([]attribute.KeyValue{
+		attribute.Int64("n", 42),
+		attribute.Bool("ok", true),
+		attribute.Float64("ratio", 0.5),
+		attribute.String("s", "x"),
+		attribute.Float64("bad", math.NaN()),
+		attribute.Float64("inf", math.Inf(1)),
+	})
+	require.NotNil(t, raw)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(raw, &got))
+	require.Equal(t, float64(42), got["n"], "int64 stored as JSON number")
+	require.Equal(t, true, got["ok"], "bool stored as JSON bool")
+	require.Equal(t, 0.5, got["ratio"], "float stored as JSON number")
+	require.Equal(t, "x", got["s"], "string passthrough")
+	require.Equal(t, "NaN", got["bad"], "non-finite float stored as string")
+	require.Equal(t, "+Inf", got["inf"], "non-finite float stored as string")
 }

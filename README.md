@@ -4,9 +4,15 @@
 
 ## 安装
 
+当前世系为 `v0.1.<patch>-<rev>`。模块代理缓存旧世系标签且 `@latest`
+解析到旧世系（v0.8.0），必须显式钉版本：
+
 ```bash
-go get github.com/iuboy/mebsuta
+go get github.com/iuboy/mebsuta@v0.1.0-23
 ```
+
+可用版本见 [CHANGELOG](CHANGELOG.md)；标签列表以
+`go list -m -versions github.com/iuboy/mebsuta` 为准（含旧世系，勿用）。
 
 ## 快速开始
 
@@ -42,6 +48,38 @@ logger, _ := mebsuta.New(
     mebsuta.UseAsync(mebsuta.AsyncConfig{BufferSize: 512}),
 )
 ```
+
+## 平面
+
+平面按目的地分流日志。顶层选项声明默认链(业务面);`UsePlane` 声明
+独立平面链;`Plane` 返回绑定平面的 logger。
+
+| 记录 | 目的地 |
+|------|--------|
+| 带 `plane` 标记(`Plane(name)` 派生的 logger) | 该平面链;未配置的平面名 → 默认链 |
+| 级别 ≥ `LevelAudit` 且配置了审计面 | 审计面链(独占) |
+| 其余(含第三方依赖经 `slog.Default` 的记录) | 默认链 |
+
+```go
+logger, _ := mebsuta.Init(
+    mebsuta.UseFile(filerotate.Config{Path: "/var/log/app/business.log"}, mebsuta.FileConfig{}),
+    mebsuta.UsePlane(mebsuta.PlaneManagement,
+        mebsuta.UseStdout(mebsuta.StdoutConfig{Format: "console"})),
+    mebsuta.UsePlane(mebsuta.PlaneAudit, mebsuta.WithHandler(auditHandler)),
+)
+
+slog.Info("order created")                                      // → 默认链
+mebsuta.Plane(mebsuta.PlaneManagement).Info("config reloaded")  // → 管理面链
+audit.Audit("user login", "actor", "user:42")                   // → 审计面链
+```
+
+- `UsePlane(name string, opts ...HandlerOption)`:平面名任意;内置
+  `PlaneBusiness` / `PlaneManagement` / `PlaneAudit`。空名、
+  `PlaneBusiness`、重复、嵌套以 `*ConfigError` 拒绝
+- 平面标记保留在输出 attributes(`plane` 键)
+- 装饰器只作用于所在层的链;`CloseAll` / `SetLevel` / `SetFileMaxAge`
+  穿透全部平面
+- 未配置任何 `UsePlane` 时行为与之前完全一致
 
 ## Handler
 

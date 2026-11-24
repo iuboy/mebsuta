@@ -14,6 +14,14 @@ type handlerOptions struct {
 	handlers     []slog.Handler
 	middlewares  []func(slog.Handler) slog.Handler
 	errorHandler ErrorHandler
+	planes       []planeOption
+}
+
+// planeOption 是 UsePlane 声明的平面:name 命名,opts 为该平面链的
+// 独立选项集。
+type planeOption struct {
+	name string
+	opts *handlerOptions
 }
 
 // WithHandler 向多 handler 链中添加一个 slog.Handler。
@@ -109,6 +117,7 @@ func WithErrorHandler(fn ErrorHandler) HandlerOption {
 }
 
 // buildHandler 根据选项构建 slog.Handler。0 个 handler 时使用默认的 stdout JSON logger。
+// 含 UsePlane 时返回平面路由器(默认链由顶层选项构建,平面链各自独立构建)。
 func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	o := &handlerOptions{}
 	for _, opt := range opts {
@@ -116,6 +125,15 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 			return nil, err
 		}
 	}
+	if len(o.planes) > 0 {
+		return buildPlaneRouter(o)
+	}
+	return buildChain(o)
+}
+
+// buildChain 由单个选项集构建一条 handler 链(fanout → 中间件 → 错误
+// 处理器传播)。
+func buildChain(o *handlerOptions) (slog.Handler, error) {
 	if len(o.handlers) == 0 {
 		h, err := NewStdoutHandler(StdoutConfig{})
 		if err != nil {
@@ -147,4 +165,42 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 	propagateErrorHandler(handler, o.errorHandler, 0)
 
 	return handler, nil
+}
+
+// buildPlaneRouter 构建平面路由器:默认链来自顶层选项,各平面链来自
+// UsePlane 选项集。fanout(默认链 + 全部平面链)供 walk 穿透,CloseAll/
+// SetLevel/SetFileMaxAge/双重缓冲检测对全部平面生效。
+func buildPlaneRouter(o *handlerOptions) (slog.Handler, error) {
+	def, err := buildChain(o)
+	if err != nil {
+		return nil, err
+	}
+	planes := make(map[string]slog.Handler, len(o.planes))
+	chains := make([]slog.Handler, 0, len(o.planes)+1)
+	chains = append(chains, def)
+	for _, p := range o.planes {
+		ph, err := buildChain(p.opts)
+		if err != nil {
+			return nil, fmt.Errorf("plane %q: %w", p.name, err)
+		}
+		planes[p.name] = ph
+		chains = append(chains, ph)
+	}
+	eh := o.errorHandler
+	if eh == nil {
+		eh = DefaultErrorHandler
+	}
+	router := &planeRouter{
+		handlerCore: newHandlerCore(),
+		def:         def,
+		planes:      planes,
+		fanout:      safeMultiHandler(chains, eh),
+	}
+	// 顶层 WithErrorHandler 必须穿透路由器到达全部平面链：各平面链
+	// 由 buildChain(p.opts) 构建，只见过平面自己的选项。router 本身
+	// 不实现 setErrorHandler，propagateErrorHandler 经 unwrapHandler
+	// 到达 fanout（safeMulti），由其 setErrorHandler 分发到默认链与
+	// 全部平面链。fn 为 nil 时跳过，各链保留构造期默认值。
+	propagateErrorHandler(router, o.errorHandler, 0)
+	return router, nil
 }

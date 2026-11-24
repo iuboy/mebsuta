@@ -120,3 +120,24 @@ func TestSlogTestConformance_MultiHandler(t *testing.T) {
 		func(t *testing.T) map[string]any { return parseLastSinkLine(t, buf) },
 	)
 }
+
+// TestSlogTestConformance_PlaneRouter 认证平面路由器的默认面转发:
+// untagged logger 的 WithAttrs/WithGroup/克隆契约经路由器与派生视图
+// 全量用例验证(slogtest 的 logger 即 untagged 形态)。
+func TestSlogTestConformance_PlaneRouter(t *testing.T) {
+	var buf *bytes.Buffer
+	slogtest.Run(t,
+		func(t *testing.T) slog.Handler {
+			buf = new(bytes.Buffer)
+			l, err := New(
+				UsePlane(PlaneManagement, WithHandler(slog.NewJSONHandler(io.Discard, nil))),
+				WithHandler(conformanceSink(buf)),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return l.Handler()
+		},
+		func(t *testing.T) map[string]any { return parseLastSinkLine(t, buf) },
+	)
+}

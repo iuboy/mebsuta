@@ -169,3 +169,32 @@ func TestSetLevel_DecoratorsTraverse(t *testing.T) {
 	require.Empty(t, skipped)
 	require.Equal(t, slog.LevelInfo, lv.Level())
 }
+
+// TestMetricFacades_FollowProviderSwap:instrument 不得缓存在门面——
+// 代次轮换(新 Start 覆盖全局)后,旧名字必须写进新 provider(0.1.0-22
+// 修复:此前缓存的 instrument 绑死创建时的 provider,旧名字永远写进
+// 已 Shutdown 的旧 provider)。
+func TestMetricFacades_FollowProviderSwap(t *testing.T) {
+	resetGlobals()
+	tel1, _ := bootTelemetry(t, telemetry.Metrics)
+	mebsuta.Counter(context.Background(), "swap.probe", 1)
+	require.NoError(t, tel1.Shutdown(context.Background()))
+
+	tel2, r2 := bootTelemetry(t, telemetry.Metrics)
+	mebsuta.Counter(context.Background(), "swap.probe", 1)
+	// Shutdown 触发最终 flush,批处理导出的数据此后才确定可见。
+	require.NoError(t, tel2.Shutdown(context.Background()))
+	defer resetGlobals()
+
+	var found bool
+	for _, m := range r2.MetricFamilies() {
+		if m.Name == "swap.probe" {
+			found = true
+			dp := m.GetSum().GetDataPoints()
+			require.Len(t, dp, 1)
+			require.Equal(t, int64(1), dp[0].GetAsInt(),
+				"new provider must receive the counter for a name first used under the previous provider")
+		}
+	}
+	require.True(t, found, "swapped-in provider must see the instrument (facade must not cache instruments)")
+}

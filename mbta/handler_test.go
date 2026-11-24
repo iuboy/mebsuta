@@ -471,7 +471,7 @@ func TestCloseTwiceWaitsForDrain(t *testing.T) {
 
 	// 掐断线路：SendBatch 立即失败，Close 排空恰好耗时
 	// MaxRetries × RetryDelay（约 1.6s）。
-	require.NoError(t, h.client.Close(), "client close")
+	require.NoError(t, h.conn.Load().client.Close(), "client close")
 
 	firstErr := make(chan error, 1)
 	go func() { firstErr <- h.Close() }()
@@ -770,4 +770,38 @@ func TestSanitizeHostname(t *testing.T) {
 	got := sanitizeHostname("")
 	require.NotEmpty(t, got, "sanitizeHostname(system)")
 	require.False(t, strings.ContainsAny(got, " \n\t"), "sanitizeHostname(system) = %q, want non-empty sanitized", got)
+}
+
+// TestHandler_ReconnectReplacesSingleUseClient:mbta-go 的 Client 是
+// 一次性实例,会话断开后对同一实例 Connect 恒报 "single-use"——
+// tryReconnect 必须 Dial 新实例换入(0.1.0-22 修复:旧实现对旧实例
+// 重连,断线后永不恢复)。本测试把在连 client 关闭到 single-use 态
+// (等同服务端消失后的客户端状态),触发重连,断言换入新 client 且
+// 发送恢复。
+func TestHandler_ReconnectReplacesSingleUseClient(t *testing.T) {
+	sink := &countingSink{}
+	h := newLiveHandler(t, sink, func(c *Config) {
+		c.BatchSize = 1 // 每条记录立即成批,确定性走 sendBatch
+	})
+
+	require.NoError(t, h.Handle(context.Background(), newRecord(slog.LevelInfo, "before")))
+	require.Eventually(t, func() bool { return sink.count.Load() == 1 },
+		5*time.Second, 20*time.Millisecond, "first record delivered")
+
+	// 关闭到 single-use 态:这正是会话断开后 mbta-go 客户端所处的
+	// 状态(再调 Connect 恒报 ErrCodeSession "Client is single-use")。
+	old := h.conn.Load()
+	require.NotNil(t, old)
+	require.NoError(t, old.client.Close(), "force single-use state")
+
+	h.tryReconnect()
+	cur := h.conn.Load()
+	require.NotNil(t, cur)
+	require.NotSame(t, old.client, cur.client,
+		"tryReconnect must dial a new client, not reuse the single-use one")
+
+	// 发送恢复:新 client 送达 sink。
+	require.NoError(t, h.Handle(context.Background(), newRecord(slog.LevelInfo, "after")))
+	require.Eventually(t, func() bool { return sink.count.Load() == 2 },
+		5*time.Second, 20*time.Millisecond, "delivery resumed after reconnect")
 }

@@ -12,6 +12,96 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-23] - 2026-11-24
+
+### Fixed — CI 护栏:staticcheck 清零 + dev 分支补齐检查 + jsonb 原生类型
+
+- **attrsJSON 原生类型**:span/metric 属性落库改经 `AsInterface()`
+  (此前 deprecated 的 `Emit()` 把一切值落成字符串),数值与布尔在
+  jsonb 消费方的类型匹配查询里可查;NaN/Inf 转 `"NaN"`/`"+Inf"`
+  字符串保留信息,`[]byte` 以 UTF-8 字符串存储。
+- **scripts/test.sh** 修复 `;;)` bash 语法错误(任何参数下都无法
+  启动);staticcheck 安装版本 `v0.7.0` → `2026.2.2`(旧版无法解析新
+  Go 工具链的 export data,恒 internal error)。
+- **staticcheck 六项清零**:2 个未使用测试助手删除、3 处 deprecated
+  API(`Emit`、`trace.NewNoopTracerProvider` ×2)、1 处循环改 append
+  展开。`go-checks.yml`/`ci.yml`/`scripts/test.sh` 三处版本统一钉
+  `2026.2.2`。
+- **workflow 合并**:新建 `go-checks.yml`(workflow_call),`ci.yml`
+  与 `dev.yml` 改为调用者,消除三份近似的 job 复制。dev 分支自此
+  也跑 staticcheck 与集成测试(此前只在 main 拦截)。
+- **syslog 集成测试纳入 CI**:`-tags=integration` 扩到 `./syslog/...`
+  (自带本地 TCP listener,无需外部服务)。顺手修复两个因 facility
+  0→DefaultFacility(1) 重映射而失效的断言(`<6>` → `<14>`;这两个
+  测试此前从未在 CI 运行过)。
+
+### 破坏性变更
+
+- span/metric 属性的 jsonb 值类型变化:此前全部为字符串,现 int/float/
+  bool 为原生 JSON 类型(字符串不变)。依赖全字符串形态的下游查询需
+  同步修正。
+
+## [0.1.0-22] - 2026-11-24
+
+### Fixed — 全面审查第一批:5 个 P1(0.1.0-21 收尾 + 审查报告 A1/A2/A4/A5/A6)
+
+- **database**:`EnsureTables` 按模板实际槽位数填充表名(新增
+  `renderDDL`)。`MetricsTableDDL` 为 5 个 `%s` 槽位,此前的固定 7 参数
+  让 metrics 表渲染出 `%!(EXTRA…)`,在真实 PostgreSQL/openGauss 上必然
+  执行失败,`telemetry.Start` 数据库后端(`EnsureSchema` 默认开)启动即
+  报错。补 DDL 渲染单元测试与 PG 集成测试(`TestEnsureTables_Postgres`)。
+- **mbta**:`tryReconnect` 重拨新 client 并整体替换(`conn` 原子指针,
+  成对携带拨号 context 取消函数;新增 `dial`/`retireConn`)。mbta-go 的
+  Client 是一次性实例,会话断开后同一实例再 `Connect` 恒报
+  "single-use"——旧实现断线后永不恢复,后续记录全部丢弃。`Dial` 补
+  `WithDrainTimeout(CloseTimeout)`。
+- **指标门面**:`Counter`/`Histogram`/`Gauge` 不再按名缓存 instrument。
+  缓存绑死创建时的 provider:代次轮换(新 `Start` 覆盖全局)后旧名字
+  继续写进已 Shutdown 的旧 provider,新 provider 收不到数据。instrument
+  生命周期归属 `otel.Meter`(SDK 内部按名缓存);GLOBALS.md 同步。
+- **MetricsHandler**:丢弃记账跨 `WithAttrs`/`WithGroup` 克隆共享(新增
+  `dropTracker`)。此前每个克隆的 `lastDropped` 从 0 起算,首次 `Handle`
+  把内层累计丢弃数整体重报一遍(真实丢 5 条、根 + 4 克隆共报 20)。
+- **telemetry**:比例采样器包 `ParentBased`。裸 `TraceIDRatioBased`
+  无视入站 traceparent 的采样标志,跨服务采样率不一致时产生孤儿子
+  span(父未采样、子记录)或断链(父已采样、子丢弃)。
+
+### 破坏性变更
+
+- `SamplingRate >= 1` 收窄为 `ParentBased(AlwaysSample)`:服从父标志
+  (父未采样 → 丢弃)。此前无条件记录全部 span;要求"父未采样也记录"的
+  全采样部署需评估。
+- 指标门面每次调用解析 instrument:热路径高频调用方应显式经
+  `otel.Meter` 创建 instrument(单次调用开销略增,见
+  `BenchmarkMetricFacade`)。
+
+## [0.1.0-21] - 2026-11-23
+
+### Added — 平面路由(管理面/业务面/审计面)
+
+- `UsePlane(name, opts...)` 声明独立输出平面;`Plane(name)` 返回从
+  `slog.Default()` 派生的平面绑定 logger;`PlaneAttr`/`PlaneKey` 路由
+  标记。内置平面名 `PlaneBusiness`(默认链,顶层选项声明)/
+  `PlaneManagement` / `PlaneAudit`。
+- 路由规则:显式 `plane` 标记 > `LevelAudit` 隐式路由审计面(配置
+  审计面时独占) > 默认链(untagged,含全部第三方依赖记录)。
+  `audit` 包经 `slog.Default` 以 LevelAudit 发射,零改动自动进审计面。
+- `planeRouter` 复用 safeMulti 作 fanout:CloseAll/SetLevel/
+  SetFileMaxAge/双重缓冲检测经既有 walk 穿透全部平面链。
+- 顶层 `WithErrorHandler` 穿透平面路由器:各平面链此前只见平面自己
+  的选项,内部错误仍走 `DefaultErrorHandler`(stderr)。
+- slogtest 一致性认证 + plane_test 15 个用例(路由/独占回落/显式
+  覆盖/预设跨链/校验/派生/错误处理器穿透);`examples/plane` 三平面
+  可运行示例。
+- 不新增全局单例:`Plane()` 每次从 `slog.Default()` 派生(GLOBALS.md
+  原则保持;default 非路由器时标记退化为普通属性)。
+
+### 破坏性变更
+
+- 无。未配置 `UsePlane` 时构建产物与路由行为与既有版本一致;配置
+  `PlaneAudit` 后 LevelAudit 记录独占审计面链(默认链不再接收)是该
+  配置的文档化语义,存量项目未使用 `UsePlane` 不受影响。
+
 ## [0.1.0-20] - 2026-11-22
 
 ### Changed — 项目整理第四轮：覆盖回归修复 + 文档/依赖一致性 + 零引用导出裁决

@@ -357,6 +357,36 @@ Multi-output handler 必须：
 - 一个子 handler 的 panic 不阻止其他子 handler 接收记录
 - 通过 multi-handler 的并发写入不导致数据竞争（race detector 验证）
 
+## Planes
+
+平面按目的地分流日志。顶层选项构建默认链;`UsePlane(name, opts...)`
+为命名平面构建独立链;`New`/`Init` 在含至少一个 `UsePlane` 时返回平面
+路由器,否则与不含平面时的行为完全一致。
+
+路由规则(优先级从高到低):
+
+1. 记录的 logger 带 `plane` 标记属性(`With(mebsuta.PlaneAttr(name))`,
+   `mebsuta.Plane(name)` 即此形态)→ 路由到该平面链;未配置的平面名
+   降级到默认链。
+2. 级别 ≥ `LevelAudit` 且配置了 `PlaneAudit` 平面 → 路由到审计面链,
+   独占:默认链与其它平面链不接收该记录。未配置审计面时回落默认链
+   (与无平面行为一致)。
+3. 其余记录(含第三方依赖经 `slog.Default` 的记录)→ 默认链。
+
+约束与边界:
+
+- `plane` 标记属性保留在输出 attributes 中(键 `plane`)。
+- 未显式标记平面的 logger 视图的预设属性同时应用到默认链与审计链;
+   该视图的记录按级别分流后,两条链的输出都携带预设属性。
+- 显式标记平面后,该视图不再做级别隐式路由(标记优先)。
+- `UsePlane` 校验:空平面名、`PlaneBusiness`(默认链由顶层选项声明)、
+  重复平面名、嵌套 `UsePlane` 均以 `*ConfigError` 拒绝。
+- 装饰器(`UseAsync`/`UseSampling`/`UseMetrics`/`UseContextExtractor`)
+  只作用于所在层的链:顶层装饰默认链,平面内装饰该平面链。
+- `CloseAll`/`SetLevel`/`SetFileMaxAge` 与双重缓冲检测穿透全部平面链。
+- `Enabled` 按记录的可能目的地判定:显式标记平面的视图由该平面链
+  判定;其余视图由默认链判定。
+
 ## Handler Chain Composition
 
 `Required`

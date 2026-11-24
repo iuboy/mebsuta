@@ -12,6 +12,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestStart_NoOpMode(t *testing.T) {
@@ -281,4 +283,36 @@ func TestStart_GlobalOverwriteWarns(t *testing.T) {
 
 	_ = tel1.Shutdown(context.Background())
 	_ = tel2.Shutdown(context.Background())
+}
+
+// TestSampler_RespectsParent:比例采样器必须包 ParentBased——入站
+// traceparent 的采样标志必须被服从(0.1.0-22 修复:裸采样器无视父
+// span,跨服务采样率不一致时产生孤儿子 span 或断链)。never 档
+// (rate < 0)保持绝对不采样,不随父标志放行。
+func TestSampler_RespectsParent(t *testing.T) {
+	tid, err := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")
+	require.NoError(t, err)
+	sid, err := trace.SpanIDFromHex("0102030405060708")
+	require.NoError(t, err)
+
+	sampledParent := trace.ContextWithSpanContext(context.Background(),
+		trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled}))
+	unsampledParent := trace.ContextWithSpanContext(context.Background(),
+		trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid}))
+	params := func(parent context.Context) sdktrace.SamplingParameters {
+		return sdktrace.SamplingParameters{ParentContext: parent, TraceID: tid, Name: "op", Kind: trace.SpanKindServer}
+	}
+
+	// 父已采样:rate 0 也必须记录。
+	require.Equal(t, sdktrace.RecordAndSample, sampler(0).ShouldSample(params(sampledParent)).Decision,
+		"sampled parent must be kept even at rate 0")
+	// 父未采样:rate 1 也必须丢弃(跟随父标志)。
+	require.Equal(t, sdktrace.Drop, sampler(1).ShouldSample(params(unsampledParent)).Decision,
+		"unsampled parent must be dropped even at rate 1")
+	// 根 span(无父):按比例与 always 语义。
+	require.Equal(t, sdktrace.RecordAndSample, sampler(1).ShouldSample(params(context.Background())).Decision)
+	require.Equal(t, sdktrace.Drop, sampler(0).ShouldSample(params(context.Background())).Decision)
+	// never 档:绝对不采样。
+	require.Equal(t, sdktrace.Drop, sampler(-1).ShouldSample(params(sampledParent)).Decision,
+		"never arm must stay absolute regardless of parent")
 }
