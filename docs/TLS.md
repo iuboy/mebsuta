@@ -6,7 +6,7 @@
 syslogH, err := syslog.NewHandler(syslog.Config{
     Network: "tcp",
     Address: "logs.example.com:6514",
-    Secure:  true,
+    TLS:     &mebsuta.TLSConfig{}, // 非 nil 即启用:系统信任池 + 主机名校验
 })
 ```
 
@@ -18,10 +18,9 @@ syslogH, err := syslog.NewHandler(syslog.Config{
 
 ```go
 syslog.Config{
-    Network:       "tcp",
-    Address:       "internal-logs:6514",
-    Secure:        true,
-    TLSSkipVerify: true,
+    Network: "tcp",
+    Address: "internal-logs:6514",
+    TLS:     &mebsuta.TLSConfig{InsecureSkipVerify: true},
 }
 ```
 
@@ -41,8 +40,7 @@ syslogH, err := syslog.NewHandler(syslog.Config{
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `Secure` | bool | `false` | 启用 TLS |
-| `TLSSkipVerify` | bool | `false` | 跳过证书验证 |
+| `TLS` | `*mebsuta.TLSConfig` | `nil` | 非 nil 启用 TLS（字段见 [mebsuta.TLSConfig](../README.md#tls--mtlstelemetry)） |
 | `Tag` | string | `"mebsuta"` | Syslog 标识 |
 | `Facility` | int | `1` | Syslog facility |
 | `Reconnect` | `*bool` | `true` | 断线自动重连 |
@@ -50,6 +48,8 @@ syslogH, err := syslog.NewHandler(syslog.Config{
 | `RFC3164` | bool | `false` | 使用 RFC3164 格式(默认 RFC5424) |
 
 标准端口：`514`（明文）、`601`（RFC5424 明文）、`6514`（TLS，推荐）。
+
+各 handler 的 TLS 字段统一为 `mebsuta.TLSConfig`（0.1.0-30 起）：CA/客户端证书对/SNI/InsecureSkipVerify 见 `tls.go`；MinVersion 固定 TLS 1.2，加密套件走 Go 默认。
 
 
 ## telemetry（OTLP/HTTP）TLS / mTLS

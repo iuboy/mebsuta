@@ -48,12 +48,11 @@ payload 格式）。自 2026-11-08 世系重置起，本项目默认允许破坏
 
 级别按严重性排序：
 
-1. `Trace`
-2. `Debug`
-3. `Info`
-4. `Warn`
-5. `Error`
-6. `Audit`
+1. `Debug`
+2. `Info`
+3. `Warn`
+4. `Error`
+5. `Audit`（`LevelAudit = Error + 4`，非 slog 标准级别）
 
 **Pass/fail criteria:**
 - 配置为 `Warn` 的 handler 必须丢弃 `Debug` 和 `Info` 记录，接受 `Warn`、`Error` 和 `Audit` 记录
@@ -193,7 +192,7 @@ File handler 必须：
 
 **Pass/fail criteria:**
 - `Close()` 后，第二次 `Close()` 返回 nil
-- `Close()` 后，`Handle()` 返回 nil（不 panic）
+- `Close()` 后，`Handle()` 返回 error 且计入 `Dropped()`（不 panic）——0.1.0-26 起统一契约
 - 多 goroutine 并发 `Handle()` 不丢失记录
 - `stat()` 日志文件在 Unix 上显示 mode `0600`
 
@@ -213,7 +212,7 @@ Rotation:
 - 支持 gzip 压缩
 
 **Pass/fail criteria:**
-- 写入超过 `MaxSizeBytes` 后，存在备份文件且活跃文件是新的（size < MaxSizeBytes）
+- 写入超过 `MaxSizeMB` 后，存在备份文件且活跃文件是新的
 - 备份数不超过 `MaxBackups`
 - 压缩备份必须是有效 gzip 并解压为原始内容
 - 轮转后的新文件在 Unix 上有 `0600` 权限
@@ -338,7 +337,7 @@ Async handler 必须：
 **Pass/fail criteria:**
 - `Close()` 前写入的记录必须送达 inner handler
 - 缓冲区满时，额外写入不阻塞（被丢弃）
-- `Close()` 后，`Handle()` 返回 nil（不 panic）
+- `Close()` 后，`Handle()` 返回 error 且计入 `Dropped()`（不 panic）——0.1.0-26 起统一契约
 - `Close()` 后，第二次 `Close()` 返回 nil
 
 ## Multi Handler
@@ -464,7 +463,7 @@ Audit 记录**不**完全绕过 Async 缓冲 — 它们进入同一个 channel �
 3. **Metrics**: 无 `Close()` 实现。对 close 传播透明。
 4. **safeMulti**: 对每个子 handler 调用 `CloseAll()`，聚合错误。
 
-`CloseAll` 在递归到 unwrapped inner handler 前访问每个装饰器自己的 `Close()`。这确保外层（Async drain）在内层（File/Database flush）关闭前完成。
+`CloseAll` 在递归到 unwrapped inner handler 前访问每个装饰器自己的 `Close()`。这确保外层（Async drain）在内层（File/Database flush）关闭前完成。`*safeMulti` 自身无资源、跳过 Close——其子 handler 由遍历的 fanout 下降直接关闭（0.1.0-24 起单 handler 链也经 safeMulti，行为一致）。
 
 **Pass/fail criteria:**
 - `CloseAll()` 前写入的记录必须送达最终目标 handler

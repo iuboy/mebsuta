@@ -22,11 +22,12 @@ jobs:
     steps:
       - name: Validate tag format
         run: |
-          case "$TAG_NAME" in
-            v*) ;;
-            go/v*) ;;
-            *) echo "::error::Unexpected tag format: $TAG_NAME. Use v* or go/v*." >&2; exit 1 ;;
-          esac
+          # 当前世系恒为 v0.1.<patch>-<rev>(H11:精确正则,拒绝旧世系
+          # v0.8.0 之类——它们会被模块代理当作 @latest 误推荐)。
+          if ! echo "$TAG_NAME" | grep -Eq '^v0\.1\.[0-9]+-[0-9]+$'; then
+            echo "::error::Unexpected tag format: $TAG_NAME. Use v0.1.<patch>-<rev>." >&2
+            exit 1
+          fi
 
   go:
     runs-on: ubuntu-latest
@@ -98,4 +99,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="$TAG_NAME"
-          gh release create "$TAG" --title "$TAG" --notes "Release $TAG"
+          # Release 说明取 CHANGELOG 对应小节(定版内容,而非占位文本)。
+          NOTES=$(awk -v ver="## [$TAG" 'index($0, ver) == 1 {flag=1} flag && /^## \[/ && index($0, ver) != 1 {exit} flag {print}' CHANGELOG.md)
+          gh release create "$TAG" --title "$TAG" --notes "$NOTES"

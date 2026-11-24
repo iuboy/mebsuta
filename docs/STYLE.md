@@ -62,8 +62,8 @@ PR 审查与重构的判定依据。约定优先级：正确性 > 一致性 > �
 
 ## 附：examples 覆盖
 
-新能力随附 example（现有 17 个）；已知缺口：prombridge、事务一致双写、
-telemetry 数据库后端（待补）。
+新能力随附 example（现有 20 个，含 plane/prombridge/telemetry-database 等）；
+缺口随新能力补齐。
 
 ## 附：全局状态
 

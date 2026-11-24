@@ -64,15 +64,18 @@ testify require**、goroutine 归属注释等）。
 go test -race -count=1 ./...
 go vet ./...
 gofmt -s -l .
+staticcheck ./...
 go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 ```
 
 或使用脚本：
 
 ```bash
-./scripts/test.sh unit    # 单元测试
+./scripts/test.sh unit    # 单元测试（race）
 ./scripts/test.sh vet     # go vet
+./scripts/test.sh lint    # staticcheck
 ./scripts/test.sh fmt     # 格式检查
+./scripts/test.sh integration  # Docker 集成测试
 ```
 
 `govulncheck` 需要联网更新漏洞数据。
@@ -127,5 +130,5 @@ go test -cover ./...
 
 发布规则详见 [VERSIONING.md](VERSIONING.md)。
 
-- 发布使用 `vX.Y.Z` 标签
+- 发布使用 `v0.1.<patch>-<rev>` 标签（与 VERSIONING.md 一致）
 - 发布前必须更新 `CHANGELOG.md`，并确认测试和漏洞扫描通过

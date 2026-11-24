@@ -61,15 +61,7 @@ go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 - **partial**: 覆盖不完整（见 Notes）
 - **missing**: 无测试覆盖
 
-## Go Coverage (latest)
-
-| Package | Coverage | Date |
-| --- | --- | --- |
-| mebsuta (main) | ~80% | 2026-05-24 |
-| filerotate/ | ~85% | 2026-05-24 |
-| audit/ | ~90% | 2026-05-24 |
-| database/ | ~76% | 2026-05-24 |
-| metrics/ | ~90% | 2026-05-24 |
+覆盖率以 `go test -race -count=1 -cover ./...` 实时输出为准（CI 每次运行），不再手工维护快照表。
 
 ## Open Coverage Gaps
 

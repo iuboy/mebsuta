@@ -1,78 +1,46 @@
 # Migration Guide
 
-## v0.3.x → 独立仓库
+当前世系自 v0.1.0-0 重新起算（2026-11-08），版本恒为 `v0.1.<patch>-<rev>`；
+旧世系（v0.1.0–v0.8.0 及 monorepo 时代）无兼容关系，迁移说明见 CHANGELOG
+末尾的历史记录。
 
-项目从双语言 monorepo 拆分为独立 Go 仓库。Rust 版本移至独立仓库 `mebsuta-rust`。
+## 当前破坏性变更迁移（v0.1.0-21…31）
 
-### Import Path 变更
+### v0.1.0-22：错误处理器形态
+- `DefaultErrorHandler` 读写改函数：读 `DefaultErrorHandler()`、写
+  `SetDefaultErrorHandler(fn)`（nil 恢复 stderr 写入）。
 
-```go
-// before (monorepo)
-import "github.com/iuboy/mebsuta/go"
-import "github.com/iuboy/mebsuta/go/config"
-import "github.com/iuboy/mebsuta/go/metrics"
+### v0.1.0-24：保留窗语义
+- `filerotate.Writer.SetMaxAgeDays` / `mebsuta.SetFileMaxAge`：0 与其他
+  负值拒绝；关闭按龄清理传 `filerotate.UnlimitedAge(-1)`。
 
-// after (独立仓库)
-import "github.com/iuboy/mebsuta"
-import "github.com/iuboy/mebsuta/metrics"
-```
+### v0.1.0-25：syslog 默认格式
+- `syslog.Config.RFC5424 bool` 更名 `RFC3164 bool` 且语义反转：默认
+  RFC5424。原 `RFC5424: true` 直接删除该字段；显式 RFC3164 传
+  `RFC3164: true`。
 
-### Install 命令变更
+### v0.1.0-26：契约统一
+- `mebsuta.SetLevel`/`SetFileMaxAge` 首参 `*slog.Logger` →
+  `slog.Handler`（传 `logger.Handler()`）。
+- `AsyncDropped` 删除 → `mebsuta.Dropped`（walk 对全图求和）。
+- 根包 handler 的 `setErrorHandler` → 导出 `SetErrorHandler`。
+- `mebsuta.Info/Debug/Warn/Error` 及 Context 版删除（直接用 slog）。
+- syslog/mbta 关闭后 `Handle` 返回 error（此前 nil）；越界
+  `BufferSize`/`RetryDelay` 以 `*ConfigError` 拒绝（此前钳制）。
 
-```bash
-# before (monorepo)
-go get github.com/iuboy/mebsuta/go@go/v0.4.0
+### v0.1.0-27：metrics 收敛
+- `metrics.Metrics` 仅保留 `NewMetrics` + HandlerMetrics 三方法；
+  `IncLogWrite`/`IncBatchWrite`/`SetBufferUsage` 等 13 个 mutator 删除。
 
-# after (独立仓库)
-go get github.com/iuboy/mebsuta@v0.4.0
-```
+### v0.1.0-29：遥测门面
+- `mebsuta.StartSpan/Counter/Histogram/Gauge` 删除 →
+  `telemetry.Telemetry` 同名实例方法（`tel.StartSpan(...)` 等）。
 
-### Tag Scheme 变更
+### v0.1.0-30：TLS 共享结构
+- `syslog.Config.Secure/TLSSkipVerify` → `TLS *mebsuta.TLSConfig`。
+- `telemetry.Config.TLSCAFile/TLSCertFile/TLSKeyFile/TLSServerName` →
+  `TLS *mebsuta.TLSConfig`。
+- `mbta.Config.CAFile/CertFile/KeyFile/ServerName/InsecureSkipVerify` →
+  `TLS *mebsuta.TLSConfig`。
 
-| Period | Tag Format | Example |
-|--------|------------|---------|
-| Before monorepo split | `vX.Y.Z` (root) | `v0.3.4` |
-| During monorepo | `go/vX.Y.Z` | `go/v0.4.0` |
-| After independent repo | `vX.Y.Z` | `v0.4.0` |
-
-## v0.2 核心变化
-
-- `mebsuta.New()` 返回 `*slog.Logger`（不再是自定义 Logger 类型）
-- 输出通过 `slog.Handler` 插件实现
-- 装饰器（采样、异步、指标）通过函数包装 Handler
-- 移除了 `go.uber.org/zap` 依赖
-
-## 已移除的 API
-
-| 旧 API | 替代 |
-|--------|------|
-| `mebsuta.Init(cfg)` | `mebsuta.New(opts...)` |
-| `mebsuta.CreateLogger(cfg)` | `mebsuta.New(opts...)` |
-| `mebsuta.NewFromConfig(cfg)` | `mebsuta.New(opts...)` |
-| `mebsuta.GetLogger()` | `slog.Default()` |
-| `mebsuta.SetLogger(zl)` | `slog.SetDefault(logger)` |
-| `mebsuta.IsInitialized()` | 检查 `slog.Default()` |
-| `mebsuta.SetContextExtractor(fn)` | `WithContextExtractor` 装饰器 |
-| `logger.Zl()` | 直接使用 `*slog.Logger` |
-| `logger.Sugar()` | 使用 `fmt.Sprintf` |
-| `logger.Sync()` | `mebsuta.CloseAll(handler)` |
-| `logger.WithContext(ctx)` | `slog.InfoContext(ctx, ...)` |
-| `logger.With(fields...)` | `logger.WithAttrs(attrs...)` |
-| `zap.String/Int/...` | `slog.String/Int/...` |
-
-## 已移除的包
-
-| 包 | 原因 |
-|----|------|
-| `core/` | 被 slog Handler 替代 |
-| `internal/adapter/` | 被 slog Handler 替代 |
-| `errors/` | 使用标准 `fmt.Errorf` |
-| `examples/categraf/` | 配置方式已变更 |
-| `config/` | Config 类型提升到主包 |
-
-## 已移除的依赖
-
-| 依赖 | 原因 |
-|------|------|
-| `go.uber.org/zap` | 转向 slog |
-| `github.com/natefinch/lumberjack` | 自研文件轮转 |
+完整的逐版本明细见 [CHANGELOG](../CHANGELOG.md)。

@@ -12,6 +12,37 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-31] - 2026-11-24
+
+### Changed — 文档对齐(阶段 8;H3–H11)
+
+- **SPEC**(H3):关闭后 `Handle` 契约更新为「返回 error 且计数」
+  (0.1.0-26 统一后 SPEC 残留旧描述)；safeMulti 关闭路径澄清；删除
+  实现中不存在的 `Trace` 级别与 `MaxSizeBytes` 引用。
+- **TESTING**(H4)：删除手填的覆盖率快照表(停在 2026-05-24,早已
+  失真)——覆盖率以 `go test -cover` 实时输出为准。
+- **MIGRATION**(H5)：重写为当前世系的破坏性变更迁移说明(v0.1.0-22
+  至 -30 逐版本)，删除旧世系(monorepo/`Init` 已移除时代)的过时内容。
+- **CONTRIBUTING**(H6)：标签格式统一为 `v0.1.<patch>-<rev>`；提交前
+  检查补 staticcheck;脚本示例与 `scripts/test.sh` 实际子命令对齐。
+- **README**(H7)：模块表补 `mbta`;遥测门面示例改为 Telemetry 实例
+  方法(0.1.0-29);TLS 示例改为 `mebsuta.TLSConfig`;安装节钉版示例
+  更新;`SetLevel` 签名更新；删除「待实现」路线图描述。
+- **STYLE/GLOBALS**(H8)：example 数量、`sync.Pool` 数量、门面表与
+  便捷函数注记与实现同步。
+- **AGENTS.md 入库**(H9,决策 2):`.gitignore` 不再忽略——协作者与
+  CI 可见;`CLAUDE.md` 改为指向 AGENTS.md,不再维护副本。
+- **.gitignore**(H10)：删除历史残留(`/testdata/`、Rust 路径、
+  `Cargo.lock`、调试二进制清单、Testcontainers lock)。
+- **release.yml**(H11)：标签 guard 改精确正则 `^v0\.1\.<patch>-<rev>$`
+  (拒绝旧世系标签——它们会被模块代理当作 @latest 误推荐);Release
+  说明取 CHANGELOG 对应小节。
+- **README 安装节**(H1)：显式钉版示例更新至当前版本。
+
+### 破坏性变更
+
+- 无(纯文档与 CI 配置)。
+
 ## [0.1.0-30] - 2026-11-24
 
 ### Changed — 架构:TLS 共享结构收敛(阶段 7 第二项;审查 F5 一并完成)

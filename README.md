@@ -8,7 +8,7 @@
 解析到旧世系（v0.8.0），必须显式钉版本：
 
 ```bash
-go get github.com/iuboy/mebsuta@v0.1.0-23
+go get github.com/iuboy/mebsuta@v0.1.0-31
 ```
 
 可用版本见 [CHANGELOG](CHANGELOG.md)；标签列表以
@@ -209,11 +209,12 @@ JSON 输出契约的顶层审计字段（`event_type`/`actor`/`success`）按级
 
 | 模块 | 说明 |
 |------|------|
-| `mebsuta` | 核心日志库（含 `StartSpan`/`Counter` 等遥测门面与 `TraceContextExtractor`） |
+| `mebsuta` | 核心日志库（`TraceContextExtractor`、`SeverityNumber`、`TLSConfig` 共享 TLS） |
 | `mebsuta/telemetry` | OTel 三信号（traces/metrics/logs）OTLP/HTTP 一键引导 |
 | `mebsuta/otlp` | slog → OTel 日志管线桥接 handler |
 | `mebsuta/audit` | 审计/合规功能 |
 | `mebsuta/syslog` | Syslog 输出（**维护模式**：可用、有测试、不新增特性） |
+| `mebsuta/mbta` | MBTA 通道外发 |
 | `mebsuta/database` | 数据库批量写入 |
 | `mebsuta/metrics` | Prometheus 指标 |
 | `mebsuta/filerotate` | 文件轮转 Writer |
@@ -251,15 +252,17 @@ OTLP/HTTP 端点的凭据面（镜像 mbta 四件套形态）：
 tel, _ := telemetry.Start(ctx, telemetry.Config{
     ServiceName: "wasat",
     Endpoint:    "https://collector.internal:4318", // 自签/私有 CA 部署形态
-    TLSCAFile:   "/etc/wasat/ca.pem",               // 私有 CA；缺省走系统信任池
-    TLSServerName: "collector.internal",            // 端点与证书 SAN 不一致时覆写
-    // mTLS（接收侧启用客户端证书验证时）：
-    // TLSCertFile: "client.pem", TLSKeyFile: "client.key",
+    TLS: &mebsuta.TLSConfig{                         // nil = 端点 scheme 决定
+        CAFile:     "/etc/wasat/ca.pem",             // 私有 CA；缺省走系统信任池
+        ServerName: "collector.internal",            // 端点与证书 SAN 不一致时覆写
+        // mTLS（接收侧启用客户端证书验证时）：
+        // CertFile: "client.pem", KeyFile: "client.key",
+    },
 })
 ```
 
 规则：裸 `host:port` + 任一 TLS 字段 → 升级为 TLS（覆盖 LAN 明文默认）；
-显式 `http://` + TLS 字段 → `Validate` 拒绝；`TLSCertFile`/`TLSKeyFile`
+显式 `http://` + TLS 字段 → `Validate` 拒绝；`CertFile`/`KeyFile`
 必须成对。SDK 导出错误经 `Config.OTelErrorHandler` 进入 mebsuta
 ErrorHandler 链（`SetGlobal=false` 时不触碰 otel 全局，自行
 `otel.SetErrorHandler`）。
@@ -304,12 +307,14 @@ slog.SetDefault(logger)
 注册）工作；未注册时自动落回 no-op，测试与本地开发零负担：
 
 ```go
-ctx, span := mebsuta.StartSpan(ctx, "handle_request")   // 返回完整 trace.Span
+// 门面是 telemetry.Telemetry 的实例方法(0.1.0-29 起,绑定实例而非
+// otel 全局):
+ctx, span := tel.StartSpan(ctx, "handle_request") // 返回完整 trace.Span
 defer span.End()
 
-mebsuta.Counter(ctx, "requests_total", 1, attribute.String("route", "/api"))
-mebsuta.Histogram(ctx, "latency_ms", 12.3)
-mebsuta.Gauge(ctx, "queue_depth", 7)
+tel.Counter(ctx, "requests_total", 1, attribute.String("route", "/api"))
+tel.Histogram(ctx, "latency_ms", 12.3)
+tel.Gauge(ctx, "queue_depth", 7)
 
 // 本地输出的 trace 关联（OTLP 路径无需提取器）：
 //   mebsuta.UseContextExtractor(mebsuta.TraceContextExtractor())
@@ -320,8 +325,8 @@ mebsuta.Gauge(ctx, "queue_depth", 7)
 | 信号 \ 后端 | OTLP/HTTP（第一支持） | database 落库 | MBTA | syslog 等旧协议 |
 |------------|----------------------|---------------|------|----------------|
 | 日志 | `otlp` handler（经 `telemetry.Start`） | `database.NewHandler`（含事务一致双写） | 现有 `mbta` | 现有 `syslog`（维护模式） |
-| 追踪 | `telemetry` | `telemetry.Config.Database`（SpanExporter，方式 B） | 协议已具备（mbta-go `SignalRecord` 含 trace 字段），mebsuta 侧 exporter 待实现 | — |
-| 遥测 | `telemetry` | `telemetry.Config.Database`（MetricExporter，限低基数） | 协议已具备（`metric_fields`/`temporality`/`exp_histogram`），mebsuta 侧 exporter 待实现 | — |
+| 追踪 | `telemetry` | `telemetry.Config.Database`（SpanExporter，方式 B） | — | — |
+| 遥测 | `telemetry` | `telemetry.Config.Database`（MetricExporter，限低基数） | — | — |
 
 方式 A（OTel 直传）/方式 B（mebsuta 落库）在 `telemetry.Config` 一键切换；
 两者并存即 traces/metrics 双写：
@@ -342,7 +347,7 @@ defer tel.Shutdown(ctx)
 
 | 能力 | 方式 |
 |------|------|
-| **日志级别** | 构造期 `Config.Level` 传 `mebsuta.NewLevelVar(...)`（全部 handler 的 Level 均为 `slog.Leveler`，std 库原子热调）；运行时 `applied, skipped, err := mebsuta.SetLevel(logger, level)`——walk 遍历 handler 图（与 `SetFileMaxAge` 同款），固定级别 handler 进 `skipped` 诚实面 |
+| **日志级别** | 构造期 `Config.Level` 传 `mebsuta.NewLevelVar(...)`（全部 handler 的 Level 均为 `slog.Leveler`，std 库原子热调）；运行时 `applied, skipped, err := mebsuta.SetLevel(logger.Handler(), level)`——walk 遍历 handler 图（与 `SetFileMaxAge` 同款），固定级别 handler 进 `skipped` 诚实面 |
 | 保留窗 | `mebsuta.SetFileMaxAge(logger, days)` |
 | ErrorHandler | `atomic.Pointer` 带锁热换 |
 

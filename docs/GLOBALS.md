@@ -8,8 +8,8 @@
 
 | 全局 | 写入点 | 读取方 |
 | --- | --- | --- |
-| `slog.SetDefault` | `mebsuta.Init` | stdlib 全家（`slog.Info` 等）与 `mebsuta.Info/...` 便捷函数 |
-| `otel.Set{Tracer,Meter,Logger}Provider` / `SetTextMapPropagator` / `SetErrorHandler` | `telemetry.Start`（`SetGlobal` 默认开；`SetGlobal=false` 完全不触碰，部署方自理） | otelgin/otelhttp 等中间件、`mebsuta.StartSpan/Counter/...` 门面 |
+| `slog.SetDefault` | `mebsuta.Init` | stdlib 全家（`slog.Info` 等；`mebsuta.Info/...` 便捷函数已于 0.1.0-26 删除） |
+| `otel.Set{Tracer,Meter,Logger}Provider` / `SetTextMapPropagator` / `SetErrorHandler` | `telemetry.Start`（`SetGlobal` 默认开；`SetGlobal=false` 完全不触碰，部署方自理） | otelgin/otelhttp 等中间件（0.1.0-29 起 span/metric 门面绑定 Telemetry 实例，不再经全局） |
 
 ## 设施级包变量（无业务语义，不构成 API 面）
 

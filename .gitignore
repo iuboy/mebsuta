@@ -40,9 +40,6 @@ temp/
 *.tmp
 *.bak
 
-# Test fixtures
-/testdata/
-
 # Environment files
 .env
 .env.local
@@ -50,13 +47,6 @@ temp/
 
 # Docker volumes
 docker-volumes/
-
-/target
-/rust/target
-Cargo.lock
-
-# Testcontainers lock files
-integration/*.lock
 
 # Development-only docs (kept locally, not tracked in git)
 docs/plan/
@@ -68,10 +58,8 @@ docs/plan/
 .zcode
 
 # AI assistant generated files
-AGENTS.md
 CLAUDE.md
 MEMORY.md
-.claude/
 .gstack/
 
 # Memory and cache
@@ -94,12 +82,6 @@ mem.prof
 debug
 debug.test
 __debug_bin
-# Debug binary build outputs (e.g., go build -o async ./examples/async)
-/async
-/basic
-/chain
-/file
-/sampling
 
 # Local Go workspace (used for joint development with sibling modules like ../mbta-go;
 # must not ship in releases — would break downstream reproducible builds).
