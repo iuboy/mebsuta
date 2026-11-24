@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,12 @@ type Telemetry struct {
 	spanDB   *database.SpanExporter
 	metricDB *database.MetricExporter
 	sqlDB    *sql.DB
+	// 门面 instrument 缓存(facade.go,0.1.0-29/C1):归实例所有——
+	// instrument 与实例 provider 同生命周期,根包全局缓存的教训
+	// (0.1.0-22)在实例形态下结构性消失。
+	counterCache   sync.Map
+	histogramCache sync.Map
+	gaugeCache     sync.Map
 }
 
 // Start 依据 cfg 引导选定的信号并返回持有它们的 Telemetry。Endpoint 为空时

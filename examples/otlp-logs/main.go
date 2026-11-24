@@ -55,8 +55,8 @@ func main() {
 	// 在 span 内记录日志即可关联该记录：logs SDK 会自动从 context
 	// 填充 TraceID/SpanID——OTLP 路径无需 extractor
 	// （TraceContextExtractor 服务于本地输出）。
-	_, span := mebsuta.StartSpan(ctx, "example.run")
+	_, span := tel.StartSpan(ctx, "example.run")
 	slog.InfoContext(ctx, "hello over OTLP", "service", "otlp-logs-example")
-	mebsuta.Counter(ctx, "example.logs_emitted", 1)
+	tel.Counter(ctx, "example.logs_emitted", 1)
 	span.End()
 }

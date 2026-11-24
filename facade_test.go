@@ -13,9 +13,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// bootTelemetry starts a real bootstrap against a capture receiver with
-// globals enabled — the facades delegate to the otel globals, which is
-// what telemetry.Start wires by default.
+// bootTelemetry starts a real bootstrap against a capture receiver.
+// 0.1.0-29 起 span/metric 门面是 Telemetry 的实例方法,直接绑定实例
+// (不再经 otel 全局转发)。
 func bootTelemetry(t *testing.T, signals telemetry.Signals) (*telemetry.Telemetry, *mebsutatest.OTLPReceiver) {
 	t.Helper()
 	r := mebsutatest.NewOTLPReceiver()
@@ -34,12 +34,12 @@ func resetGlobals() {
 	telemetry.ResetGlobalTracking()
 }
 
-func TestStartSpan_Facade(t *testing.T) {
+func TestStartSpan_Instance(t *testing.T) {
 	tel, r := bootTelemetry(t, telemetry.Traces)
 	defer r.Close()
 	defer resetGlobals()
 
-	_, span := mebsuta.StartSpan(context.Background(), "facade-op", attribute.String("k", "v"))
+	_, span := tel.StartSpan(context.Background(), "facade-op", attribute.String("k", "v"))
 	span.End()
 
 	require.NoError(t, tel.Shutdown(context.Background()))
@@ -58,7 +58,7 @@ func TestTraceContextExtractor(t *testing.T) {
 
 	require.Nil(t, extract(context.Background()), "no-span context must yield no attrs")
 
-	ctx, span := mebsuta.StartSpan(context.Background(), "with-log")
+	ctx, span := tel.StartSpan(context.Background(), "with-log")
 	defer span.End()
 	attrs := extract(ctx)
 	require.Len(t, attrs, 2, "want trace_id + span_id")
@@ -78,10 +78,10 @@ func TestMetricFacades(t *testing.T) {
 	defer resetGlobals()
 
 	ctx := context.Background()
-	mebsuta.Counter(ctx, "facade.requests", 2, attribute.String("route", "/api"))
-	mebsuta.Counter(ctx, "facade.requests", 3, attribute.String("route", "/api"))
-	mebsuta.Histogram(ctx, "facade.latency_ms", 12.5)
-	mebsuta.Gauge(ctx, "facade.queue_depth", 7)
+	tel.Counter(ctx, "facade.requests", 2, attribute.String("route", "/api"))
+	tel.Counter(ctx, "facade.requests", 3, attribute.String("route", "/api"))
+	tel.Histogram(ctx, "facade.latency_ms", 12.5)
+	tel.Gauge(ctx, "facade.queue_depth", 7)
 
 	require.NoError(t, tel.Shutdown(context.Background()))
 
@@ -115,17 +115,21 @@ func TestMetricFacades(t *testing.T) {
 	}
 }
 
-func TestFacadesWithoutGlobals(t *testing.T) {
-	// With no provider registered the otel globals are no-ops: every
-	// facade call must be safe and silent.
-	resetGlobals()
-	defer resetGlobals()
+func TestTelemetryFacade_NoOp(t *testing.T) {
+	// 未启动(零值/nil 实例)的门面必须安全静默:无 panic、无输出。
 	ctx := context.Background()
-	_, span := mebsuta.StartSpan(ctx, "noop")
+	var unstarted *telemetry.Telemetry
+	_, span := unstarted.StartSpan(ctx, "noop")
 	span.End()
-	mebsuta.Counter(ctx, "noop.requests", 1)
-	mebsuta.Histogram(ctx, "noop.latency", 1)
-	mebsuta.Gauge(ctx, "noop.depth", 1)
+	unstarted.Counter(ctx, "noop.requests", 1)
+	unstarted.Histogram(ctx, "noop.latency", 1)
+	unstarted.Gauge(ctx, "noop.depth", 1)
+	zero := &telemetry.Telemetry{}
+	_, span = zero.StartSpan(ctx, "noop")
+	span.End()
+	zero.Counter(ctx, "noop.requests", 1)
+	zero.Histogram(ctx, "noop.latency", 1)
+	zero.Gauge(ctx, "noop.depth", 1)
 }
 
 func TestSetLevel_WalkAppliesAndSkips(t *testing.T) {
@@ -170,31 +174,29 @@ func TestSetLevel_DecoratorsTraverse(t *testing.T) {
 	require.Equal(t, slog.LevelInfo, lv.Level())
 }
 
-// TestMetricFacades_FollowProviderSwap:instrument 不得缓存在门面——
-// 代次轮换(新 Start 覆盖全局)后,旧名字必须写进新 provider(0.1.0-22
-// 修复:此前缓存的 instrument 绑死创建时的 provider,旧名字永远写进
-// 已 Shutdown 的旧 provider)。
-func TestMetricFacades_FollowProviderSwap(t *testing.T) {
-	resetGlobals()
-	tel1, _ := bootTelemetry(t, telemetry.Metrics)
-	mebsuta.Counter(context.Background(), "swap.probe", 1)
-	require.NoError(t, tel1.Shutdown(context.Background()))
+// TestMetricFacade_InstanceIsolation:instrument 缓存归实例所有——
+// 两个实例对同一名字各自计数、互不串扰;实例 Shutdown 后其缓存随之
+// 作废,新实例从零开始(0.1.0-29 起,取代"provider 代次轮换"语义——
+// 门面已不再经全局转发)。
+func TestMetricFacade_InstanceIsolation(t *testing.T) {
+	tel1, r1 := bootTelemetry(t, telemetry.Metrics)
+	tel1.Counter(context.Background(), "iso.probe", 1)
 
 	tel2, r2 := bootTelemetry(t, telemetry.Metrics)
-	mebsuta.Counter(context.Background(), "swap.probe", 1)
-	// Shutdown 触发最终 flush,批处理导出的数据此后才确定可见。
+	tel2.Counter(context.Background(), "iso.probe", 41)
+
+	require.NoError(t, tel1.Shutdown(context.Background()))
 	require.NoError(t, tel2.Shutdown(context.Background()))
 	defer resetGlobals()
 
-	var found bool
-	for _, m := range r2.MetricFamilies() {
-		if m.Name == "swap.probe" {
-			found = true
-			dp := m.GetSum().GetDataPoints()
-			require.Len(t, dp, 1)
-			require.Equal(t, int64(1), dp[0].GetAsInt(),
-				"new provider must receive the counter for a name first used under the previous provider")
+	count := func(r *mebsutatest.OTLPReceiver) int64 {
+		for _, m := range r.MetricFamilies() {
+			if m.Name == "iso.probe" {
+				return m.GetSum().GetDataPoints()[0].GetAsInt()
+			}
 		}
+		return -1
 	}
-	require.True(t, found, "swapped-in provider must see the instrument (facade must not cache instruments)")
+	require.Equal(t, int64(1), count(r1), "instance 1 keeps its own counter")
+	require.Equal(t, int64(41), count(r2), "instance 2 is independent (no shared instrument cache)")
 }

@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"testing"
 	"time"
-
-	"go.opentelemetry.io/otel/attribute"
 )
 
 func BenchmarkStdoutHandler_JSON(b *testing.B) {
@@ -278,17 +276,5 @@ func BenchmarkAsyncHandler_LargeBuffer(b *testing.B) {
 
 	if closer, ok := h.(interface{ Close() error }); ok {
 		_ = closer.Close()
-	}
-}
-
-// BenchmarkMetricFacade:门面每次调用经 otel 全局解析 instrument
-// (0.1.0-22 起不缓存——缓存会绑死创建时的 provider,代次轮换后
-// 失效)。热路径高频调用方应显式经 otel.Meter 创建 instrument。
-func BenchmarkMetricFacade(b *testing.B) {
-	ctx := context.Background()
-	attrs := []attribute.KeyValue{attribute.String("route", "/api")}
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		Counter(ctx, "bench.facade", 1, attrs...)
 	}
 }

@@ -12,6 +12,27 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-29] - 2026-11-24
+
+### Changed — 架构 C1:遥测门面迁出根包,绑定 Telemetry 实例(阶段 7 第一项)
+
+- 根包的 `StartSpan`/`Counter`/`Histogram`/`Gauge` 全局门面(经 otel
+  全局转发)删除,改为 `telemetry.Telemetry` 的同名实例方法。instrument
+  缓存归实例所有:instrument 与实例 provider 同生命周期(Shutdown 后
+  随实例作废),0.1.0-22 的"缓存绑死 provider"问题在实例形态下结构性
+  消失。未启动(零值/nil)实例的门面安全静默。
+- `TraceContextExtractor`/`SeverityNumber`/`LevelName` 留在根包
+  (日志-追踪关联与级别映射是日志库自身面);根包移除 `otel/metric`、
+  `otel/trace` 的门面依赖(trace 包仅存 span context 读取)。
+- 影响面:仅 README 的遥测门面示例与一个 example(已同步);门面
+  仅此一处消费,零存量调用方迁移负担。
+
+### 破坏性变更
+
+- `mebsuta.StartSpan`/`mebsuta.Counter`/`mebsuta.Histogram`/
+  `mebsuta.Gauge` 删除。迁移:`tel, _ := telemetry.Start(...)` 后改用
+  `tel.StartSpan(...)`/`tel.Counter(...)` 等。
+
 ## [0.1.0-28] - 2026-11-24
 
 ### Changed — 安全加固(阶段 6;审查报告 F1-F4/F6,F5 随阶段 7 TLS 共享结构)
