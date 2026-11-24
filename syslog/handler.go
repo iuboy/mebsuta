@@ -247,7 +247,15 @@ func (h *Handler) Close() error {
 	case <-time.After(closeDrainTimeout):
 		remaining := len(h.buffer)
 		h.cancel() // writeWithRetry 的 ctx 门控让剩余消息成为 no-op
-		<-drained
+		select {
+		case <-drained:
+		case <-time.After(closeDrainTimeout):
+			// 宽限上界：processQueue 可能卡在用户 ErrorHandler 重入
+			// Close 的调用栈里（wg.Wait 等待自身 goroutine），cancel
+			// 无法中断它——放弃等待；该调用栈返回后 goroutine 自行
+			// 退出，不构成泄漏。此前这里无上界，重入场景会永久挂死
+			// 调用方（0.1.0-24 修复）。
+		}
 		if remaining > 0 {
 			h.dropped.Add(int64(remaining))
 			h.errorHandler.Report(&mebsuta.HandlerError{Component: "syslog", Operation: "close", Err: fmt.Errorf("close drain timed out after %v: %d buffered records dropped", closeDrainTimeout, remaining), Dropped: int64(remaining)})
@@ -406,6 +414,12 @@ func (h *Handler) write(p []byte) error {
 	return err
 }
 
+// writeWithRetry 带重试写出一条消息。0.1.0-24 起的语义：
+//   - 重连失败/关闭（无连接）时立即按丢弃处理——此前剩余重试与
+//     RetryDelay 逐条空转，断连时每条记录阻塞约 maxRetries × RetryDelay
+//   - 最终失败携带底层原因并计入 Dropped——此前只报尝试次数，网络
+//     故障导致的丢失在 Dropped 观测面不可见
+//   - 最后一次尝试后不再休眠 RetryDelay
 func (h *Handler) writeWithRetry(msg []byte) {
 	// context 门控：Close 排空 deadline 触发并取消 ctx 后，
 	// 立即跳过剩余消息，而不是每条再付出一次 3s 写
@@ -416,21 +430,31 @@ func (h *Handler) writeWithRetry(msg []byte) {
 	if !h.isConnected() && !h.closing.Load() && h.reconnectEnabled {
 		h.reconnect()
 	}
+	var lastErr error
 	for i := range maxRetries {
-		if err := h.write(msg); err == nil {
+		lastErr = h.write(msg)
+		if lastErr == nil {
 			return
 		}
 		if h.closing.Load() {
+			h.dropped.Add(1)
 			return
 		}
-		// 仅在首次失败时断开并重连。后续重试
-		// 复用同一连接，避免在瞬时写错误
-		//（如未断 TCP 会话的短暂网络抖动）上反复折腾。
+		// 仅在首次失败时断开并重连。后续重试复用同一连接，避免在
+		// 瞬时写错误（如未断 TCP 会话的短暂网络抖动）上反复折腾。
+		// 重连后仍无连接（Reconnect=false 或重连失败）：继续重试只会
+		// 逐条空转 RetryDelay——立即按丢弃处理。
 		if i == 0 {
 			h.disconnect()
 			if h.reconnectEnabled {
 				h.reconnect()
 			}
+			if !h.isConnected() {
+				break
+			}
+		}
+		if i == maxRetries-1 {
+			break // 最后一次尝试后不再休眠
 		}
 		// 可中断休眠：Close 排空 deadline 取消 ctx 后，
 		// 在途重试不得傻等完整 RetryDelay——否则
@@ -441,7 +465,17 @@ func (h *Handler) writeWithRetry(msg []byte) {
 			return
 		}
 	}
-	h.errorHandler.Report(&mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts", maxRetries)})
+	h.dropped.Add(1)
+	if h.shouldReportDrop() {
+		// 本上报发生在 worker(processQueue)goroutine 内：用户
+		// ErrorHandler 若重入 Close，同步调用会以 wg.Wait 等待本
+		// worker 退出而自死锁——只能撞满排空上界(10s)。异步投递后
+		// 重入方按 CAS 败者路径立即返回，排空照常完成(0.1.0-24)。
+		// 回调顺序不再保证(限频本就每秒至多一次)。goroutine 归属：
+		// 一次性上报，生命周期 = 回调自身，无泄漏面。
+		he := &mebsuta.HandlerError{Component: "syslog", Operation: "write", Err: fmt.Errorf("write failed after %d attempts: %w (total dropped: %d)", maxRetries, lastErr, h.dropped.Load()), Dropped: h.dropped.Load()}
+		go h.errorHandler.Report(he)
+	}
 }
 
 func (h *Handler) disconnect() {

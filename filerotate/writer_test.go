@@ -821,3 +821,37 @@ func TestIsBackupName_NanoFallbackTightness(t *testing.T) {
 		require.False(t, isBackupName(base, n), "isBackupName(%q) = true, want false", n)
 	}
 }
+
+// TestWriter_WriteErrorReported:写失败必须经错误链上报并计数(B1)——
+// 同步链路上 slog 会丢弃 Handle 的返回错误,磁盘满/IO 错误此前
+// 在错误链与 Dropped 观测面都不可见。
+func TestWriter_WriteErrorReported(t *testing.T) {
+	off := false
+	w, err := New(Config{Path: filepath.Join(t.TempDir(), "a.log"), Compress: &off})
+	require.NoError(t, err)
+	defer func() { _ = w.Close() }()
+
+	var mu sync.Mutex
+	var ops []string
+	w.SetOnError(func(e error) {
+		var fe *Error
+		if errors.As(e, &fe) {
+			mu.Lock()
+			ops = append(ops, fe.Op)
+			mu.Unlock()
+		}
+	})
+
+	// 同包:直接关闭底层 fd 制造写失败(后续 Write 返回 os.ErrClosed)。
+	w.mu.Lock()
+	require.NoError(t, w.file.Close())
+	w.mu.Unlock()
+
+	_, err = w.Write([]byte("x"))
+	require.Error(t, err, "write to closed fd fails")
+	// reportRotateErrors 在 Write 尾部同步执行,无需等待。
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, ops, "write", "write failure must reach OnError with Op=write")
+	require.Equal(t, int64(1), w.FailedWrites(), "failure counted once")
+}

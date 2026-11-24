@@ -100,9 +100,14 @@ func TestNew_ZeroOptions(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, logger)
 
-	// Default is stdout JSON handler; verify the handler is a StdoutHandler
-	_, ok := logger.Handler().(*StdoutHandler)
-	require.True(t, ok, "expected StdoutHandler, got %T", logger.Handler())
+	// Default is stdout JSON handler. 0.1.0-24 起单 handler 链也经
+	// safeMulti(逐 handler panic 恢复对默认配置生效);内层仍应是其
+	// 快路径下的唯一子 handler——StdoutHandler。
+	sm, ok := logger.Handler().(*safeMulti)
+	require.True(t, ok, "expected safeMulti wrapper, got %T", logger.Handler())
+	require.Len(t, sm.handlers, 1, "single handler chain")
+	_, ok = sm.handlers[0].(*StdoutHandler)
+	require.True(t, ok, "expected inner StdoutHandler, got %T", sm.handlers[0])
 }
 
 func TestNew_UseFile(t *testing.T) {

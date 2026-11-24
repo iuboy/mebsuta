@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
 
 // Writer 是实现 io.Writer 与 io.Closer 的轮转文件 writer。
@@ -45,6 +47,14 @@ type Writer struct {
 	// 锁保护该切片，保证先解锁再上报的模式无数据竞争。
 	errMu               sync.Mutex
 	pendingRotateErrors []error
+	// writeFailed 统计写入失败次数（B1）：同步链路上 slog 会丢弃
+	// Handle 的返回错误，磁盘满/IO 错误必须在此可见。FileHandler
+	// 经 Dropped() 转发，MetricsHandler 的丢弃探针得以覆盖。
+	writeFailed atomic.Int64
+	// writeGate 把写失败的收集限频为每秒至多一条（handlerkit.RateGate，
+	// 与各 handler 的丢弃上报同款闸）：pendingRotateErrors 的每条
+	// 错误都会被逐条上报，写洪峰（磁盘满）不得 1:1 放大为 stderr 写。
+	writeGate handlerkit.RateGate
 }
 
 // errorFunc 包装函数类型，以便配合 atomic.Pointer 使用。
@@ -127,6 +137,14 @@ func (w *Writer) Write(p []byte) (int, error) {
 	if n > 0 {
 		w.size.Add(int64(n))
 	}
+	// B1：写失败计数并经错误链上报（收集限频每秒一条）——同步链路
+	// 上 slog 会丢弃返回的错误，磁盘满/IO 错误此前完全不可见。
+	if err != nil {
+		w.writeFailed.Add(1)
+		if w.writeGate.Allow() {
+			w.addRotateErrors(&Error{Op: "write", Err: err})
+		}
+	}
 
 	// 写后轮转检查：若本次写入超过上限，
 	// 立即轮转，避免超限文件一直留存到下一次
@@ -195,6 +213,12 @@ func (w *Writer) Close() error {
 // SetOnError 更新错误回调。可并发调用。
 func (w *Writer) SetOnError(fn func(error)) {
 	w.onError.Store(&errorFunc{fn: fn})
+}
+
+// FailedWrites 返回写入失败的累计次数（B1）。经 FileHandler.Dropped
+// 进入 MetricsHandler 的丢弃观测。
+func (w *Writer) FailedWrites() int64 {
+	return w.writeFailed.Load()
 }
 
 func (w *Writer) loadOnError() func(error) {

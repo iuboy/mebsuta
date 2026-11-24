@@ -805,3 +805,57 @@ func TestHandler_ReconnectReplacesSingleUseClient(t *testing.T) {
 	require.Eventually(t, func() bool { return sink.count.Load() == 2 },
 		5*time.Second, 20*time.Millisecond, "delivery resumed after reconnect")
 }
+
+// TestHandleResult_ReleasedAfterAcceptedCounts:ACK_MODE_DURABLE 下
+// ACCEPTED 先到、RELEASED 后到——只有终态才消费批次大小,释放的
+// 批次必须被计数(B4)。此前每个 RESULT 都 LoadAndDelete,中间态把
+// 大小取走,终态看到 0,释放批次从不计数。
+func TestHandleResult_ReleasedAfterAcceptedCounts(t *testing.T) {
+	sink := &countingSink{}
+	h := newLiveHandler(t, sink, nil)
+
+	h.trackBatchSize(7, 3)
+	h.pendingResults.Store(7, struct{}{})
+	h.handleResult(7, "RESULT_LEVEL_ACCEPTED", 0, "")
+	require.Zero(t, h.Dropped(), "ACCEPTED is not a loss; batch size must stay")
+	h.handleResult(7, resultLevelReleased, 0, "")
+	require.Equal(t, int64(3), h.Dropped(), "released batch counted at the terminal result")
+}
+
+// TestSafeSend_ReportAfterUnlock:丢弃上报必须发生在 sendMu 之外
+// (B11)——此前持读锁直接调用户 ErrorHandler,回调里重入 Close 取
+// 写锁即死锁。
+func TestSafeSend_ReportAfterUnlock(t *testing.T) {
+	sink := &countingSink{}
+	h := newLiveHandler(t, sink, func(c *Config) {
+		c.BufferSize = 1
+		c.ErrorTimeout = 50 * time.Millisecond
+		c.MaxRetries = 3
+		c.RetryDelay = 2 * time.Second // 让 processQueue 卡进重试休眠
+		c.Reconnect = mebsuta.Ptr(false)
+		c.BatchSize = 1
+	})
+
+	var lockFree atomic.Bool
+	h.SetErrorHandler(func(*mebsuta.HandlerError) {
+		lockFree.Store(h.sendMu.TryLock())
+		if lockFree.Load() {
+			h.sendMu.Unlock()
+		}
+	})
+
+	// 确定性占住唯一缓冲槽位:关闭 client(single-use 态)后,fill 被
+	// processQueue 取走并卡进 sendBatch 的重试休眠(Reconnect=false,
+	// 每次 2s)——消费停住,fill 稳占槽位。trigger 的 Error 阻塞发送
+	// 撞缓冲满超时,丢弃上报必须发生在 sendMu 之外(B11)。
+	require.NoError(t, h.conn.Load().client.Close(), "force single-use client")
+	require.NoError(t, h.Handle(context.Background(), newRecord(slog.LevelInfo, "fill")))
+	time.Sleep(100 * time.Millisecond) // 让 processQueue 进入 sendBatch 重试
+	sig, _ := recordToSignal(newRecord(slog.LevelInfo, "slot"))
+	h.buffer <- sig // 占住唯一槽位(此刻无人消费)
+
+	require.Error(t, h.Handle(context.Background(), newRecord(slog.LevelError, "trigger")),
+		"Error record dropped on full buffer returns the send error")
+	require.True(t, lockFree.Load(), "drop report must run outside sendMu")
+	require.Equal(t, int64(1), h.Dropped(), "trigger counted as dropped (fill still in retry)")
+}

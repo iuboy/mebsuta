@@ -150,6 +150,11 @@ func (b *Bridge) pollOnce(ctx context.Context) {
 				fp := fingerprint(mf.GetName(), m)
 				b.mu.Lock()
 				delta := v - b.last[fp]
+				if v < b.last[fp] {
+					// counter 重置（进程重启、重注册）：从头累计而非
+					// 导出负增量。
+					delta = v
+				}
 				b.last[fp] = v
 				ctr, ok := b.counters[mf.GetName()]
 				b.mu.Unlock()
@@ -168,7 +173,11 @@ func (b *Bridge) pollOnce(ctx context.Context) {
 			}
 		case dto.MetricType_GAUGE, dto.MetricType_UNTYPED:
 			for _, m := range mf.GetMetric() {
+				// UNTYPED 走 GetUntyped：GetGauge 对 untyped 恒读 0。
 				v := m.GetGauge().GetValue()
+				if mf.GetType() == dto.MetricType_UNTYPED {
+					v = m.GetUntyped().GetValue()
+				}
 				b.mu.Lock()
 				g, ok := b.gauges[mf.GetName()]
 				b.mu.Unlock()

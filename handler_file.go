@@ -112,3 +112,10 @@ var (
 	_ slog.Handler = (*FileHandler)(nil)
 	_ io.Closer    = (*FileHandler)(nil)
 )
+
+// Dropped 返回底层 writer 的写失败累计次数。实现 DroppedCounter：
+// MetricsHandler 的丢弃观测因此覆盖同步文件链——此前磁盘满/IO 错误
+// 在该观测面不可见（B1）。
+func (h *FileHandler) Dropped() int64 {
+	return h.writer.FailedWrites()
+}

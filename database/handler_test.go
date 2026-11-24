@@ -1200,3 +1200,14 @@ func TestGormConfig_FailedStatementWritesNothingToStdout(t *testing.T) {
 	require.Empty(t, silent,
 		"newGORMConfig must silence gorm completely: no SQL, no bound values on stdout")
 }
+
+// TestFlush_RetriesExhaustedCountsDropped:重试耗尽的整批丢失必须计入
+// dropped(B3)——这是 database handler 最大的丢失路径,此前只上报
+// 不计数,丢弃观测面看不到。
+func TestFlush_RetriesExhaustedCountsDropped(t *testing.T) {
+	h, cleanup := newFailingDBHandler(t)
+	r := slog.NewRecord(time.Now(), slog.LevelInfo, "lost", 0)
+	require.NoError(t, h.Handle(context.Background(), r))
+	cleanup()
+	require.NotZero(t, h.dropped.Load(), "retry-exhausted batch must count as dropped")
+}

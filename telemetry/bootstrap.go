@@ -373,6 +373,11 @@ func (t *Telemetry) Shutdown(ctx context.Context) error {
 		if err := t.tp.Shutdown(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("telemetry: traces shutdown: %w", err))
 		}
+		// 本包安装的 TracerProvider 已随本次关停退出全局：清除覆盖
+		// 告警的跟踪基准。"Shutdown 旧引导 → Start 新引导"的正常代次
+		// 轮换此前会被误报为覆盖（lastInstalledTP 仍指向已关停的旧
+		// provider）。
+		lastInstalledTP.CompareAndSwap(t.tp, nil)
 	}
 	t.signals.Store(uint32(None))
 	// 自有的数据库会话最后关闭：上面的 provider 关闭过程已把最后的
@@ -398,4 +403,11 @@ func (t *Telemetry) shutdownStarted(ctx context.Context) {
 		_ = t.tp.Shutdown(ctx)
 	}
 	t.signals.Store(uint32(None))
+	// 失败路径同样要关闭数据库池：Start 早期已赋值 t.sqlDB，此前回滚
+	// 只关 provider——EnsureTables 等失败时每次失败启动都泄漏一个
+	// 连接池（opener goroutine + 连接）。
+	if t.sqlDB != nil {
+		_ = t.sqlDB.Close()
+		t.sqlDB = nil
+	}
 }

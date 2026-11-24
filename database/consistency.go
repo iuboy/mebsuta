@@ -181,6 +181,11 @@ func (h *Handler) markRelayed(ctx context.Context, ids []string) {
 	if len(ids) == 0 {
 		return
 	}
+	// 标记 UPDATE 受 10s 上界约束：DB 锁等待（如排队的 ALTER TABLE）
+	// 不得把 flush 路径（h.ctx 在 Close 的 wg.Wait 之后才取消）或
+	// 扫描器无限拖住。
+	ctx, cancel := context.WithTimeout(ctx, relayOpTimeout)
+	defer cancel()
 	if err := h.db.WithContext(ctx).Table(h.table).Where("id IN ?", ids).Update("relayed_at", time.Now()).Error; err != nil {
 		h.errCount.Add(1)
 		h.errorHandler.Report(&mebsuta.HandlerError{
@@ -206,16 +211,19 @@ func (h *Handler) runRelayScanner(interval time.Duration, batch int) {
 			cancel()
 			return
 		case <-ticker.C:
-			h.scanOnce(h.scanCtx(), batch)
+			// 周期扫描同样有上界（见 scanOnce 的注释）：DB 锁等待不得
+			// 把扫描器拖到 Close 的 wg.Wait 之外。
+			ctx, cancel := context.WithTimeout(h.ctx, relayOpTimeout)
+			h.scanOnce(ctx, batch)
+			cancel()
 		}
 	}
 }
 
-// scanCtx 为扫描提供存活的 context：h.ctx 只在
-// Close 的 wg.Wait() 收割本 goroutine 之后才被取消，因此
-// 每次扫描时它都存活——用它让扫描受关停约束，
-// 而不是无界后台工作。
-func (h *Handler) scanCtx() context.Context { return h.ctx }
+// relayOpTimeout 限定单次 relay 操作（标记 UPDATE、周期扫描页）的
+// 时长。扫描器的 ctx 此前直接用 h.ctx——它只在 Close 的 wg.Wait 之后
+// 才取消，DB 锁等待会让 Close 永久阻塞。
+const relayOpTimeout = 10 * time.Second
 
 // scanChunkRows 限制一次扫描内每条水化查询物化的行数；
 // scanByteBudget 限制累计载荷。每行的 Fields 文档

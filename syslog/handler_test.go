@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -724,9 +723,8 @@ func TestSafeSend_ErrorHandlerReentrantClose(t *testing.T) {
 	listener, err := listenTCP()
 	require.NoError(t, err, "listen")
 
-	// 接受一个连接后用 RST（SetLinger(0)）杀掉它，写
-	// 立即失败，writeWithRetry 每次尝试只付出 RetryDelay——
-	// Close 内的排空远在看门狗之内。
+	// 接受一个连接后用 RST（SetLinger(0)）杀掉它：写立即失败且
+	// Reconnect=false 下 0.1.0-24 起按丢弃处理（不再空转重试）。
 	ready := make(chan struct{})
 	go func() {
 		close(ready)
@@ -742,13 +740,11 @@ func TestSafeSend_ErrorHandlerReentrantClose(t *testing.T) {
 	<-ready
 
 	h, err := NewHandler(Config{
-		Network:      "tcp",
-		Address:      listener.Addr().String(),
-		Tag:          "test",
-		BufferSize:   1,
-		RetryDelay:   100 * time.Millisecond,
-		ErrorTimeout: 50 * time.Millisecond,
-		Reconnect:    boolPtr(false),
+		Network:    "tcp",
+		Address:    listener.Addr().String(),
+		Tag:        "test",
+		BufferSize: 1,
+		Reconnect:  boolPtr(false),
 	})
 	// 某些 CI runner 会在初始拨号期间送达 RST；死锁
 	// 回归需要存活的 handler，因此直接跳过而非失败。
@@ -763,42 +759,28 @@ func TestSafeSend_ErrorHandlerReentrantClose(t *testing.T) {
 		_ = h.Close() // 从错误报告内部重入 Close
 	})
 
-	// 确定性触发：RST 落地后，fill-0 发送把 processQueue
-	// 带进 writeWithRetry 的 5 × RetryDelay 重试休眠（约卡 500ms），
-	// fill-1 记录占住唯一缓冲槽位，Error 级
-	// 触发记录随后撞上缓冲满超时并上报——这个上报
-	// 过去发生在 safeSend 仍持有 sendMu.RLock 之时。
+	// 确定性触发：RST 落地后连接已死且 Reconnect=false。第一条 INFO
+	// 被 processQueue 写失败并丢弃并上报；第二条 INFO 撞满
+	// BufferSize=1 的缓冲，safeSend 的丢弃上报随即发生——0.1.0-23
+	// 前它发生在 sendMu 读锁内，重入 Close 会死锁在锁上；重入
+	// Close 的 wg.Wait 自等待则由排空上界兜底。两条上报路径都不得
+	// 挂死调用方。
 	_ = listener.Close()
 	time.Sleep(10 * time.Millisecond) // 让 RST 到达客户端
-	fill := slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0)
-	_ = h.Handle(context.Background(), fill) // 被 processQueue 消费 → 卡在重试中
-	time.Sleep(2 * time.Millisecond)
-	slot := slog.NewRecord(time.Now(), slog.LevelInfo, "slot", 0)
-	_ = h.Handle(context.Background(), slot) // 占住缓冲槽位
-	r := slog.NewRecord(time.Now(), slog.LevelError, "trigger", 0)
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "fill", 0))
+	time.Sleep(20 * time.Millisecond) // 让 processQueue 消费第一条并发现连接已死
+	_ = h.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "slot", 0))
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = h.Handle(context.Background(), r)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		buf := make([]byte, 64*1024)
-		buf = buf[:runtime.Stack(buf, true)]
-		require.FailNow(t, "Handle did not return within 2s — ErrorHandler re-entering Close deadlocked on sendMu\nStacks:\n%s", buf)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && ehCalls.Load() == 0 {
+		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotZero(t, ehCalls.Load(), "error handler was never invoked; drop report did not reach the ErrorHandler")
 	// 第一个 Close 已在 ErrorHandler 内执行；此处经幂等
-	// drainDone 等待返回。
+	// drainDone 等待返回（有上界，重入场景不挂死）。
 	_ = h.Close()
 }
 
-// TestFormatStructuredMessage_LogValuerResolved：SD-PARAM 值必须是
-// Resolve() 后的字符串，而不是 LogValuer 内部表示的 fmt 渲染
-// （修复前，包在脱敏 LogValuer 中的敏感字段会泄漏其包装结构体）。
 func TestFormatStructuredMessage_LogValuerResolved(t *testing.T) {
 	h := newTestHandler(t)
 	h.cfg.RFC5424 = true
@@ -1185,4 +1167,29 @@ func TestFormatStructuredMessage_ParamNameDedup(t *testing.T) {
 	require.Equal(t, 1, strings.Count(frame, `a_b=`), "duplicate PARAM-NAME after sanitization: %q", frame)
 	require.Equal(t, 1, strings.Count(frame, "_truncated="), "truncation marker name must stay unique/reserved: %q", frame)
 	require.Contains(t, frame, "params omitted", "deduped/reserved params not accounted in marker: %q", frame)
+}
+
+// TestWriteWithRetry_DisconnectedFailsFast:无连接(Reconnect=false 或
+// 重连失败)时必须立即按丢弃处理(B2)——此前剩余重试与 RetryDelay
+// 逐条空转,断连时每条记录阻塞约 maxRetries × RetryDelay。
+func TestWriteWithRetry_DisconnectedFailsFast(t *testing.T) {
+	listener, err := listenTCP()
+	require.NoError(t, err)
+	defer func() { _ = listener.Close() }()
+
+	h, err := NewHandler(Config{
+		Network:   "tcp",
+		Address:   listener.Addr().String(),
+		Tag:       "test",
+		Reconnect: boolPtr(false),
+	})
+	require.NoError(t, err)
+	defer func() { _ = h.Close() }()
+
+	h.disconnect() // 制造无连接(同包)
+	start := time.Now()
+	h.writeWithRetry([]byte("x"))
+	require.Less(t, time.Since(start), 500*time.Millisecond,
+		"no connection must fail fast, not spin retries")
+	require.Equal(t, int64(1), h.Dropped(), "drop counted once")
 }

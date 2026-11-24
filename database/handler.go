@@ -377,8 +377,12 @@ func (h *Handler) flush(batch []dbLogEntry, retryDelay time.Duration) error {
 			}
 		}
 	}
+	// 重试耗尽：整批不可挽回地丢失——计入 dropped 并在 HandlerError
+	// 上携带幅值（与上方被取消路径的记账对齐），丢弃指标才能呈现
+	// 这条最大的丢失路径。
+	h.dropped.Add(int64(len(batch)))
 	err := fmt.Errorf("database: batch of %d records lost after %d failed attempts", len(batch), finalFlushRetries)
-	h.errorHandler.Report(&mebsuta.HandlerError{Component: "database", Operation: "batch", Err: err})
+	h.errorHandler.Report(&mebsuta.HandlerError{Component: "database", Operation: "batch", Err: err, Dropped: h.dropped.Load(), Records: len(batch)})
 	return err
 }
 

@@ -142,19 +142,17 @@ func buildChain(o *handlerOptions) (slog.Handler, error) {
 		o.handlers = append(o.handlers, h)
 	}
 
-	// 构建末端：单个 handler 或 fanout
-	var handler slog.Handler
-	if len(o.handlers) == 1 {
-		handler = o.handlers[0]
-	} else {
-		// 未设置自定义错误处理器时使用默认值（os.Stderr），
-		// 避免 safeMulti 中 panic 恢复产生的错误被静默丢弃。
-		eh := o.errorHandler
-		if eh == nil {
-			eh = DefaultErrorHandler
-		}
-		handler = safeMultiHandler(o.handlers, eh)
+	// 构建末端：全部经 safeMulti——单 handler 也不例外。safeMulti
+	// 的逐 handler panic 恢复让"默认配置的单 handler 链"同样获得
+	// panic 遏制（此前只有多输出链有：会 panic 的第三方 handler 与
+	// 会 panic 的 error 值可直达调用方）。单 handler 走 safeMulti 的
+	// 免克隆快路径，开销为一次包装调用。未设置自定义错误处理器时
+	// 使用默认值（os.Stderr），避免 panic 恢复产生的错误被静默丢弃。
+	eh := o.errorHandler
+	if eh == nil {
+		eh = DefaultErrorHandler
 	}
+	handler := safeMultiHandler(o.handlers, eh)
 
 	// 应用中间件：后声明的包裹在最外层
 	for _, mw := range o.middlewares {

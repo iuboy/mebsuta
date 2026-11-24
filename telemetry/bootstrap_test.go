@@ -2,6 +2,8 @@ package telemetry
 
 import (
 	"context"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 	"sync"
 	"testing"
 	"time"
@@ -315,4 +317,53 @@ func TestSampler_RespectsParent(t *testing.T) {
 	// never 档:绝对不采样。
 	require.Equal(t, sdktrace.Drop, sampler(-1).ShouldSample(params(sampledParent)).Decision,
 		"never arm must stay absolute regardless of parent")
+}
+
+// TestShutdownStarted_ClosesSQLDB:Start 失败路径的回滚必须关闭数据库
+// 池(B12)——此前只关 provider,失败启动泄漏连接池(与 EnsureTables
+// 失败叠加时每次失败都漏一个)。
+func TestShutdownStarted_ClosesSQLDB(t *testing.T) {
+	gdb, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := gdb.DB()
+	require.NoError(t, err)
+
+	tel := &Telemetry{sqlDB: sqlDB}
+	tel.shutdownStarted(context.Background())
+	require.EqualError(t, sqlDB.Ping(), "sql: database is closed", "pool closed by failed-start rollback")
+}
+
+// TestStartAfterShutdown_NoOverwriteWarning:Shutdown 旧引导后 Start 新
+// 引导是正常的代次轮换,不得误报 global-overwrite(B13)——此前
+// lastInstalledTP 不随 Shutdown 清除,轮换必告警。
+func TestStartAfterShutdown_NoOverwriteWarning(t *testing.T) {
+	var mu sync.Mutex
+	var overwrite int
+	eh := func(he *mebsuta.HandlerError) {
+		if he.Operation == "global-overwrite" {
+			mu.Lock()
+			overwrite++
+			mu.Unlock()
+		}
+	}
+
+	r1 := mebsutatest.NewOTLPReceiver()
+	tel1, err := Start(context.Background(), Config{
+		ServiceName: "gen1", Endpoint: r1.URL(), Signals: Metrics,
+		OTelErrorHandler: eh,
+	})
+	require.NoError(t, err)
+	require.NoError(t, tel1.Shutdown(context.Background()))
+
+	r2 := mebsutatest.NewOTLPReceiver()
+	tel2, err := Start(context.Background(), Config{
+		ServiceName: "gen2", Endpoint: r2.URL(), Signals: Metrics,
+		OTelErrorHandler: eh,
+	})
+	require.NoError(t, err)
+	require.NoError(t, tel2.Shutdown(context.Background()))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Zero(t, overwrite, "generation rotation must not warn global-overwrite")
 }

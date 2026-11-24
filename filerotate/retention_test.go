@@ -18,7 +18,11 @@ func TestSetMaxAgeDays(t *testing.T) {
 	got := w.cfg.MaxAgeDays
 	w.mu.Unlock()
 	require.Equal(t, 30, got)
-	require.Error(t, w.SetMaxAgeDays(-1), "负值应拒绝")
+	// UnlimitedAge(-1) 合法 = 不按时间删除;0 与其他负值拒绝(0.1.0-24 收紧)。
+	require.NoError(t, w.SetMaxAgeDays(UnlimitedAge))
+	require.Equal(t, UnlimitedAge, w.MaxAgeDays())
+	require.Error(t, w.SetMaxAgeDays(0), "0 应拒绝(构造期 0 是默认 30 天)")
+	require.Error(t, w.SetMaxAgeDays(-2), "其他负值应拒绝")
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)

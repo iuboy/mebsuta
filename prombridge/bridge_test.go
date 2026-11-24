@@ -74,3 +74,51 @@ func TestBridge_CountersAndGauges(t *testing.T) {
 	require.Equal(t, 9.0, gaugeDP, "gauge must be last-write-wins")
 	require.Equal(t, map[string]int{"svc_latency": 2}, b.Skipped(), "skipped-health must count histogram observations")
 }
+
+// TestBridge_UntypedAndCounterReset:UNTYPED 指标必须经 GetUntyped 读取
+// (GetGauge 对 untyped 恒读 0,B16);counter 重置(值变小)必须从头累计
+// 而非导出负增量。
+func TestBridge_UntypedAndCounterReset(t *testing.T) {
+	r := mebsutatest.NewOTLPReceiver()
+	defer r.Close()
+	no := false
+	tel, err := telemetry.Start(context.Background(), telemetry.Config{
+		ServiceName: "prombridge-untyped", Endpoint: r.URL(),
+		Signals: telemetry.Metrics, SetGlobal: &no,
+	})
+	require.NoError(t, err)
+	defer tel.Shutdown(context.Background())
+
+	reg := prometheus.NewRegistry()
+	unt := prometheus.NewUntypedFunc(prometheus.UntypedOpts{Name: "svc_untyped"}, func() float64 { return 42 })
+	reqs := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "svc_reset_total"}, nil)
+	reg.MustRegister(unt, reqs)
+
+	b, err := Start(context.Background(), tel.MeterProvider(), reg, WithInterval(time.Hour))
+	require.NoError(t, err)
+	defer b.Close()
+
+	reqs.WithLabelValues().Add(5)
+	b.pollOnce(context.Background())
+
+	// counter 重置(CounterVec.Reset 模拟进程重启):从 1 重新累计。
+	reqs.Reset()
+	reqs.WithLabelValues().Add(1)
+	b.pollOnce(context.Background())
+	require.NoError(t, tel.Shutdown(context.Background()))
+
+	var untypedVal, counterVal float64
+	for _, m := range r.MetricFamilies() {
+		switch m.Name {
+		case "svc_untyped":
+			require.NotNil(t, m.GetGauge(), "untyped must bridge as gauge (last-write)")
+			untypedVal = m.GetGauge().GetDataPoints()[0].GetAsDouble()
+		case "svc_reset_total":
+			counterVal = m.GetSum().GetDataPoints()[0].GetAsDouble()
+		}
+	}
+	require.Equal(t, 42.0, untypedVal, "untyped value read via GetUntyped, not 0")
+	// OTel counter 累计两轮增量(5 + 1);若重置误算为负增量,
+	// 第二轮会报 -4,总和为 1——6 证明重置后从头累计。
+	require.Equal(t, 6.0, counterVal, "counter reset restarts from the new value, not negative delta")
+}

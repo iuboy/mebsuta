@@ -75,11 +75,14 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	now := time.Now().UnixNano()
 	windowEnd := h.state.windowEnd.Load()
 	if now >= windowEnd {
-		// CAS 保证只有一个 goroutine 推进窗口并重置计数器。
+		// 先清零计数再推进窗口（B23）：顺序反了时，CAS 落败者会在
+		// 胜者 Store(0) 之前 Add(1)，读到旧窗口的计数而被采样掉
+		// ——先清零把误差方向反转为"过渡期多放行"，比静默丢弃
+		// 安全。清零对旧窗口是无害的：它已经过期。
+		h.state.count.Store(0)
+		// CAS 保证只有一个 goroutine 推进窗口终点。
 		newEnd := now + h.state.windowNanos
-		if h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
-			h.state.count.Store(0)
-		} else {
+		if !h.state.windowEnd.CompareAndSwap(windowEnd, newEnd) {
 			// CAS 落败：另一 goroutine 已推进窗口。若极端时钟偏移导致
 			// 新窗口终点也已成为过去，再试一次。这是尽力而为——时钟
 			// 异常期间放行全部记录比静默丢弃更安全。
@@ -89,9 +92,8 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 				h.state.windowEnd.CompareAndSwap(advanced, retryEnd)
 			}
 		}
-		// 在可能的重置后重新读计数：若 CAS 竞争落败，胜者已重置计数器。
-		// 我们的 Add(1) 返回自增后的值，会 ≤ 错过 CAS 的并发 goroutine
-		// 数，远在 Initial 预算之内。
+		// 计数刚被本 goroutine 清零，Add(1) 返回 ≤ 并发 goroutine 数的
+		// 值，远在 Initial 预算之内。
 		count := h.state.count.Add(1)
 		if count <= int64(h.cfg.Initial) {
 			return h.inner.Handle(ctx, r)

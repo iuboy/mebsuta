@@ -12,6 +12,46 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-24] - 2026-11-24
+
+### Fixed — 全面审查第二批:错误与丢失可见性 + 生命周期(审查报告 B1-B5/B11-B14/B16/B21/B23)
+
+- **filerotate**(B1):写失败计入 `FailedWrites` 并经错误链上报(收集
+  限频每秒一条)——同步链路上 slog 丢弃返回错误,磁盘满/IO 错误此前
+  完全不可见;`FileHandler.Dropped` 实现丢弃观测接口。
+- **syslog**(B2):`writeWithRetry` 无连接立即按丢弃处理(断连时每条
+  记录此前空转约 5 × RetryDelay);最终失败携带底层原因并计入
+  `Dropped`;最后一次尝试后不再休眠。worker 路径的上报改异步投递——
+  用户 ErrorHandler 重入 Close 时同步调用会以 `wg.Wait` 等待 worker
+  退出而自死锁;`Close` 超时分支的排空等待补宽限上界。
+- **database**(B3):重试耗尽的整批丢失计入 `Dropped` 并携带幅值。
+  (B14):relay 标记与周期扫描的 DB 操作加 10s 上界——锁等待不得把
+  Close 拖到 `wg.Wait` 之外。
+- **mbta**(B4):服务端 RESULT 只有终态才消费批次大小——ACK_MODE_DURABLE
+  下 ACCEPTED 先到、RELEASED 后到,此前中间态把大小取走,释放的批次
+  从不计数。(B11):丢弃上报移出 `sendMu` 读锁——回调重入 Close 曾
+  死锁在写锁上。
+- **telemetry**(B12):Start 失败回滚关闭数据库池(此前泄漏连接池)。
+  (B13):Shutdown 清除覆盖告警跟踪基准——"Shutdown 旧引导 → Start
+  新引导"的正常代次轮换此前被误报为 global-overwrite。
+- **根包**(B5):单 handler 链也经 safeMulti——panic 遏制对默认形态
+  生效,会 panic 的第三方 handler 与会 panic 的 error 值不再直达
+  调用方。(B23):采样窗口重置先清零计数再推进窗口,过渡期误差方向
+  反转为多放行而非误丢。
+- **prombridge**(B16):UNTYPED 指标经 `GetUntyped` 读取(此前走
+  `GetGauge` 恒读 0);counter 重置从头累计而非导出负增量。
+- **filerotate**(B21):`SetMaxAgeDays` 语义与构造期对齐——0 与其他
+  负值拒绝,`UnlimitedAge(-1)` 表示不按时间删除;`SetFileMaxAge` 同步。
+
+### 破坏性变更
+
+- `filerotate.Writer.SetMaxAgeDays` / `mebsuta.SetFileMaxAge`:0 与
+  其他负值(除 `UnlimitedAge`)改为拒绝——此前 0 表示"关闭按龄清理"。
+  需要关闭时传 `filerotate.UnlimitedAge(-1)`。
+- syslog 写失败丢弃现在计入 `Dropped` 并携带原因上报(限频每秒一次);
+  错误文本变化(内部呈现,非契约)。
+- mbta 丢弃上报的错误文本合并(此前上报文本与返回错误不同)。
+
 ## [0.1.0-23] - 2026-11-24
 
 ### Fixed — CI 护栏:staticcheck 清零 + dev 分支补齐检查 + jsonb 原生类型

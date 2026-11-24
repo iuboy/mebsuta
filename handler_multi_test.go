@@ -523,3 +523,49 @@ func TestHandlerIdentity_NoFallbackForThirdParty(t *testing.T) {
 	_, ok := handlerIdentity(h)
 	require.False(t, ok, "third-party handler without handlerIdentifier must not get an identity")
 }
+
+// panickingSink 是 Handle 必 panic 的第三方 handler(B5)。
+type panickingSink struct{}
+
+func (panickingSink) Enabled(context.Context, slog.Level) bool  { return true }
+func (panickingSink) Handle(context.Context, slog.Record) error { panic("sink boom") }
+func (h panickingSink) WithAttrs([]slog.Attr) slog.Handler      { return h }
+func (h panickingSink) WithGroup(string) slog.Handler           { return h }
+
+type panickingError struct{}
+
+func (panickingError) Error() string { panic("error boom") }
+
+// TestNew_SingleHandlerPanicContained:默认形态的单 handler 链同样
+// 获得 panic 遏制(B5)——此前 safeMulti 只在多输出链启用,会 panic 的
+// 第三方 handler 直达调用方。
+func TestNew_SingleHandlerPanicContained(t *testing.T) {
+	var mu sync.Mutex
+	var reported []string
+	logger, err := New(WithHandler(panickingSink{}),
+		WithErrorHandler(func(he *HandlerError) {
+			mu.Lock()
+			reported = append(reported, he.Err.Error())
+			mu.Unlock()
+		}))
+	require.NoError(t, err)
+
+	require.NotPanics(t, func() { logger.Info("x") }, "panic must be contained")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, reported, 1, "panic reported via ErrorHandler")
+	require.Contains(t, reported[0], "sink boom")
+}
+
+// TestNew_SingleChainPanickingErrorValueContained:Error() 会 panic 的
+// 属性值在单链(默认形态)下同样不得打穿调用方(B5)。
+func TestNew_SingleChainPanickingErrorValueContained(t *testing.T) {
+	var buf bytes.Buffer
+	quiet, err := newStdoutHandlerWithWriter(&buf, StdoutConfig{})
+	require.NoError(t, err)
+	logger, err := New(WithHandler(quiet))
+	require.NoError(t, err)
+
+	require.NotPanics(t, func() { logger.Info("x", "err", panickingError{}) },
+		"panicking error value must be contained")
+}

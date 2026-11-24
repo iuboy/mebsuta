@@ -368,9 +368,23 @@ func (h *Handler) shouldReportDrop() bool {
 
 func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) error {
 	// sendMu 让 Close 的 close(buffer) 与在途发送无竞争。
+	// 上报纪律（与 syslog/filerotate 一致）：持锁期间只构造待上报
+	// 的错误文本，RUnlock 之后再投递——重入 Close 的用户
+	// ErrorHandler 会取 sendMu 写锁，与仍持有的读锁死锁
+	//（0.1.0-24 修复：此前 reportErr 在读锁内直接调用）。
 	h.sendMu.RLock()
-	defer h.sendMu.RUnlock()
+	sendErr := h.sendLocked(record, level)
+	h.sendMu.RUnlock()
 
+	if sendErr != nil && h.shouldReportDrop() {
+		h.reportErr("send", sendErr)
+	}
+	return sendErr
+}
+
+// sendLocked 将一条记录入队到缓冲 channel。调用方必须持有
+// sendMu.RLock。返回值是需要上报的错误（关门控在 safeSend 锁外做）。
+func (h *Handler) sendLocked(record *core.SignalRecord, level slog.Level) error {
 	if h.closing.Load() {
 		// 在此计数（而非只在 Handle 的提前返回里），因为 closing 可能在
 		// Handle 检查与本次检查之间翻转；两条路径互斥，
@@ -389,10 +403,7 @@ func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) error {
 			return nil
 		case <-h.ctx.Done():
 			h.dropped.Add(1)
-			if h.shouldReportDrop() {
-				h.reportErr("send", fmt.Errorf("handler stopped, %v record dropped (total dropped: %d)", level, h.dropped.Load()))
-			}
-			return fmt.Errorf("mebsuta/mbta: handler stopped, %v record dropped", level)
+			return fmt.Errorf("mebsuta/mbta: handler stopped, %v record dropped (total dropped: %d)", level, h.dropped.Load())
 		default:
 		}
 
@@ -403,16 +414,10 @@ func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) error {
 			return nil
 		case <-h.ctx.Done():
 			h.dropped.Add(1)
-			if h.shouldReportDrop() {
-				h.reportErr("send", fmt.Errorf("handler stopped, %v record dropped (total dropped: %d)", level, h.dropped.Load()))
-			}
-			return fmt.Errorf("mebsuta/mbta: handler stopped, %v record dropped", level)
+			return fmt.Errorf("mebsuta/mbta: handler stopped, %v record dropped (total dropped: %d)", level, h.dropped.Load())
 		case <-timer.C:
 			h.dropped.Add(1)
-			if h.shouldReportDrop() {
-				h.reportErr("send", fmt.Errorf("buffer full timeout for %v record, dropped (total dropped: %d)", level, h.dropped.Load()))
-			}
-			return fmt.Errorf("mebsuta/mbta: buffer full timeout for %v record", level)
+			return fmt.Errorf("mebsuta/mbta: buffer full timeout for %v record, dropped (total dropped: %d)", level, h.dropped.Load())
 		}
 	}
 
@@ -421,10 +426,7 @@ func (h *Handler) safeSend(record *core.SignalRecord, level slog.Level) error {
 		return nil
 	default:
 		h.dropped.Add(1)
-		if h.shouldReportDrop() {
-			h.reportErr("send", fmt.Errorf("buffer full, log dropped (total dropped: %d)", h.dropped.Load()))
-		}
-		return fmt.Errorf("mebsuta/mbta: buffer full")
+		return fmt.Errorf("mebsuta/mbta: buffer full, log dropped (total dropped: %d)", h.dropped.Load())
 	}
 }
 
@@ -638,22 +640,23 @@ func (h *Handler) takeBatchSize(seq uint64) int {
 // 绝不在日志热路径上。
 func (h *Handler) handleResult(seq uint64, level string, code uint32, correlation string) {
 	// 任何 RESULT（终态或中间态）都证明服务端看到了该批次：
-	// 先从 Close 的等待集合中释放 seq，再计数丢弃。
+	// 先从 Close 的等待集合中释放 seq。
 	h.pendingResults.Delete(seq)
-	n := h.takeBatchSize(seq)
+	// 只有终态才消费批次大小：ACK_MODE_DURABLE 下 ACCEPTED 先到、
+	// RELEASED 等终态后到——此前对每个 RESULT 都 LoadAndDelete，
+	// 中间态把大小取走，终态看到 0，释放的批次从不被计数
+	//（0.1.0-24 修复）。
 	switch level {
 	case resultLevelRejected, resultLevelReleased, resultLevelTimeout:
 		// 重试循环看不到的终态损失（SendBatch 已
 		// 返回 nil）。"timeout" 是 mbta-go 合成的 released：
 		// 在途槽位到期且无终态，而我们在 result
 		// 层从不重发，两种情况下批次都不可挽回。
-	default:
-		n = 0 // accepted / durable / 未知级别：不是丢弃
-	}
-	if n > 0 {
-		h.dropped.Add(int64(n))
-		if h.shouldReportDrop() {
-			h.reportErr("result", fmt.Errorf("server terminal result %s (code %d) for seq %d: %d records dropped (total dropped: %d)", level, code, seq, n, h.dropped.Load()))
+		if n := h.takeBatchSize(seq); n > 0 {
+			h.dropped.Add(int64(n))
+			if h.shouldReportDrop() {
+				h.reportErr("result", fmt.Errorf("server terminal result %s (code %d) for seq %d: %d records dropped (total dropped: %d)", level, code, seq, n, h.dropped.Load()))
+			}
 		}
 	}
 	if h.cfg.OnResult != nil {

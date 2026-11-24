@@ -36,6 +36,7 @@ func TestSetFileMaxAgeStdoutOnlyAndNegative(t *testing.T) {
 	l, err := New(UseStdout(StdoutConfig{}))
 	require.NoError(t, err)
 	require.NoError(t, SetFileMaxAge(l, 3), "stdout-only 应无害")
-	require.Error(t, SetFileMaxAge(l, -1), "负值应拒绝")
+	require.Error(t, SetFileMaxAge(l, 0), "0 应拒绝(构造期 0 是默认 30 天;关闭用 UnlimitedAge)")
+	require.Error(t, SetFileMaxAge(l, -2), "其他负值应拒绝")
 	require.NoError(t, SetFileMaxAge(nil, 3), "nil logger 应无害")
 }
