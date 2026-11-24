@@ -46,7 +46,7 @@ func TestNewHandler_EmptyDSN(t *testing.T) {
 func TestHandler_Enabled(t *testing.T) {
 	h := &Handler{
 		level:        handlerkit.NewLevelGate(slog.LevelError),
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
 	require.False(t, h.Enabled(context.Background(), slog.LevelInfo), "Info should not be enabled at Error level")
 	require.True(t, h.Enabled(context.Background(), slog.LevelError), "Error should be enabled at Error level")
@@ -66,8 +66,8 @@ func TestHandler_HasSetErrorHandler(t *testing.T) {
 	// 验证 setErrorHandler 存在且可以调用（编译期检查）。
 	// errorHandler 是 *handlerkit.ErrorSlot（构造期由 NewHandler 填充），
 	// 手工构造的 Handler 需先装上槽位。
-	h := &Handler{errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
-	h.SetErrorHandler(mebsuta.DefaultErrorHandler)
+	h := &Handler{errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
+	h.SetErrorHandler(mebsuta.DefaultErrorHandler())
 }
 
 // newFailingDBHandler 创建数据库所有写入都会失败的 Handler。
@@ -94,9 +94,9 @@ func newFailingDBHandler(t *testing.T) (*Handler, func()) {
 		entries:      make(chan dbLogEntry, 100),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	h.wg.Add(1)
 	go h.run(5, 50*time.Millisecond, 1*time.Millisecond)
 
@@ -295,9 +295,9 @@ func TestHandler_AuditLevelPersisted(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1000),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	h.wg.Add(1)
 	go h.run(5, 50*time.Millisecond, 5*time.Millisecond)
 
@@ -344,9 +344,9 @@ func TestHandler_LevelFiltering(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1000),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	h.wg.Add(1)
 	go h.run(5, 50*time.Millisecond, 5*time.Millisecond)
 
@@ -390,7 +390,7 @@ func TestHandler_BufferFullDropsInfoRecord(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1), // tiny buffer
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
 	// 不要启动 run goroutine——channel 会填满。
 
@@ -478,9 +478,9 @@ func TestHandler_ErrorRecordRetryPath(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1), // tiny buffer
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 
 	// 不启动 run goroutine，让 channel 保持满。
 
@@ -556,7 +556,7 @@ func TestHandler_FlushRetries(t *testing.T) {
 		entries:      make(chan dbLogEntry, 100),
 		ctx:          context.Background(),
 		cancel:       func() {},
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
 	h.SetErrorHandler(func(he *mebsuta.HandlerError) {
 		if strings.Contains(he.Err.Error(), "batch insert failed") {
@@ -590,9 +590,9 @@ func TestHandler_ErrCountTracksDrops(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	// 无 run goroutine——channel 立即填满。
 
 	// 填满缓冲。
@@ -652,7 +652,7 @@ func TestHandler_BatchInsertError(t *testing.T) {
 		entries:      make(chan dbLogEntry, 100),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
 	h.errorHandler = handlerkit.NewErrorSlot(eh)
 
@@ -761,7 +761,7 @@ func TestHandler_FlushRetryCancelledCountsDrop(t *testing.T) {
 		entries:      make(chan dbLogEntry, 10),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
 	h.SetErrorHandler(func(*mebsuta.HandlerError) {}) // 保持测试输出干净
 
@@ -910,9 +910,9 @@ func newSQLiteHandler(t *testing.T) (*Handler, *gorm.DB) {
 		entries:      make(chan dbLogEntry, 1000),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	h.wg.Add(1)
 	go h.run(5, 50*time.Millisecond, 5*time.Millisecond)
 	return h, gdb
@@ -1007,9 +1007,9 @@ func TestHandler_ConcurrentCloseWaitsForDrain(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1000),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	// 批大小与间隔都超出写入量，因此记录只会在
 	// Close 的排空期间到达数据库。
 	h.wg.Add(1)
@@ -1056,9 +1056,9 @@ func TestHandler_RecordsDeliveredBeforeClose(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1000),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	h.wg.Add(1)
 	go h.run(5, 50*time.Millisecond, 5*time.Millisecond)
 
@@ -1095,9 +1095,9 @@ func TestHandler_BatchWrite(t *testing.T) {
 		entries:      make(chan dbLogEntry, 1000),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	batchSize := 5
 	h.wg.Add(1)
 	go h.run(batchSize, 10*time.Second, 5*time.Millisecond) // 长间隔，依赖批大小

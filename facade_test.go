@@ -139,7 +139,7 @@ func TestSetLevel_WalkAppliesAndSkips(t *testing.T) {
 	ctx := context.Background()
 	require.False(t, logger.Enabled(ctx, slog.LevelDebug), "Warn 起步：Debug 不启用")
 
-	applied, skipped, err := mebsuta.SetLevel(logger, slog.LevelDebug)
+	applied, skipped, err := mebsuta.SetLevel(logger.Handler(), slog.LevelDebug)
 	require.NoError(t, err)
 	require.Equal(t, 1, applied, "仅 LevelVar 构造的 stdout 生效")
 	require.Len(t, skipped, 1)
@@ -163,7 +163,7 @@ func TestSetLevel_DecoratorsTraverse(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	applied, skipped, err := mebsuta.SetLevel(logger, slog.LevelInfo)
+	applied, skipped, err := mebsuta.SetLevel(logger.Handler(), slog.LevelInfo)
 	require.NoError(t, err)
 	require.Equal(t, 1, applied)
 	require.Empty(t, skipped)

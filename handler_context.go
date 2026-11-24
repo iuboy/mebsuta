@@ -31,20 +31,33 @@ type contextExtractorHandler struct {
 // nil 提取器是 no-op：原样返回 inner 而非换成丢弃 handler——因为一个
 // nil 回调就静默丢弃整条输出链（包括审计记录）远比跳过注入糟糕。
 // 若 inner 为 nil，返回 no-op 丢弃 handler。
-func WithContextExtractor(inner slog.Handler, extract ContextExtractor) slog.Handler {
-	if inner == nil {
-		// 返回安全的丢弃 handler 而非 nil，防止调用方对结果调用
-		// Handler 方法时 panic。
-		return discardHandler{}
-	}
-	if extract == nil {
-		return inner
+// NewContextExtractorHandler 包裹 inner，把从 context 提取的属性注入
+// 每条日志记录。inner 或 extract 为 nil 时以 *ConfigError 拒绝——
+// 一个 nil 回调就静默丢弃整条输出链（含审计记录）远比显式报错糟糕。
+func NewContextExtractorHandler(inner slog.Handler, extract ContextExtractor) (slog.Handler, error) {
+	if inner == nil || extract == nil {
+		return nil, &ConfigError{Field: "UseContextExtractor", Msg: "inner handler and extractor cannot be nil"}
 	}
 	return &contextExtractorHandler{
-		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler()),
 		inner:        inner,
 		extract:      extract,
+	}, nil
+}
+
+// WithContextExtractor 是 NewContextExtractorHandler 的兼容薄包装
+// （0.1.0-26 起）：inner 为 nil 时返回丢弃 handler、extract 为 nil 时
+// 原样返回 inner，并经默认错误链上报。新代码用 New*。
+func WithContextExtractor(inner slog.Handler, extract ContextExtractor) slog.Handler {
+	h, err := NewContextExtractorHandler(inner, extract)
+	if err != nil {
+		handlerkit.ReportError(DefaultErrorHandler(), &HandlerError{Component: "context", Operation: "init", Err: err})
+		if inner == nil {
+			return discardHandler{}
+		}
+		return inner
 	}
+	return h
 }
 
 func (h *contextExtractorHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -102,7 +115,7 @@ func (h *contextExtractorHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
-func (h *contextExtractorHandler) setErrorHandler(fn ErrorHandler) {
+func (h *contextExtractorHandler) SetErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(fn)
 	// propagateErrorHandler 也会经 unwrapHandler 递归触达 inner。
 }

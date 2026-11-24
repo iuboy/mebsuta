@@ -99,18 +99,30 @@ type MetricsHandler struct {
 	errorHandler *handlerkit.ErrorSlot // 克隆间共享
 }
 
-// WithMetrics 把 inner 包进 MetricsHandler，为具名 handler 观测延迟与错误。
-func WithMetrics(inner slog.Handler, m HandlerMetrics, handlerName string) slog.Handler {
+// NewMetricsHandler 把 inner 包进 MetricsHandler，为具名 handler
+// 观测延迟与错误。inner 或 m 为 nil 时以 *ConfigError 拒绝。
+func NewMetricsHandler(inner slog.Handler, m HandlerMetrics, handlerName string) (slog.Handler, error) {
 	if inner == nil || m == nil {
-		return inner
+		return nil, &ConfigError{Field: "UseMetrics", Msg: "inner handler and metrics cannot be nil"}
 	}
 	return &MetricsHandler{
 		inner:        inner,
 		metrics:      m,
 		handlerName:  handlerName,
 		drops:        &dropTracker{},
-		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler()),
+	}, nil
+}
+
+// WithMetrics 是 NewMetricsHandler 的兼容薄包装（0.1.0-26 起）：
+// 参数缺失时经默认错误链上报并原样返回 inner。新代码用 New*。
+func WithMetrics(inner slog.Handler, m HandlerMetrics, handlerName string) slog.Handler {
+	h, err := NewMetricsHandler(inner, m, handlerName)
+	if err != nil {
+		handlerkit.ReportError(DefaultErrorHandler(), &HandlerError{Component: "metrics", Operation: "init", Err: err})
+		return inner
 	}
+	return h
 }
 
 // Enabled 实现 slog.Handler。
@@ -188,7 +200,7 @@ func (h *MetricsHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
-func (h *MetricsHandler) setErrorHandler(fn ErrorHandler) {
+func (h *MetricsHandler) SetErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(fn)
 	// propagateErrorHandler 也会经 unwrapHandler 递归触达 inner。
 }

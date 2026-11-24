@@ -137,7 +137,7 @@ func TestSafeMulti_ErrorHandlerAtomic(t *testing.T) {
 
 	var mu sync.Mutex
 	reports := 0
-	h.setErrorHandler(func(*HandlerError) {
+	h.SetErrorHandler(func(*HandlerError) {
 		mu.Lock()
 		reports++
 		mu.Unlock()
@@ -165,7 +165,7 @@ func TestSafeMulti_ErrorHandlerAtomic(t *testing.T) {
 			defer settersWG.Done()
 			fn := func(*HandlerError) {}
 			for range 200 {
-				h.setErrorHandler(fn)
+				h.SetErrorHandler(fn)
 			}
 		}()
 	}
@@ -173,14 +173,14 @@ func TestSafeMulti_ErrorHandlerAtomic(t *testing.T) {
 	go func() {
 		defer settersWG.Done()
 		clone := h.WithAttrs([]slog.Attr{slog.String("k", "v")}).(*safeMulti)
-		clone.setErrorHandler(func(*HandlerError) {})
+		clone.SetErrorHandler(func(*HandlerError) {})
 	}()
 
 	settersWG.Wait()
 	// With the swap storm settled, reinstall the counting callback: every
 	// subsequent Handle panic must reach it (shared-slot visibility is
 	// preserved by the atomic pointer).
-	h.setErrorHandler(func(*HandlerError) {
+	h.SetErrorHandler(func(*HandlerError) {
 		mu.Lock()
 		reports++
 		mu.Unlock()

@@ -10,14 +10,10 @@ import (
 	"log/slog"
 )
 
-// levelSetter 是支持运行时级别热调的 handler 的内部接口。
-type levelSetter interface {
-	SetLevel(level slog.Level) bool
-}
-
-// LevelVarSetter 是 levelSetter 的导出形式，供子包 handler（stdout、
-// file、syslog、database、mbta）实现——与 ErrorHandlerSetter 同款跨包
-// 模式：它们无法实现含未导出方法的接口。
+// LevelVarSetter 是运行时级别热调的统一接口(0.1.0-26 起取消并行的
+// 未导出接口 levelSetter——两套方法集完全相同,多一套只会各自漂移)。
+// 根包与子包 handler(stdout、file、syslog、database、mbta)一律实现
+// 本导出接口。
 type LevelVarSetter interface {
 	SetLevel(level slog.Level) bool
 }
@@ -34,17 +30,17 @@ func NewLevelVar(level slog.Level) *slog.LevelVar {
 // SetLevel 遍历 logger 的 handler 图热调级别，返回（生效数， 未生效的
 // handler 类型清单， 错误）。仅构造期传入 *slog.LevelVar 的 handler 生效；
 // 固定级别 handler 进入 skipped（类型名形式）——运维面诚实可见，避免
-// "调了级别却没变"的静默失败。nil logger 无害。
-func SetLevel(l *slog.Logger, level slog.Level) (int, []string, error) {
-	if l == nil {
+// "调了级别却没变"的静默失败。nil handler 无害。
+func SetLevel(h slog.Handler, level slog.Level) (int, []string, error) {
+	if h == nil {
 		return 0, nil, nil
 	}
 	var (
 		applied int
 		skipped []string
 	)
-	err := walkHandlers(l.Handler(), func(h slog.Handler) error {
-		if ls, ok := h.(levelSetter); ok {
+	err := walkHandlers(h, func(h slog.Handler) error {
+		if ls, ok := h.(LevelVarSetter); ok {
 			if ls.SetLevel(level) {
 				applied++
 			} else {

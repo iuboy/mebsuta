@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"sync/atomic"
+	"time"
 
 	"github.com/iuboy/mebsuta/internal/handlerkit"
 )
@@ -117,22 +118,17 @@ func (h *safeMulti) WithGroup(name string) slog.Handler {
 		errorHandler: h.errorHandler,
 	}
 }
-func (h *safeMulti) setErrorHandler(fn ErrorHandler) {
+func (h *safeMulti) SetErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(fn)
 	for _, hh := range h.handlers {
 		propagateErrorHandler(hh, fn, 0)
 	}
 }
 
-// errorHandlerSetter 是支持自定义错误处理的 handler 的内部接口。
-type errorHandlerSetter interface {
-	setErrorHandler(fn ErrorHandler)
-}
-
-// ErrorHandlerSetter 是 errorHandlerSetter 的导出形式，供其他包的
-// handler（database、syslog、mbta）实现——它们无法实现含未导出方法的
-// 接口。该接口出现之前，WithErrorHandler 静默地永远到不了那些子包
-// handler。
+// ErrorHandlerSetter 是错误处理热换的统一接口(0.1.0-26 起取消并行的
+// 未导出接口 errorHandlerSetter——两套方法集完全相同)。根包与子包
+// handler 一律实现本导出接口;该接口出现之前,WithErrorHandler 静默地
+// 永远到不了子包 handler。
 type ErrorHandlerSetter interface {
 	SetErrorHandler(fn ErrorHandler)
 }
@@ -143,14 +139,11 @@ type ErrorHandlerSetter interface {
 func propagateErrorHandler(h slog.Handler, fn ErrorHandler, depth int) {
 	// 跳过 nil：不要覆盖构造时设置的 handler 默认值。
 	// buildHandler 不带 WithErrorHandler 调用时 fn 为 nil，每个已用
-	// DefaultErrorHandler 初始化的 handler 应保留原值。
+	// DefaultErrorHandler() 初始化的 handler 应保留原值。
 	if fn == nil || h == nil || depth > maxUnwrapDepth {
 		return
 	}
-	switch s := h.(type) {
-	case errorHandlerSetter:
-		s.setErrorHandler(fn)
-	case ErrorHandlerSetter:
+	if s, ok := h.(ErrorHandlerSetter); ok {
 		s.SetErrorHandler(fn)
 	}
 	if inner, ok := unwrapOf(h); ok {
@@ -299,3 +292,42 @@ var (
 	_ slog.Handler = (*safeMulti)(nil)
 	_ io.Closer    = (*safeMulti)(nil)
 )
+
+// Dropped 对 handler 图内全部 DroppedCounter 的丢弃计数求和(统一运维
+// 入口，0.1.0-26 起)：AsyncHandler、database/syslog/mbta/file 各自的
+// 丢失都在这一处可见，取代按类型的 AsyncDropped 探针。
+func Dropped(h slog.Handler) int64 {
+	if h == nil {
+		return 0
+	}
+	var total int64
+	_ = walkHandlers(h, func(x slog.Handler) error {
+		if d, ok := x.(DroppedCounter); ok {
+			total += d.Dropped()
+		}
+		return nil
+	})
+	return total
+}
+
+// Flush 对 handler 图内全部支持刷写的 handler(syslog、mbta)执行
+// Flush 并聚合错误(统一运维入口，0.1.0-26 起)。无可刷写 handler 时
+// 返回 nil(stdout/file 形态等)。超时传给每个 Flush；0 由各 handler
+// 取自己的默认。
+func Flush(h slog.Handler, timeout time.Duration) error {
+	if h == nil {
+		return nil
+	}
+	var errs []error
+	_ = walkHandlers(h, func(x slog.Handler) error {
+		if f, ok := x.(interface {
+			Flush(timeout time.Duration) error
+		}); ok {
+			if err := f.Flush(timeout); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return nil
+	})
+	return errors.Join(errs...)
+}

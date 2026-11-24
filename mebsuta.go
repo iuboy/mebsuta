@@ -15,7 +15,6 @@
 package mebsuta
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -73,45 +72,34 @@ func Init(opts ...HandlerOption) (*slog.Logger, error) {
 	return logger, nil
 }
 
-// Debug 使用默认 logger 以 Debug 级别记录日志。
-func Debug(msg string, args ...any) { slog.Debug(msg, args...) }
+// defaultHandlerFunc 是默认错误处理器的存储。可写的导出包变量与
+// GLOBALS.md 的单例纪律相抵（0.1.0-26 起改为 setter/getter，D5）。
+var defaultHandlerFunc ErrorHandler = defaultErrorHandler
 
-// Info 使用默认 logger 以 Info 级别记录日志。
-func Info(msg string, args ...any) { slog.Info(msg, args...) }
-
-// Warn 使用默认 logger 以 Warn 级别记录日志。
-func Warn(msg string, args ...any) { slog.Warn(msg, args...) }
-
-// Error 使用默认 logger 以 Error 级别记录日志。
-func Error(msg string, args ...any) { slog.Error(msg, args...) }
-
-// DebugContext 以 Debug 级别携带给定 context 记录日志。
-func DebugContext(ctx context.Context, msg string, args ...any) {
-	slog.DebugContext(ctx, msg, args...)
-}
-
-// InfoContext 以 Info 级别携带给定 context 记录日志。
-func InfoContext(ctx context.Context, msg string, args ...any) {
-	slog.InfoContext(ctx, msg, args...)
-}
-
-// WarnContext 以 Warn 级别携带给定 context 记录日志。
-func WarnContext(ctx context.Context, msg string, args ...any) {
-	slog.WarnContext(ctx, msg, args...)
-}
-
-// ErrorContext 以 Error 级别携带给定 context 记录日志。
-func ErrorContext(ctx context.Context, msg string, args ...any) {
-	slog.ErrorContext(ctx, msg, args...)
-}
-
-// DefaultErrorHandler 将错误详情写入 os.Stderr。
-var DefaultErrorHandler ErrorHandler = defaultErrorHandler
-
-// defaultErrMu 串行化 defaultErrorHandler 对 os.Stderr 的写入。错误
-// 处理器会在任意 goroutine 中被调用（多输出时每个 handler 并发调用）；
-// 无锁的话交错执行的 Fprintf 输出可能撕裂。
+// defaultErrMu 串行化默认错误处理器的热换与读取，以及
+// defaultErrorHandler 对 os.Stderr 的写入——错误处理器会在任意
+// goroutine 中被调用（多输出时每个 handler 并发调用）；无锁的话
+// 交错执行的 Fprintf 输出可能撕裂。
 var defaultErrMu sync.Mutex
+
+// DefaultErrorHandler 返回当前的默认错误处理器（写入 os.Stderr）。
+// 函数形态取代此前可写的导出包变量：库不提供运行期可写的全局。
+func DefaultErrorHandler() ErrorHandler {
+	defaultErrMu.Lock()
+	defer defaultErrMu.Unlock()
+	return defaultHandlerFunc
+}
+
+// SetDefaultErrorHandler 热换默认错误处理器。nil 恢复为内置的
+// stderr 写入——不产生静默丢弃，要静默请显式传 SilentErrorHandler()。
+func SetDefaultErrorHandler(fn ErrorHandler) {
+	defaultErrMu.Lock()
+	defer defaultErrMu.Unlock()
+	if fn == nil {
+		fn = defaultErrorHandler
+	}
+	defaultHandlerFunc = fn
+}
 
 func defaultErrorHandler(he *HandlerError) {
 	defaultErrMu.Lock()

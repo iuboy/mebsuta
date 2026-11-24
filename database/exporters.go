@@ -113,7 +113,7 @@ func NewSpanExporter(db *gorm.DB, table string) (*SpanExporter, error) {
 		return nil, fmt.Errorf("database: %w", err)
 	}
 	e := &SpanExporter{db: db, table: table}
-	e.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	e.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	return e, nil
 }
 
@@ -247,7 +247,7 @@ func NewMetricExporter(db *gorm.DB, table string) (*MetricExporter, error) {
 		return nil, fmt.Errorf("database: %w", err)
 	}
 	e := &MetricExporter{db: db, table: table}
-	e.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	e.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	return e, nil
 }
 

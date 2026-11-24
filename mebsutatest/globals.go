@@ -17,7 +17,7 @@ import (
 // telemetry 覆盖告警的测试请配对调用 telemetry.ResetGlobalTracking()
 // （本包不依赖 telemetry，避免与 telemetry 的内部测试成环）。
 // 注意：otel 的全局 ErrorHandler 不在此复位——telemetry 的错误桥转发
-// 到 mebsuta.DefaultErrorHandler（stderr），与 otel 缺省行为等价，复位
+// 到 mebsuta.DefaultErrorHandler()（stderr），与 otel 缺省行为等价，复位
 // 无观测收益。
 func ResetOTelGlobals() {
 	otel.SetTracerProvider(tracenoop.NewTracerProvider())

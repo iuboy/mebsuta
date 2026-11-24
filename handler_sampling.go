@@ -5,8 +5,14 @@ import (
 	"io"
 	"log/slog"
 	"sync/atomic"
+
+	"github.com/iuboy/mebsuta/internal/handlerkit"
 	"time"
 )
+
+// samplingEpoch 是采样窗口的单调时钟基准:窗口终点以 time.Since 计,
+// 墙钟回拨不会拉长窗口或造成重置风暴(与 handlerkit.RateGate 同一口径)。
+var samplingEpoch = time.Now()
 
 // samplingState 用原子操作跟踪每个窗口的采样计数。通过在 Handle 中
 // 惰性检查窗口过期，免除了后台 goroutine。
@@ -32,10 +38,15 @@ type SamplingHandler struct {
 	state *samplingState
 }
 
-// WithSampling 把 inner 包进 SamplingHandler，按给定 SamplingConfig 丢弃日志记录。
-func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
-	if !cfg.Enabled || inner == nil {
-		return inner
+// NewSamplingHandler 把 inner 包进 SamplingHandler，按给定
+// SamplingConfig 丢弃日志记录。inner 为 nil 时以 *ConfigError 拒绝；
+// cfg.Enabled=false 返回 inner 原样（采样未启用，非错误）。
+func NewSamplingHandler(inner slog.Handler, cfg SamplingConfig) (slog.Handler, error) {
+	if inner == nil {
+		return nil, &ConfigError{Field: "UseSampling", Msg: "inner handler cannot be nil"}
+	}
+	if !cfg.Enabled {
+		return inner, nil
 	}
 	// Validate 对 SamplingConfig 总是成功（只应用默认值，从不返回
 	// 错误），因此可以安全忽略错误返回值。
@@ -44,14 +55,25 @@ func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
 	s := &samplingState{
 		windowNanos: int64(cfg.Window),
 	}
-	s.windowEnd.Store(time.Now().Add(cfg.Window).UnixNano())
+	s.windowEnd.Store(int64(time.Since(samplingEpoch) + cfg.Window))
 
 	return &SamplingHandler{
 		handlerCore: newHandlerCore(),
 		inner:       inner,
 		cfg:         cfg,
 		state:       s,
+	}, nil
+}
+
+// WithSampling 是 NewSamplingHandler 的兼容薄包装（0.1.0-26 起）：
+// inner 为 nil 时经默认错误链上报并原样返回。新代码用 New*。
+func WithSampling(inner slog.Handler, cfg SamplingConfig) slog.Handler {
+	h, err := NewSamplingHandler(inner, cfg)
+	if err != nil {
+		handlerkit.ReportError(DefaultErrorHandler(), &HandlerError{Component: "sampling", Operation: "init", Err: err})
+		return inner
 	}
+	return h
 }
 
 // Enabled 实现 slog.Handler。
@@ -72,7 +94,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	}
 
 	// 检查窗口是否过期，需要时重置。
-	now := time.Now().UnixNano()
+	now := int64(time.Since(samplingEpoch))
 	windowEnd := h.state.windowEnd.Load()
 	if now >= windowEnd {
 		// 先清零计数再推进窗口（B23）：顺序反了时，CAS 落败者会在
@@ -94,19 +116,15 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 		}
 		// 计数刚被本 goroutine 清零，Add(1) 返回 ≤ 并发 goroutine 数的
 		// 值，远在 Initial 预算之内。
-		count := h.state.count.Add(1)
-		if count <= int64(h.cfg.Initial) {
-			return h.inner.Handle(ctx, r)
-		}
-		// 与稳态路径一致地应用 Thereafter，使窗口重置过渡期间的记录
-		// 得到同样的采样。
-		if (count-int64(h.cfg.Initial))%int64(h.cfg.Thereafter) == 0 {
-			return h.inner.Handle(ctx, r)
-		}
-		return nil
+		return h.admit(ctx, r, h.state.count.Add(1))
 	}
 
-	count := h.state.count.Add(1)
+	return h.admit(ctx, r, h.state.count.Add(1))
+}
+
+// admit 应用 Initial/Thereafter 判定(E9:窗口过渡与稳态共用同一实现,
+// 两条分支此前逐行重复)。
+func (h *SamplingHandler) admit(ctx context.Context, r slog.Record, count int64) error {
 	if count <= int64(h.cfg.Initial) {
 		return h.inner.Handle(ctx, r)
 	}

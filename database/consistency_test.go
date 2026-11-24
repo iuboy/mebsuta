@@ -93,7 +93,7 @@ func newConsistencyHandler(t *testing.T, syncRelay bool, scanInterval time.Durat
 		cancel:  cancel,
 		relayTo: cap.provider(),
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 	h.wg.Add(1)
 	go h.run(5, 50*time.Millisecond, 5*time.Millisecond)
 	if scanInterval > 0 {
@@ -105,7 +105,7 @@ func newConsistencyHandler(t *testing.T, syncRelay bool, scanInterval time.Durat
 }
 
 func TestRecordToDBEntry_OTelAlignment(t *testing.T) {
-	h := &Handler{cfg: Config{ServiceName: "svc-a"}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{ServiceName: "svc-a"}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 
 	// span 内：关联列从 context 填充。
 	tid, _ := trace.TraceIDFromHex("0102030405060708090a0b0c0d0e0f10")

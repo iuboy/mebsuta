@@ -43,8 +43,8 @@ func NewFileHandler(rotateCfg filerotate.Config, cfg FileConfig) (*FileHandler, 
 	}
 
 	// 建立错误处理器桥接：filerotate.Error → HandlerError
-	eh := DefaultErrorHandler
-	h.setErrorHandler(eh)
+	eh := DefaultErrorHandler()
+	h.SetErrorHandler(eh)
 
 	return h, nil
 }
@@ -89,14 +89,10 @@ func (h *FileHandler) SetLevel(level slog.Level) bool {
 	return h.level.Set(level)
 }
 func (h *FileHandler) Close() error {
-	// 若内层 handler 支持刷写（如带缓冲的异步 handler），先刷写。
-	if flusher, ok := h.inner.(interface{ Flush() error }); ok {
-		_ = flusher.Flush() // 尽力刷写；writer.Close 才是真正的清理
-	}
 	return h.writer.Close()
 }
 
-func (h *FileHandler) setErrorHandler(fn ErrorHandler) {
+func (h *FileHandler) SetErrorHandler(fn ErrorHandler) {
 	h.writer.SetOnError(func(err error) {
 		var ferr *filerotate.Error
 		if errors.As(err, &ferr) {

@@ -94,7 +94,10 @@ func (c Config) Validate() (Config, error) {
 		c.RetryDelay = 500 * time.Millisecond
 	}
 	if c.RetryDelay > MaxRetryDelay {
-		c.RetryDelay = MaxRetryDelay
+		return Config{}, &mebsuta.ConfigError{Field: "RetryDelay", Msg: fmt.Sprintf("retry delay %v exceeds maximum %v", c.RetryDelay, MaxRetryDelay)}
+	}
+	if c.BufferSize > 10000 {
+		return Config{}, &mebsuta.ConfigError{Field: "BufferSize", Msg: fmt.Sprintf("buffer size %d exceeds maximum 10000", c.BufferSize)}
 	}
 	if c.BufferSize <= 0 {
 		c.BufferSize = 1000

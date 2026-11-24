@@ -287,15 +287,21 @@ func TestNew_UseAsyncOverLimitFailsFast(t *testing.T) {
 	require.ErrorAs(t, err, &cfgErr)
 }
 
-// TestWithAsync_OverLimitClamped: direct WithAsync callers have no error
-// return — the misconfiguration is reported via the default error handler
-// and the buffer is clamped to the cap instead of being allocated oversized.
-func TestWithAsync_OverLimitClamped(t *testing.T) {
+// TestWithAsync_OverLimitRejected: WithAsync 是 NewAsyncHandler 的兼容
+// 薄包装(0.1.0-26)——超限配置经错误链上报并原样返回 inner,不再分配
+// 超限缓冲;New 路径(UseAsync)以 *ConfigError 快速失败。
+func TestWithAsync_OverLimitRejected(t *testing.T) {
 	inner := &countHandler{}
-	h := WithAsync(inner, AsyncConfig{BufferSize: 1 << 30}) // would be ~100GB of slots unclamped
-	require.NotNil(t, h)
-	logger := slog.New(h)
-	logger.Info("still works after clamping")
-	require.NoError(t, h.(interface{ Close() error }).Close())
-	require.GreaterOrEqual(t, inner.Count(), 1)
+	var reported []string
+	SetDefaultErrorHandler(func(he *HandlerError) { reported = append(reported, he.Err.Error()) })
+	defer SetDefaultErrorHandler(nil)
+
+	h := WithAsync(inner, AsyncConfig{BufferSize: 1 << 30}) // ~100GB of slots unclamped
+	require.Equal(t, slog.Handler(inner), h, "inner returned unchanged on misconfiguration")
+	require.NotEmpty(t, reported, "misconfiguration reported via the error chain")
+
+	_, err := NewAsyncHandler(inner, AsyncConfig{BufferSize: 1 << 30})
+	require.Error(t, err, "New path fails fast")
+	var cfgErr *ConfigError
+	require.ErrorAs(t, err, &cfgErr, "error is a *ConfigError")
 }

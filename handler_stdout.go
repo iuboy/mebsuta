@@ -84,10 +84,6 @@ func (h *StdoutHandler) unwrapHandler() slog.Handler {
 	return h.inner
 }
 
-// setErrorHandler 是 no-op：propagateErrorHandler 会经 unwrapHandler
-// 递归触达内层 handler。
-func (h *StdoutHandler) setErrorHandler(fn ErrorHandler) {}
-
 var (
 	_ slog.Handler     = (*StdoutHandler)(nil)
 	_ io.Closer        = (*StdoutHandler)(nil)

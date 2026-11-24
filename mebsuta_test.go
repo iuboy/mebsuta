@@ -194,13 +194,13 @@ func TestCloseAll_DecoratorChain(t *testing.T) {
 
 func TestErrorHandler_Default(t *testing.T) {
 	var buf bytes.Buffer
-	DefaultErrorHandler = func(he *HandlerError) {
+	SetDefaultErrorHandler(func(he *HandlerError) {
 		fmt.Fprintf(&buf, "%s/%s: %v\n", he.Component, he.Operation, he.Err)
-	}
-	defer func() { DefaultErrorHandler = defaultErrorHandler }()
+	})
+	defer SetDefaultErrorHandler(nil)
 
-	DefaultErrorHandler(&HandlerError{Component: "test", Operation: "write", Err: fmt.Errorf("boom")})
-	require.Contains(t, buf.String(), "test/write: boom", "DefaultErrorHandler output")
+	DefaultErrorHandler()(&HandlerError{Component: "test", Operation: "write", Err: fmt.Errorf("boom")})
+	require.Contains(t, buf.String(), "test/write: boom", "DefaultErrorHandler() output")
 }
 
 func TestErrorHandler_WithErrorHandler(t *testing.T) {
@@ -305,10 +305,10 @@ func TestAsyncHandler_AttrsSurviveGroup(t *testing.T) {
 // nil errorHandler 时 panic 应静默丢弃，不写 stderr。
 func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 	var buf bytes.Buffer
-	DefaultErrorHandler = func(he *HandlerError) {
+	SetDefaultErrorHandler(func(he *HandlerError) {
 		fmt.Fprintf(&buf, "%s/%s: %v", he.Component, he.Operation, he.Err)
-	}
-	defer func() { DefaultErrorHandler = defaultErrorHandler }()
+	})
+	defer SetDefaultErrorHandler(nil)
 
 	good := &countHandler{}
 	bad := &panicHandler{msg: "nil eh panic"}
@@ -324,15 +324,15 @@ func TestSafeMultiHandler_PanicRecovery_NilErrorHandler(t *testing.T) {
 // Found by /pr-review-toolkit:review-pr on 2026-04-15.
 func TestBuildHandler_NilErrorHandler_Propagates(t *testing.T) {
 	var buf bytes.Buffer
-	// FileHandler 有 errorHandler 字段，默认是 DefaultErrorHandler
+	// FileHandler 有 errorHandler 字段，默认是 DefaultErrorHandler()
 	cfg := FileConfig{}
 	fh, err := NewFileHandler(filerotate.Config{Path: t.TempDir() + "/test.log"}, cfg)
 	require.NoError(t, err)
 	defer func() { _ = fh.Close() }()
-	DefaultErrorHandler = func(he *HandlerError) {
+	SetDefaultErrorHandler(func(he *HandlerError) {
 		fmt.Fprintf(&buf, "%s/%s: %v", he.Component, he.Operation, he.Err)
-	}
-	defer func() { DefaultErrorHandler = defaultErrorHandler }()
+	})
+	defer SetDefaultErrorHandler(nil)
 
 	logger, err := New(WithHandler(fh), WithErrorHandler(nil))
 	require.NoError(t, err)

@@ -147,7 +147,7 @@ func Example_withHandlerChain() {
 }
 
 // ExampleAsyncDropped demonstrates checking for dropped log records.
-func ExampleAsyncDropped() {
+func ExampleDropped() {
 	stdout, _ := mebsuta.NewStdoutHandler(mebsuta.StdoutConfig{Level: slog.LevelInfo})
 	async := mebsuta.WithAsync(stdout, mebsuta.AsyncConfig{
 		BufferSize: 5, // small buffer
@@ -158,7 +158,7 @@ func ExampleAsyncDropped() {
 		logger.Info("message", "i", i)
 	}
 
-	dropped := mebsuta.AsyncDropped(async)
+	dropped := mebsuta.Dropped(async)
 	_ = dropped // number of dropped records
 	_ = mebsuta.CloseAll(async)
 }
@@ -243,8 +243,8 @@ func ExampleInit() {
 	// Init sets the global default automatically.
 	slog.Info("using Init")
 
-	mebsuta.Info("convenience function")
-	mebsuta.Warn("convenience function")
+	slog.Info("convenience function")
+	slog.Warn("convenience function")
 }
 
 // Example_auditEventTypes demonstrates audit event type constants.

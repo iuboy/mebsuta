@@ -208,7 +208,7 @@ func TestPlaneRouter_SetLevelWalksAllPlanes(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	applied, skipped, err := SetLevel(logger, slog.LevelError)
+	applied, skipped, err := SetLevel(logger.Handler(), slog.LevelError)
 	require.NoError(t, err)
 	require.Equal(t, 2, applied, "both plane chains hot-adjusted")
 	require.Empty(t, skipped)
@@ -296,7 +296,7 @@ func TestPlaneRouter_HandleErrorsJoin(t *testing.T) {
 // TestPlaneRouter_TopLevelErrorHandlerReachesPlaneChains:顶层
 // WithErrorHandler 必须穿透平面路由器到达每条平面链。此前
 // propagateErrorHandler 只跑在默认链上,平面链的内部错误仍走
-// DefaultErrorHandler(stderr),用户错误处理器只收到默认链一份。
+// DefaultErrorHandler()(stderr),用户错误处理器只收到默认链一份。
 func TestPlaneRouter_TopLevelErrorHandlerReachesPlaneChains(t *testing.T) {
 	dir := t.TempDir()
 	var mu sync.Mutex

@@ -27,7 +27,7 @@ func main() {
 	// Init 会设置全局默认 logger，slog 与便捷函数因此都可用。
 	slog.Info("using Init", "auto", "set default")
 
-	mebsuta.Info("convenience function", "level", "info")
-	mebsuta.Warn("convenience function", "level", "warn")
-	mebsuta.Error("convenience function", "level", "error")
+	slog.Info("convenience function", "level", "info")
+	slog.Warn("convenience function", "level", "warn")
+	slog.Error("convenience function", "level", "error")
 }

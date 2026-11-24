@@ -93,6 +93,9 @@ func (c Config) Validate() (Config, error) {
 	if c.Level == nil {
 		c.Level = slog.LevelInfo
 	}
+	if c.BufferSize > maxBufferSize {
+		return Config{}, &mebsuta.ConfigError{Field: "BufferSize", Msg: fmt.Sprintf("buffer size %d exceeds maximum %d", c.BufferSize, maxBufferSize)}
+	}
 	if c.BufferSize <= 0 {
 		c.BufferSize = defaultBufferSize
 	}

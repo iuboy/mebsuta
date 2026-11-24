@@ -43,16 +43,6 @@ func ReportError(eh ErrorHandler, he *HandlerError) {
 	}
 }
 
-// LoadErrorHandler 从原子指针加载 ErrorHandler。
-// 供仍以裸 atomic.Pointer 存储错误处理器的调用方使用;新代码用 ErrorSlot。
-func LoadErrorHandler(p *atomic.Pointer[ErrorHandler]) ErrorHandler {
-	v := p.Load()
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
 // ErrorSlot 是跨 WithAttrs/WithGroup 克隆共享的 ErrorHandler 原子槽位:
 // 构造时以初始值填充,运行时可无锁热换,任意 goroutine 并发 Load/Store
 // 均无竞争。此前每个 handler 各自重复 atomic.Pointer + Load/Store 样板。
@@ -72,7 +62,13 @@ func NewErrorSlot(initial ErrorHandler) *ErrorSlot {
 func (s *ErrorSlot) Store(fn ErrorHandler) { s.p.Store(&fn) }
 
 // Load 返回槽位中当前的 ErrorHandler(未初始化时为 nil)。
-func (s *ErrorSlot) Load() ErrorHandler { return LoadErrorHandler(&s.p) }
+func (s *ErrorSlot) Load() ErrorHandler {
+	v := s.p.Load()
+	if v == nil {
+		return nil
+	}
+	return *v
+}
 
 // Report 经槽位当前的 ErrorHandler 上报 he(当前值为 nil 时丢弃)。
 func (s *ErrorSlot) Report(he *HandlerError) { ReportError(s.Load(), he) }
@@ -80,6 +76,11 @@ func (s *ErrorSlot) Report(he *HandlerError) { ReportError(s.Load(), he) }
 // DefaultReportInterval 是 RateGate 零值使用的默认放行间隔:上报风暴
 // 的限流粒度与既有各 handler 的"每秒至多一次"语义一致。
 const DefaultReportInterval = int64(time.Second)
+
+// gateEpoch 是 RateGate 的单调时钟基准:放行时间戳以 time.Since 计
+// (Go 的 time.Now 携带单调钟,差值不受墙钟回拨影响——墙钟实现会在
+// NTP 回拨时压制上报或连环放行)。
+var gateEpoch = time.Now()
 
 // RateGate 是"每 interval 至多放行一次"的原子限流闸,零值即可用(首次
 // 调用即放行,间隔取 DefaultReportInterval)。供丢弃/错误上报共用:
@@ -98,9 +99,12 @@ func (g *RateGate) Allow() bool {
 	if interval == 0 {
 		interval = DefaultReportInterval
 	}
-	now := time.Now().UnixNano()
+	now := int64(time.Since(gateEpoch))
 	last := g.last.Load()
-	if now-last < interval {
+	// last==0 表示从未放行(单调时钟下 now 从 0 起算,不能与 last=0
+	// 相减判窗口——那会把进程启动后的第一个 interval 误判为"刚放行
+	// 过")。零值 gate 首次调用放行,与墙钟实现语义一致。
+	if last != 0 && now-last < interval {
 		return false
 	}
 	return g.last.CompareAndSwap(last, now)

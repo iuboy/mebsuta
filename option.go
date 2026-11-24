@@ -15,6 +15,9 @@ type handlerOptions struct {
 	middlewares  []func(slog.Handler) slog.Handler
 	errorHandler ErrorHandler
 	planes       []planeOption
+	// err 收集中间件闭包内的构造错误(Use* 经 New* 构造,闭包本身
+	// 无错误返回)——buildHandler 应用完全部选项后统一检查。
+	err error
 }
 
 // planeOption 是 UsePlane 声明的平面:name 命名,opts 为该平面链的
@@ -107,7 +110,7 @@ func UseContextExtractor(extract ContextExtractor) HandlerOption {
 
 // WithErrorHandler 设置处理 handler 内部错误的函数。默认写入 os.Stderr。
 // 要静默丢弃内部错误，传入 SilentErrorHandler()。
-// fn 为 nil 时，handler 保留其 DefaultErrorHandler（输出到 os.Stderr）——
+// fn 为 nil 时，handler 保留其 DefaultErrorHandler()（输出到 os.Stderr）——
 // nil 既不传播也不静默错误。
 func WithErrorHandler(fn ErrorHandler) HandlerOption {
 	return func(o *handlerOptions) error {
@@ -124,6 +127,9 @@ func buildHandler(opts ...HandlerOption) (slog.Handler, error) {
 		if err := opt(o); err != nil {
 			return nil, err
 		}
+	}
+	if o.err != nil {
+		return nil, o.err
 	}
 	if len(o.planes) > 0 {
 		return buildPlaneRouter(o)
@@ -150,7 +156,7 @@ func buildChain(o *handlerOptions) (slog.Handler, error) {
 	// 使用默认值（os.Stderr），避免 panic 恢复产生的错误被静默丢弃。
 	eh := o.errorHandler
 	if eh == nil {
-		eh = DefaultErrorHandler
+		eh = DefaultErrorHandler()
 	}
 	handler := safeMultiHandler(o.handlers, eh)
 
@@ -186,7 +192,7 @@ func buildPlaneRouter(o *handlerOptions) (slog.Handler, error) {
 	}
 	eh := o.errorHandler
 	if eh == nil {
-		eh = DefaultErrorHandler
+		eh = DefaultErrorHandler()
 	}
 	router := &planeRouter{
 		handlerCore: newHandlerCore(),

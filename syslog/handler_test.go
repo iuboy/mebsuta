@@ -305,7 +305,7 @@ func newTestHandler(t *testing.T) *Handler {
 		cfg:          cfg,
 		hostname:     "testhost",
 		location:     time.UTC,
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
 }
 
@@ -967,14 +967,14 @@ func TestHandler_ConcurrentClose_WaitsForDrain(t *testing.T) {
 	}
 }
 
-// TestHandle_ClosingCountsDrop：Close 开始后到达的记录被
-// 静默丢弃；丢弃仍必须计数（与 database.Handler 对齐）。
+// TestHandle_ClosingCountsDrop：Close 开始后到达的记录被丢弃并计数，
+// Handle 返回 error 让调用方感知丢失（0.1.0-26 统一契约）。
 func TestHandle_ClosingCountsDrop(t *testing.T) {
 	h := newTestHandler(t)
 	h.closing.Store(true)
 	require.Zero(t, h.Dropped(), "Dropped() before Handle")
 	r := slog.NewRecord(time.Now(), slog.LevelInfo, "late", 0)
-	require.NoError(t, h.Handle(context.Background(), r), "Handle after closing")
+	require.Error(t, h.Handle(context.Background(), r), "Handle after closing must report the drop")
 	require.Equal(t, int64(1), h.Dropped(), "Dropped() after Handle on closing handler")
 }
 

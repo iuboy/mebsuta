@@ -197,7 +197,7 @@ func Start(ctx context.Context, cfg Config) (*Telemetry, error) {
 		// 默认的 stderr（wasat 缺口 ③）。
 		fn := cfg.OTelErrorHandler
 		if fn == nil {
-			fn = mebsuta.DefaultErrorHandler
+			fn = mebsuta.DefaultErrorHandler()
 		}
 		otel.SetErrorHandler(otelHandlerBridge{fn: fn})
 		// 覆盖告警（S2）：上一个引导安装的 TracerProvider 尚未被复位时，

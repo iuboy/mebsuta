@@ -15,15 +15,15 @@ import (
 // 语义与 filerotate.Writer.SetMaxAgeDays 一致：正数 = 天数，
 // filerotate.UnlimitedAge = 不按时间删除；0 与其他负值以错误拒绝。
 // 非文件 handler 忽略；无可达文件 handler 不构成错误（stdout 形态等）。
-func SetFileMaxAge(l *slog.Logger, days int) error {
-	if l == nil {
+func SetFileMaxAge(h slog.Handler, days int) error {
+	if h == nil {
 		return nil
 	}
 	if days <= 0 && days != filerotate.UnlimitedAge {
 		return fmt.Errorf("MaxAgeDays must be positive or filerotate.UnlimitedAge(%d), got %d", filerotate.UnlimitedAge, days)
 	}
-	return walkHandlers(l.Handler(), func(h slog.Handler) error {
-		if fh, ok := h.(*FileHandler); ok && fh.writer != nil {
+	return walkHandlers(h, func(fh slog.Handler) error {
+		if fh, ok := fh.(*FileHandler); ok && fh.writer != nil {
 			if err := fh.writer.SetMaxAgeDays(days); err != nil {
 				return fmt.Errorf("set max age days: %w", err)
 			}

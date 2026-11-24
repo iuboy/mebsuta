@@ -68,24 +68,22 @@ func findSelfBuffered(h slog.Handler) bool {
 	return found
 }
 
-// WithAsync 把 inner 包进 AsyncHandler：缓冲记录并由后台 goroutine 写出。
-func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
+// NewAsyncHandler 把 inner 包进 AsyncHandler：缓冲记录并由后台
+// goroutine 写出。装饰器构造的统一形态（0.1.0-26）：inner 为 nil、
+// 双重缓冲（inner 图内含 SelfBufferedHandler）、配置非法时以
+// *ConfigError 快速失败——不再有绕过错误链的静默降级。
+func NewAsyncHandler(inner slog.Handler, cfg AsyncConfig) (slog.Handler, error) {
 	if inner == nil {
-		return inner
+		return nil, &ConfigError{Field: "UseAsync", Msg: "inner handler cannot be nil"}
 	}
 	if findSelfBuffered(inner) {
-		handlerkit.ReportError(DefaultErrorHandler, &HandlerError{Component: "async", Operation: "init", Err: fmt.Errorf("WithAsync: wrapping %T creates double-buffering; returning inner handler directly", inner)})
-		return inner
+		return nil, &ConfigError{Field: "UseAsync", Msg: fmt.Sprintf("wrapping %T creates double-buffering", inner)}
 	}
-	cfg, err := cfg.Validate() // 应用 ErrorTimeout 默认值，限定 BufferSize 上界
+	validated, err := cfg.Validate()
 	if err != nil {
-		// 直接调用 WithAsync 的调用方没有错误返回：上报配置错误并钳制，
-		// 而不是分配超限缓冲。New(UseAsync(...)) 路径已在 UseAsync 中
-		// 以同一个 *ConfigError 快速失败。
-		handlerkit.ReportError(DefaultErrorHandler, &HandlerError{Component: "async", Operation: "init", Err: err})
-		cfg.BufferSize = MaxAsyncBufferSize
+		return nil, err
 	}
-	bufferSize := cfg.BufferSize
+	bufferSize := validated.BufferSize
 	if bufferSize <= 0 {
 		bufferSize = DefaultAsyncBufferSize
 	}
@@ -95,14 +93,25 @@ func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
 	h := &AsyncHandler{
 		handlerCore:  newHandlerCore(),
 		inner:        inner,
-		errorTimeout: cfg.ErrorTimeout,
+		errorTimeout: validated.ErrorTimeout,
 		ch:           make(chan asyncRecord, bufferSize),
 		ctx:          ctx,
 		cancel:       cancel,
-		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(DefaultErrorHandler()),
 	}
 	h.wg.Add(1)
 	go h.run()
+	return h, nil
+}
+
+// WithAsync 是 NewAsyncHandler 的兼容薄包装（0.1.0-26 起）：错误经
+// 默认错误链上报并原样返回 inner——不再静默。新代码用 New*。
+func WithAsync(inner slog.Handler, cfg AsyncConfig) slog.Handler {
+	h, err := NewAsyncHandler(inner, cfg)
+	if err != nil {
+		handlerkit.ReportError(DefaultErrorHandler(), &HandlerError{Component: "async", Operation: "init", Err: err})
+		return inner
+	}
 	return h
 }
 
@@ -292,7 +301,7 @@ func (h *AsyncHandler) Close() error {
 	return nil
 }
 
-func (h *AsyncHandler) setErrorHandler(fn ErrorHandler) {
+func (h *AsyncHandler) SetErrorHandler(fn ErrorHandler) {
 	h.errorHandler.Store(fn)
 }
 
@@ -444,20 +453,6 @@ func (h *asyncGroupHandler) WithGroup(name string) slog.Handler {
 // 会跳过 group 包装。
 func (h *asyncGroupHandler) unwrapHandler() slog.Handler {
 	return h.groupInner
-}
-
-// AsyncDropped 从 handler 链中的 AsyncHandler 提取丢弃记录总数。
-func AsyncDropped(h slog.Handler) int64 {
-	switch v := h.(type) {
-	case *AsyncHandler:
-		return v.Dropped()
-	case *asyncAttrsHandler:
-		return v.Dropped()
-	case *asyncGroupHandler:
-		return v.Dropped()
-	default:
-		return 0
-	}
 }
 
 var (

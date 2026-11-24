@@ -35,9 +35,9 @@ func TestScanOnce_ByteBudget_Resumable(t *testing.T) {
 		db:           gdb,
 		table:        "logs",
 		relayTo:      cap.provider(),
-		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler),
+		errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler()),
 	}
-	eh := mebsuta.DefaultErrorHandler
+	eh := mebsuta.DefaultErrorHandler()
 	h.errorHandler = handlerkit.NewErrorSlot(eh)
 
 	// 三行约 100 字节的 fields；预算 250 字节 → 第一轮

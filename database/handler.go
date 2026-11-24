@@ -106,7 +106,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		cancel:  cancel,
 		relayTo: cfg.RelayTo,
 	}
-	eh := mebsuta.DefaultErrorHandler
+	eh := mebsuta.DefaultErrorHandler()
 	h.errorHandler = handlerkit.NewErrorSlot(eh)
 
 	if cfg.warnNoTLS {

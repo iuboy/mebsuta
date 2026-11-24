@@ -119,7 +119,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	loc, err := time.LoadLocation(cfg.TimeZone)
 	if err != nil {
-		handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("invalid timezone %q, using UTC: %w", cfg.TimeZone, err)})
+		handlerkit.ReportError(mebsuta.DefaultErrorHandler(), &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("invalid timezone %q, using UTC: %w", cfg.TimeZone, err)})
 		loc = time.UTC
 	}
 
@@ -138,7 +138,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		cancel:           cancel,
 		location:         loc,
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 
 	if cfg.Secure {
 		h.tlsCfg = &tls.Config{
@@ -154,12 +154,12 @@ func NewHandler(cfg Config) (*Handler, error) {
 			},
 		}
 		if cfg.TLSSkipVerify {
-			handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
+			handlerkit.ReportError(mebsuta.DefaultErrorHandler(), &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 		}
 	}
 
 	if cfg.Network == "udp" {
-		handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("UDP transport sends logs in plaintext without delivery guarantees — consider using TCP with TLS for production use")})
+		handlerkit.ReportError(mebsuta.DefaultErrorHandler(), &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("UDP transport sends logs in plaintext without delivery guarantees — consider using TCP with TLS for production use")})
 	}
 
 	if err := h.connect(); err != nil {
@@ -181,11 +181,10 @@ func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 // Handle 实现 slog.Handler。
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if h.closing.Load() {
-		// 统计关闭后被静默丢弃的记录，让损失至少
-		// 在指标中可见，而不是不可见的 nil（与
-		// database.Handler 一致）。
+		// 关闭后的写入与 async handler 同契约返回 error 并计数
+		// (0.1.0-26 统一:此前返回 nil,调用方无从感知丢失)。
 		h.dropped.Add(1)
-		return nil
+		return fmt.Errorf("mebsuta/syslog: handler closed, log dropped")
 	}
 
 	entry := recordToLogEntry(r)
@@ -806,7 +805,7 @@ func generateHostname(static string) (string, error) {
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
-		handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("get hostname: %w", err)})
+		handlerkit.ReportError(mebsuta.DefaultErrorHandler(), &mebsuta.HandlerError{Component: "syslog", Operation: "init", Err: fmt.Errorf("get hostname: %w", err)})
 		return "unknown", nil
 	}
 	hostname = cleanHostname(hostname)

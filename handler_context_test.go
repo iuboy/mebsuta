@@ -204,7 +204,7 @@ func TestContextExtractor_PanicRecovered(t *testing.T) {
 	})
 
 	var reported int
-	h.(*contextExtractorHandler).setErrorHandler(func(*HandlerError) { reported++ })
+	h.(*contextExtractorHandler).SetErrorHandler(func(*HandlerError) { reported++ })
 
 	logger := slog.New(h)
 	logger.Info("must survive")

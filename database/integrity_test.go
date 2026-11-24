@@ -133,7 +133,7 @@ func TestCanonicalBytes_InvalidJSON(t *testing.T) {
 }
 
 func TestRecordToDBEntry_SignsCanonicalForm(t *testing.T) {
-	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	now := time.Date(2026, 8, 3, 10, 42, 23, 123456789, time.FixedZone("+08", 8*3600))
 
 	rec := slog.NewRecord(now, slog.LevelWarn, `msg with | pipe and "quote"`, 0)
@@ -153,7 +153,7 @@ func TestRecordToDBEntry_SignsCanonicalForm(t *testing.T) {
 }
 
 func TestRecordToDBEntry_NilSignerLeavesUnsigned(t *testing.T) {
-	h := &Handler{cfg: Config{}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "hello", 0)
 	entry := h.recordToDBEntry(context.Background(), rec)
 	require.Empty(t, entry.RecordHash, "expected unsigned entry")
@@ -162,7 +162,7 @@ func TestRecordToDBEntry_NilSignerLeavesUnsigned(t *testing.T) {
 }
 
 func TestVerifyRecord_RoundTrip(t *testing.T) {
-	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	now := time.Date(2026, 8, 3, 10, 42, 23, 123456789, time.FixedZone("+08", 8*3600))
 	rec := slog.NewRecord(now, slog.LevelError, "db write failed", 0)
 	rec.AddAttrs(slog.String("table", "logs"), slog.Int("retries", 3))
@@ -187,7 +187,7 @@ func TestVerifyRecord_RoundTrip(t *testing.T) {
 }
 
 func TestVerifyRecord_Tampering(t *testing.T) {
-	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	rec := slog.NewRecord(time.Date(2026, 8, 3, 10, 42, 23, 123000000, time.UTC), slog.LevelInfo, "audit event", 0)
 	rec.AddAttrs(slog.String("user", "alice"), slog.Int("amount", 100))
 	entry := h.recordToDBEntry(context.Background(), rec)
@@ -216,7 +216,7 @@ func TestVerifyRecord_Tampering(t *testing.T) {
 }
 
 func TestVerifyRecord_FailClosed(t *testing.T) {
-	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	rec := slog.NewRecord(time.Date(2026, 8, 3, 10, 42, 23, 123000000, time.UTC), slog.LevelInfo, "msg", 0)
 	entry := h.recordToDBEntry(context.Background(), rec)
 	stored := StoredRecord{Time: entry.Time, Level: entry.Level, Message: entry.Message, Fields: entry.Fields, SignAlgo: entry.SignAlgo}
@@ -335,7 +335,7 @@ func TestCanonicalBytes_TrailingDataRejected(t *testing.T) {
 // 或缺失必须失败收紧，而不是在调用方碰巧
 // 传入的任何算法下校验通过。
 func TestVerifyRecord_AlgoBinding(t *testing.T) {
-	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	rec := newSignedRecord(t, h)
 	stored := StoredRecord{Time: rec.Time, Level: rec.Level, Message: rec.Message, Fields: rec.Fields, SignAlgo: rec.SignAlgo}
 
@@ -366,7 +366,7 @@ func newSignedRecord(t *testing.T, h *Handler) dbLogEntry {
 // 变体：校验一个已存储的大整数字段，再把它改成它的
 // float64 孪生值——现在校验必须失败。
 func TestVerifyRecord_NumberTamperingDetected(t *testing.T) {
-	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)}
+	h := &Handler{cfg: Config{IntegritySigner: mockSigner{}}, errorHandler: handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())}
 	entry := newSignedRecord(t, h)
 
 	// 篡改：2^53+1 → 2^53（float64 舍入下相同）。

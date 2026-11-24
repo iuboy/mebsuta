@@ -22,5 +22,5 @@ func main() {
 	}
 
 	defer func() { _ = mebsuta.CloseAll(logger.Handler()) }()
-	fmt.Printf("dropped: %d\n", mebsuta.AsyncDropped(logger.Handler()))
+	fmt.Printf("dropped: %d\n", mebsuta.Dropped(logger.Handler()))
 }

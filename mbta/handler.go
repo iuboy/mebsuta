@@ -117,13 +117,13 @@ func NewHandler(cfg Config) (*Handler, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	bufferSize := min(cfg.BufferSize, maxBufferSize)
+	bufferSize := cfg.BufferSize // Validate 已拒绝超限;零值已取默认
 
 	// 传递完整的 TLS 凭据集。此前只转发 InsecureSkipVerify，
 	// CAFile/CertFile/KeyFile/ServerName 静默失效——
 	// mTLS / 自定义 CA / SNI 配置沦为 no-op。
 	if cfg.InsecureSkipVerify {
-		handlerkit.ReportError(mebsuta.DefaultErrorHandler, &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
+		handlerkit.ReportError(mebsuta.DefaultErrorHandler(), &mebsuta.HandlerError{Component: "mbta", Operation: "init", Err: fmt.Errorf("TLS certificate verification is disabled (InsecureSkipVerify=true) — connection is vulnerable to man-in-the-middle attacks")})
 	}
 
 	h := &Handler{
@@ -136,7 +136,7 @@ func NewHandler(cfg Config) (*Handler, error) {
 		cancel:    cancel,
 		hostname:  hostname,
 	}
-	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler)
+	h.errorHandler = handlerkit.NewErrorSlot(mebsuta.DefaultErrorHandler())
 
 	// 拨号：一步完成创建客户端 + 连接。持有 connectMu 与
 	// tryReconnect 的串行化配合（同一时刻至多一个 Connect 在飞）。
@@ -216,10 +216,10 @@ func (h *Handler) Enabled(_ context.Context, level slog.Level) bool {
 // Handle 实现 slog.Handler。
 func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 	if h.closing.Load() {
-		// 统计关闭后被静默丢弃的记录，让损失至少
-		// 在指标中可见，而不是不可见的 nil（与 database 一致）。
+		// 关闭后的写入与 async handler 同契约返回 error 并计数
+		// (0.1.0-26 统一:此前返回 nil,调用方无从感知丢失)。
 		h.dropped.Add(1)
-		return nil
+		return fmt.Errorf("mebsuta/mbta: handler closed, log dropped")
 	}
 
 	record, stats := recordToSignal(r)

@@ -12,6 +12,58 @@
 版本号已被占用即视为重复：rev 向后延续至下一个未占用值，已发布版本号永不
 重用或覆盖。
 
+## [0.1.0-26] - 2026-11-24
+
+### Changed — 契约统一与并行机制收敛(阶段 5;破坏性最大的一版)
+
+- **错误处理器接口统一**:删除并行的未导出接口 `errorHandlerSetter`
+  与 `levelSetter`(两套方法集完全相同),根包 handler
+  (safeMulti/MetricsHandler/contextExtractor/Async/File)一律实现导出的
+  `SetErrorHandler`/`SetLevel`;`propagateErrorHandler`/`SetLevel` 的
+  双 case 分发收编为单接口。
+- **默认错误处理器**(D5):可写的导出包变量 `DefaultErrorHandler`
+  改为 `DefaultErrorHandler()` 取值 + `SetDefaultErrorHandler(fn)` 热换
+  (nil 恢复 stderr 写入,不产生静默丢弃)——库不提供运行期可写的全局。
+- **装饰器构造**(决策 5):新增 `NewAsyncHandler`/`NewSamplingHandler`/
+  `NewMetricsHandler`/`NewContextExtractorHandler`,以 `*ConfigError`
+  快速失败(inner 为 nil、双重缓冲、指标实现缺失、提取器缺失)——
+  双重缓冲不再静默降级绕过错误链。`With*` 保留为兼容薄包装:错误经
+  默认错误链上报并原样返回 inner。`Use*` 选项内部走 New*,配置错误
+  使 `New` 直接失败。
+- **运维入口统一**(C3 部分):新增 `mebsuta.Dropped(h slog.Handler)`
+  (walk 对图内全部 DroppedCounter 求和)与 `mebsuta.Flush(h, timeout)`
+  (聚合 syslog/mbta 的刷写);删除按类型的 `AsyncDropped` 探针。
+  `SetLevel`/`SetFileMaxAge` 参数从 `*slog.Logger` 改为 `slog.Handler`,
+  与 `CloseAll` 一致。
+- **关闭契约统一**:syslog/mbta 关闭后的 `Handle` 返回 error 并计数
+  (此前返回 nil,调用方无从感知丢失)。
+- **配置越界**(syslog/mbta):`BufferSize`/`RetryDelay` 上限由静默钳制
+  改为 `*ConfigError` 拒绝。
+- **单调时钟**(E8):`RateGate` 与采样窗口改用 `time.Since` 单调差值
+  ——墙钟回拨不再压制上报或拉长窗口。零值 gate 语义保持"首次放行"。
+- **死代码清理**(E2-E6):`FileHandler.Close` 的 Flush 分支(内层从不
+  实现)、`StdoutHandler` 的 no-op `setErrorHandler`、
+  `handlerkit.LoadErrorHandler`、syslog 构造期回退 UTC 分支(Validate
+  已拒绝);孤立的 Close doc comment 归位(E6)。
+- **采样判定提取**(E9):窗口过渡与稳态的 Initial/Thereafter 判定
+  收编为 `admit`,消除逐行重复。
+
+### 破坏性变更
+
+- `DefaultErrorHandler` 从可写变量改为函数:读处加 `()` 调用,
+  赋值改 `SetDefaultErrorHandler(fn)`。
+- `SetLevel`/`SetFileMaxAge` 首参 `*slog.Logger` → `slog.Handler`
+  (传 `logger.Handler()` 即可)。
+- `AsyncDropped` 删除,改用 `mebsuta.Dropped`(求和口径覆盖全部
+  缓冲 handler,不只是 AsyncHandler)。
+- `mebsuta.Info/Debug/Warn/Error` 及 Context 版 8 个 slog 透传删除
+  (与 slog 完全等价,调用方直接用 slog)。
+- syslog/mbta 关闭后的 `Handle` 返回 error(此前 nil)。
+- syslog/mbta 的 `BufferSize`/`RetryDelay` 超限以 `*ConfigError` 拒绝
+  (此前静默钳制)。
+- 根包 handler 的 `setErrorHandler` 改为导出 `SetErrorHandler`
+  (未导出接口取消,方法名跟随)。
+
 ## [0.1.0-25] - 2026-11-24
 
 ### Fixed — 全面审查第三批:审计语义 + 脱敏(审查报告 B6-B10/B17-B20/B22)

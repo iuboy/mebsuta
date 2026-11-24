@@ -129,7 +129,7 @@ type Config struct {
 	Attributes map[string]string
 	// OTelErrorHandler 接收 SDK 内部的导出失败（batcher 重试耗尽、
 	// exporter 错误），否则这些会落到 otel 的全局默认处理（stderr）。
-	// nil → mebsuta.DefaultErrorHandler。仅在启用 SetGlobal 时接线——
+	// nil → mebsuta.DefaultErrorHandler()。仅在启用 SetGlobal 时接线——
 	// otel.SetErrorHandler 是全局的，SetGlobal=false 的部署自行管理
 	// 其 otel 全局状态。
 	OTelErrorHandler mebsuta.ErrorHandler

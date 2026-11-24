@@ -73,7 +73,7 @@ func WithInterval(d time.Duration) Option {
 }
 
 // WithErrorHandler 路由 bridge 内部失败（Gather 错误、仪器创建错误）。
-// nil → mebsuta.DefaultErrorHandler。
+// nil → mebsuta.DefaultErrorHandler()。
 func WithErrorHandler(fn mebsuta.ErrorHandler) Option {
 	return func(b *Bridge) {
 		if fn != nil {
@@ -100,7 +100,7 @@ func Start(ctx context.Context, mp metric.MeterProvider, g promGatherer, opts ..
 		last:     make(map[string]float64),
 		skipped:  make(map[string]int),
 	}
-	eh := mebsuta.DefaultErrorHandler
+	eh := mebsuta.DefaultErrorHandler()
 	b.errorHPtr.Store(&eh)
 	for _, opt := range opts {
 		opt(b)

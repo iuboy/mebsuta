@@ -18,7 +18,7 @@ func TestSetFileMaxAgeReachesFileHandler(t *testing.T) {
 		UseStdout(StdoutConfig{Level: slog.LevelInfo, Format: "json"}),
 	)
 	require.NoError(t, err)
-	require.NoError(t, SetFileMaxAge(l, 7), "SetFileMaxAge")
+	require.NoError(t, SetFileMaxAge(l.Handler(), 7), "SetFileMaxAge")
 	// 图内文件 handler 的 writer 保留窗已改（in-package 可达性断言）。
 	h := l.Handler()
 	sm, ok := h.(*safeMulti)
@@ -35,8 +35,8 @@ func TestSetFileMaxAgeReachesFileHandler(t *testing.T) {
 func TestSetFileMaxAgeStdoutOnlyAndNegative(t *testing.T) {
 	l, err := New(UseStdout(StdoutConfig{}))
 	require.NoError(t, err)
-	require.NoError(t, SetFileMaxAge(l, 3), "stdout-only 应无害")
-	require.Error(t, SetFileMaxAge(l, 0), "0 应拒绝(构造期 0 是默认 30 天;关闭用 UnlimitedAge)")
-	require.Error(t, SetFileMaxAge(l, -2), "其他负值应拒绝")
+	require.NoError(t, SetFileMaxAge(l.Handler(), 3), "stdout-only 应无害")
+	require.Error(t, SetFileMaxAge(l.Handler(), 0), "0 应拒绝(构造期 0 是默认 30 天;关闭用 UnlimitedAge)")
+	require.Error(t, SetFileMaxAge(l.Handler(), -2), "其他负值应拒绝")
 	require.NoError(t, SetFileMaxAge(nil, 3), "nil logger 应无害")
 }

@@ -47,7 +47,7 @@ func TestAsyncHandler_DropOnFull(t *testing.T) {
 		_ = closer.Close()
 	}
 
-	dropped := AsyncDropped(h.(*AsyncHandler))
+	dropped := Dropped(h.(*AsyncHandler))
 	require.NotZero(t, dropped, "expected some logs to be dropped with tiny buffer")
 }
 
@@ -148,7 +148,7 @@ func (h *concurrentHandler) WithGroup(string) slog.Handler      { return h }
 
 func TestAsyncDropped_NonAsync(t *testing.T) {
 	// 非 AsyncHandler 应返回 0
-	dropped := AsyncDropped(&StdoutHandler{})
+	dropped := Dropped(&StdoutHandler{})
 	require.Zero(t, dropped, "expected 0 for non-async handler")
 }
 
@@ -524,7 +524,7 @@ func TestAsyncHandler_ProcessErrorReportRateLimited(t *testing.T) {
 
 	var mu sync.Mutex
 	reports := 0
-	h.setErrorHandler(func(*HandlerError) {
+	h.SetErrorHandler(func(*HandlerError) {
 		mu.Lock()
 		reports++
 		mu.Unlock()
@@ -561,7 +561,7 @@ func TestAsyncHandler_ErrorHandlerReentrantClose(t *testing.T) {
 
 	var closeReturned chan struct{}
 	var once sync.Once
-	h.setErrorHandler(func(*HandlerError) {
+	h.SetErrorHandler(func(*HandlerError) {
 		// Re-entrant Close from inside the error callback.
 		once.Do(func() {
 			closeReturned = make(chan struct{})
@@ -658,7 +658,7 @@ func TestAsyncGroupHandler_CloseDropCounted(t *testing.T) {
 
 	err := gh.Handle(context.Background(), slog.NewRecord(time.Now(), slog.LevelInfo, "after close", 0))
 	require.Error(t, err, "expected a drop error after Close")
-	require.Equal(t, int64(1), AsyncDropped(gh), "AsyncDropped(group)")
+	require.Equal(t, int64(1), Dropped(gh), "Dropped(group)")
 	require.Equal(t, int64(1), h.Dropped(), "AsyncHandler.Dropped() (shared counter)")
 }
 
@@ -875,7 +875,7 @@ func TestAsyncHandler_DropReportRateLimited(t *testing.T) {
 
 	var mu sync.Mutex
 	reports := 0
-	h.setErrorHandler(func(*HandlerError) {
+	h.SetErrorHandler(func(*HandlerError) {
 		mu.Lock()
 		defer mu.Unlock()
 		reports++
